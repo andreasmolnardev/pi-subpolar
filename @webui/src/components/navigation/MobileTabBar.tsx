@@ -1,11 +1,9 @@
 import { memo, useMemo } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { FolderKanban, FolderOpen, CalendarClock, Menu, Info, History } from 'lucide-react'
+import { FolderKanban, Menu } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useMobile } from '@/hooks/useMobile'
 import { useMobileTabBar } from '@/hooks/useMobileTabBar'
-import { useUrlParams } from '@/hooks/useUrlParams'
-import { useAutomationUrlState, type AutomationTab } from '@/hooks/useAutomationUrlState'
 
 interface TabDef {
   key: string
@@ -21,12 +19,9 @@ interface GlobalTabsArgs {
   openSheet: ReturnType<typeof useMobileTabBar>['openSheet']
   open: ReturnType<typeof useMobileTabBar>['open']
   navigate: ReturnType<typeof useNavigate>
-  isInsideProject: boolean
-  projectId: string | null
-  updateParams: ReturnType<typeof useUrlParams>['updateParams']
 }
 
-type TabBarMode = 'hidden' | 'global' | 'automation'
+type TabBarMode = 'hidden' | 'global'
 
 interface MobileTabRouteState {
   mode: TabBarMode
@@ -39,7 +34,7 @@ function getMobileTabRouteState(pathname: string): MobileTabRouteState {
   const projectId = projectMatch?.[1] ?? null
   const projectSection = projectMatch?.[2]
 
-  if (pathname === '/' || pathname === '/automations') {
+  if (pathname === '/') {
     return { mode: 'global', isInsideProject: false, projectId: null }
   }
 
@@ -50,43 +45,19 @@ function getMobileTabRouteState(pathname: string): MobileTabRouteState {
   switch (projectSection) {
     case undefined:
       return { mode: 'global', isInsideProject: true, projectId }
-    case 'automations':
-      return { mode: 'automation', isInsideProject: true, projectId }
     default:
       return { mode: 'hidden', isInsideProject: false, projectId }
   }
 }
 
-function buildGlobalTabs({ pathname, openSheet, open, navigate, isInsideProject, projectId, updateParams }: GlobalTabsArgs): TabDef[] {
-  const handleFilesClick = () => {
-    if (isInsideProject && projectId) {
-      updateParams((p) => { p.set('dialog', 'files'); p.delete('mobileTab') }, 'push')
-    } else {
-      open('files')
-    }
-  }
-
+function buildGlobalTabs({ pathname, openSheet, open, navigate }: GlobalTabsArgs): TabDef[] {
   return [
     {
       key: 'projects',
       label: 'Projects',
       icon: FolderKanban,
-      onClick: () => open('projects'),
-      active: openSheet === 'projects' || (pathname === '/' && !openSheet),
-    },
-    {
-      key: 'files',
-      label: 'Files',
-      icon: FolderOpen,
-      onClick: handleFilesClick,
-      active: openSheet === 'files',
-    },
-    {
-      key: 'automations',
-      label: 'Automations',
-      icon: CalendarClock,
-      onClick: () => navigate('/automations'),
-      active: pathname === '/automations' && !openSheet,
+      onClick: () => navigate('/projects'),
+      active: pathname === '/projects' || (pathname === '/' && !openSheet),
     },
     {
       key: 'more',
@@ -94,32 +65,6 @@ function buildGlobalTabs({ pathname, openSheet, open, navigate, isInsideProject,
       icon: Menu,
       onClick: () => open('more'),
       active: openSheet === 'more',
-    },
-  ]
-}
-
-function buildAutomationTabs(automationTab: AutomationTab, setAutomationTab: (tab: AutomationTab) => void): TabDef[] {
-  return [
-    {
-      key: 'jobs',
-      label: 'Jobs',
-      icon: CalendarClock,
-      onClick: () => setAutomationTab('jobs'),
-      active: automationTab === 'jobs',
-    },
-    {
-      key: 'detail',
-      label: 'Detail',
-      icon: Info,
-      onClick: () => setAutomationTab('detail'),
-      active: automationTab === 'detail',
-    },
-    {
-      key: 'runs',
-      label: 'Runs',
-      icon: History,
-      onClick: () => setAutomationTab('runs'),
-      active: automationTab === 'runs',
     },
   ]
 }
@@ -163,34 +108,22 @@ export const MobileTabBar = memo(function MobileTabBar() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const { openSheet, open } = useMobileTabBar()
-  const { updateParams } = useUrlParams()
-  const { automationTab, setAutomationTab } = useAutomationUrlState()
   const isMobile = useMobile()
   const routeState = useMemo(() => getMobileTabRouteState(pathname), [pathname])
 
   const tabs = useMemo<TabDef[]>(
-    () => (routeState.mode === 'automation'
-      ? buildAutomationTabs(automationTab, setAutomationTab)
-      : buildGlobalTabs({
+    () => buildGlobalTabs({
         pathname,
         openSheet,
         open,
         navigate,
-        isInsideProject: routeState.isInsideProject,
-        projectId: routeState.projectId,
-        updateParams,
-      })),
+      }),
     [
       routeState,
-      automationTab,
-      setAutomationTab,
       pathname,
       openSheet,
       open,
       navigate,
-      routeState.isInsideProject,
-      routeState.projectId,
-      updateParams,
     ],
   )
 

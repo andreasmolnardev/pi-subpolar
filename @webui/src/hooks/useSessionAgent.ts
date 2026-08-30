@@ -114,8 +114,8 @@ export function useSessionAgent(
         prev.agent === agent &&
         prev.variant === latestVariant &&
         prev.permission === latestPermission &&
-        prev.model?.providerID === latestModel?.providerID &&
-        prev.model?.modelID === latestModel?.modelID
+        prev.model?.providerID === (latestModel as { providerID?: string } | undefined)?.providerID &&
+        prev.model?.modelID === (latestModel as { modelID?: string } | undefined)?.modelID
       ) {
         return { ...prev, fromMessage: true }
       }
@@ -138,8 +138,8 @@ export function useSessionAgent(
         prev.agent === resolvedStoredAgent &&
         prev.variant === latestVariant &&
         prev.permission === latestPermission &&
-        prev.model?.providerID === latestModel?.providerID &&
-        prev.model?.modelID === latestModel?.modelID
+        prev.model?.providerID === (latestModel as { providerID?: string } | undefined)?.providerID &&
+        prev.model?.modelID === (latestModel as { modelID?: string } | undefined)?.modelID
       ) {
         return { ...prev, fromMessage: false }
       }

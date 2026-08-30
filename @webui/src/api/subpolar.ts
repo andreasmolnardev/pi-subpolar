@@ -175,8 +175,8 @@ export class SubpolarClient {
         ? message.metadata.assistantParts.filter(isRecord)
         : []
       const tools = Array.isArray(message.metadata?.tools) ? message.metadata.tools : []
-      const parts = assistantParts.length > 0
-        ? assistantParts.flatMap((part, index) => {
+      const parts = (assistantParts.length > 0
+         ? assistantParts.flatMap((part, index): any[] => {
             const partType = part.type
             if (partType === 'text' && typeof part.text === 'string') {
               return [{
@@ -233,6 +233,7 @@ export class SubpolarClient {
               }
             }),
           ]
+        ) as MessageListResponse[number]['parts']
       return {
         info: {
         id: message.id,

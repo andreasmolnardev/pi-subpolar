@@ -11,6 +11,11 @@ export default defineConfig({
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),
+        "@subpolar/shared/utils": path.resolve(__dirname, "./src/lib/pi-shared.ts"),
+        "@subpolar/shared/config": path.resolve(__dirname, "./src/lib/pi-shared.ts"),
+        "@subpolar/shared/schemas": path.resolve(__dirname, "./src/lib/pi-shared.ts"),
+        "@subpolar/shared/notifications": path.resolve(__dirname, "./src/lib/pi-shared.ts"),
+        "@subpolar/shared": path.resolve(__dirname, "./src/lib/pi-shared.ts"),
       },
     },
     server: {

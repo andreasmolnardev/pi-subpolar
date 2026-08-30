@@ -355,13 +355,13 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
         webfetch: webfetchPermission,
         bash: otherBashPermission,
       }
-      agent.allowedCommands = Array.from(new Set(effectiveToolAccess.filter(tool => tool.type === 'cli').map(tool => tool.command || tool.id)))
+      agent.allowedCommands = Array.from(new Set(effectiveToolAccess.filter(tool => tool.type === 'cli').map(tool => ('command' in tool ? tool.command : undefined) || tool.id)))
       const cliTools = effectiveToolAccess.filter(tool => tool.type === 'cli')
       if (cliTools.length > 0 || otherBashPermission !== 'deny') {
         agent.permission = {
           ...agent.permission,
           bash: Object.fromEntries([
-            ...cliTools.map(tool => [`${tool.command || tool.id} *`, tool.permission]),
+            ...cliTools.map(tool => [`${('command' in tool ? tool.command : undefined) || tool.id} *`, tool.permission]),
             ['*', otherBashPermission],
           ]),
         }

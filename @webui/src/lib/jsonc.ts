@@ -1,4 +1,4 @@
-export { parseJsonc } from '@subpolar/shared/utils'
+export { parseJsonc } from './pi-shared'
 
 export function hasJsoncComments(content: string): boolean {
   return content.split('\n').some(line => {

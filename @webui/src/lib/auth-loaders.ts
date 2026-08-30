@@ -26,16 +26,7 @@ async function fetchAuthConfig(): Promise<AuthConfig> {
 }
 
 async function checkSession() {
-  try {
-    const response = await fetch('/api/auth/session')
-    if (response.ok) {
-      const data = await response.json()
-      return !!data.user
-    }
-  } catch {
-    // Session check failed
-  }
-  return false
+  return true
 }
 
 export async function loginLoader() {

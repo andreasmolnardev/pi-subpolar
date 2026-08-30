@@ -17,6 +17,8 @@ type RpcCommand = Record<string, unknown> & { type: string }
 type RpcMessage = Record<string, unknown> & { type?: string; id?: string }
 type PendingRequest = { resolve: (value: unknown) => void; reject: (error: Error) => void }
 type SocketData = { sessionId: string; unsubscribe?: () => void }
+type PendingPrompt = { content: string; metadata?: Record<string, unknown> }
+type SseClient = { enqueue: (chunk: Uint8Array) => void; close: () => void }
 
 const root = resolve(import.meta.dir, '..')
 const webuiDir = import.meta.dir
@@ -58,6 +60,16 @@ function isSessionRecord(value: unknown): value is SessionRecord {
 }
 
 let sessions = loadState()
+const pendingPrompts = new Map<string, PendingPrompt>()
+const sseClients = new Set<SseClient>()
+const encoder = new TextEncoder()
+
+function broadcastSse(value: unknown): void {
+  const chunk = encoder.encode(`data: ${JSON.stringify(value)}\n\n`)
+  for (const client of sseClients) {
+    try { client.enqueue(chunk) } catch { client.close(); sseClients.delete(client) }
+  }
+}
 
 async function saveState(): Promise<void> {
   await mkdir(dirname(statePath), { recursive: true })
@@ -96,6 +108,71 @@ function projectFor(name: string | undefined): Project {
   const value = projects().find((project) => project.name === name)
   if (!value) throw new Error(`Unknown project: ${name ?? ''}`)
   return value
+}
+
+function projectForDirectory(directory: string | undefined): Project {
+  if (directory) {
+    const value = projects().find((project) => project.path === resolve(directory))
+    if (value) return value
+  }
+  return projects()[0]
+}
+
+function projectResponse(project: Project, id: number) {
+  return {
+    id,
+    name: project.name,
+    directory: project.path,
+    fullPath: project.path,
+    status: 'ready',
+    createdAt: 0,
+    updatedAt: 0,
+  }
+}
+
+function projectResponses() {
+  return [
+    { id: 0, name: 'General Chat', directory: root, fullPath: root, status: 'ready', createdAt: 0, updatedAt: 0, isGeneralChat: true },
+    ...projects().map((project, index) => projectResponse(project, index + 1)),
+  ]
+}
+
+function storedSessionResponse(record: SessionRecord) {
+  const project = projectFor(record.project)
+  const projectId = Math.max(1, projects().findIndex((item) => item.name === project.name) + 1)
+  return { ...record, projectId, directory: project.path }
+}
+
+function rpcData(value: unknown): unknown {
+  const response = object(value)
+  return response.data ?? value
+}
+
+function normalizeMessages(sessionId: string, value: unknown) {
+  const messages = object(rpcData(value)).messages
+  if (!Array.isArray(messages)) return { messages: [] }
+  return {
+    messages: messages.map((message, index) => {
+      const item = object(message)
+      const rawContent = Array.isArray(item.content) ? item.content : []
+      const assistantParts = rawContent.flatMap((part, partIndex) => {
+        const content = object(part)
+        const id = typeof content.id === 'string' ? content.id : `${sessionId}-${index}-${partIndex}`
+        if (content.type === 'text' && typeof content.text === 'string') return [{ id, type: 'text', text: content.text }]
+        if ((content.type === 'thinking' || content.type === 'reasoning') && typeof content.thinking === 'string') return [{ id, type: 'reasoning', text: content.thinking }]
+        return []
+      })
+      const content = sessionMessageText(message)
+      const metadata = object(item.metadata)
+      return {
+        id: typeof item.id === 'string' ? item.id : `${sessionId}-${index}`,
+        role: typeof item.role === 'string' ? item.role : 'assistant',
+        content,
+        createdAt: typeof item.timestamp === 'number' ? item.timestamp : Date.now(),
+        metadata: item.role === 'assistant' && assistantParts.length > 0 ? { ...metadata, assistantParts } : metadata,
+      }
+    }),
+  }
 }
 
 function json(value: unknown, status = 200): Response {
@@ -170,6 +247,7 @@ class PiRpcSession {
         else request.resolve(message)
       }
     }
+    broadcastSse(message)
     for (const listener of this.listeners) listener(message)
   }
 
@@ -259,19 +337,54 @@ async function handle(request: Request): Promise<Response> {
   const url = new URL(request.url)
   const path = url.pathname.split('/').filter(Boolean)
   if (request.method === 'OPTIONS') return new Response(null, { status: 204 })
-  if (request.method === 'GET' && url.pathname === '/api/health') return json({ status: 'ok', activeSessions: active.size })
-  if (request.method === 'GET' && url.pathname === '/api/projects') return json({ projects: projects() })
+  if (request.method === 'GET' && url.pathname === '/api/health') return json({ status: 'healthy', timestamp: new Date().toISOString(), database: 'connected', runtime: 'pi', pi: 'healthy', activeSessions: active.size })
+  if (request.method === 'GET' && url.pathname === '/api/projects') return json({ projects: projectResponses() })
+  if (request.method === 'GET' && path[1] === 'projects' && path.length === 3) {
+    const project = projectResponses().find((item) => item.id === Number(path[2]))
+    return project ? json({ project }) : json({ error: 'Project not found' }, 404)
+  }
+  if (request.method === 'GET' && url.pathname === '/api/agent') return json([{ name: 'build', mode: 'primary', description: 'Pi default agent' }])
+  if (request.method === 'GET' && url.pathname === '/api/provider') return json({ providers: [], default: {} })
+  if (request.method === 'GET' && url.pathname === '/api/config') return json({ model: undefined, default_agent: 'build', default_permission: 'ask' })
+  if (request.method === 'GET' && url.pathname === '/api/command') return json([])
+  if (request.method === 'GET' && url.pathname === '/api/sessions/status') return json(Object.fromEntries(sessions.map((session) => [session.id, { type: 'idle' }])))
+  if (request.method === 'GET' && url.pathname === '/api/sse/stream') {
+    let heartbeat: ReturnType<typeof setInterval> | undefined
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const client: SseClient = {
+          enqueue: (chunk) => controller.enqueue(chunk),
+          close: () => controller.close(),
+        }
+        sseClients.add(client)
+        controller.enqueue(encoder.encode(`event: connected\ndata: ${JSON.stringify({ clientId: 'pi-local', connected: active.size, total: active.size })}\n\n`))
+        heartbeat = setInterval(() => controller.enqueue(encoder.encode('event: heartbeat\ndata: {}\n\n')), 30000)
+      },
+      cancel() {
+        if (heartbeat) clearInterval(heartbeat)
+      },
+    })
+    return new Response(stream, { headers: { 'cache-control': 'no-cache', 'content-type': 'text/event-stream', 'connection': 'keep-alive' } })
+  }
+  if (request.method === 'POST' && (url.pathname === '/api/sse/subscribe' || url.pathname === '/api/sse/unsubscribe' || url.pathname === '/api/sse/visibility')) return json({ ok: true })
 
   if (path[0] !== 'api') return json({ error: 'Not found' }, 404)
 
   if (path[1] === 'sessions' && path.length === 2 && request.method === 'GET') {
     const project = url.searchParams.get('project')
-    return json({ sessions: sessions.filter((session) => !project || session.project === project).sort((a, b) => b.updatedAt - a.updatedAt) })
+    const directory = url.searchParams.get('directory')
+    return json({ sessions: sessions
+      .filter((session) => !project || session.project === project)
+      .filter((session) => !directory || projectFor(session.project).path === resolve(directory))
+      .map(storedSessionResponse)
+      .sort((a, b) => b.updatedAt - a.updatedAt) })
   }
 
   if (path[1] === 'sessions' && path.length === 2 && request.method === 'POST') {
     const input = await body(request)
-    const project = projectFor(typeof input.project === 'string' ? input.project : undefined)
+    const project = typeof input.project === 'string'
+      ? projectFor(input.project)
+      : projectForDirectory(typeof input.directory === 'string' ? input.directory : undefined)
     const now = Date.now()
     const record: SessionRecord = {
       id: crypto.randomUUID(),
@@ -283,13 +396,14 @@ async function handle(request: Request): Promise<Response> {
     sessions.push(record)
     await saveState()
     rpcSession(record.id)
-    return json({ session: record }, 201)
+    return json({ session: storedSessionResponse(record) }, 201)
   }
 
   if (path[1] === 'sessions' && path.length >= 3) {
     const id = decodeURIComponent(path[2] ?? '')
     try {
       recordFor(id)
+      if (path.length === 3 && request.method === 'GET') return json(storedSessionResponse(recordFor(id)))
       if (path.length === 3 && request.method === 'PATCH') {
         const input = await body(request)
         const title = typeof input.title === 'string' ? input.title.trim() : ''
@@ -307,9 +421,20 @@ async function handle(request: Request): Promise<Response> {
         await saveState()
         return json({ ok: true })
       }
-      if (path.length === 4 && path[3] === 'messages' && request.method === 'GET') return json(await sendRpc(id, { type: 'get_messages' }))
-      if (path.length === 4 && path[3] === 'state' && request.method === 'GET') return json(await sendRpc(id, { type: 'get_state' }))
-      if (path.length === 4 && path[3] === 'stats' && request.method === 'GET') return json(await sendRpc(id, { type: 'get_session_stats' }))
+      if (path.length === 4 && path[3] === 'messages' && request.method === 'GET') return json(normalizeMessages(id, await sendRpc(id, { type: 'get_messages' })))
+      if (path.length === 4 && path[3] === 'messages' && request.method === 'POST') {
+        const input = await body(request)
+        pendingPrompts.set(id, { content: typeof input.content === 'string' ? input.content : '', metadata: object(input.metadata) })
+        return json({ ok: true }, 201)
+      }
+      if (path.length === 4 && path[3] === 'runs' && request.method === 'POST') {
+        const prompt = pendingPrompts.get(id)
+        pendingPrompts.delete(id)
+        if (!prompt?.content.trim()) return json({ error: 'Prompt content is required' }, 400)
+        return json(await sendRpc(id, { type: 'prompt', message: prompt.content }))
+      }
+      if (path.length === 4 && path[3] === 'state' && request.method === 'GET') return json(rpcData(await sendRpc(id, { type: 'get_state' })))
+      if (path.length === 4 && path[3] === 'stats' && request.method === 'GET') return json(rpcData(await sendRpc(id, { type: 'get_session_stats' })))
       if (path.length === 4 && path[3] === 'rpc' && request.method === 'POST') {
         const input = await body(request)
         if (typeof input.type !== 'string') return json({ error: 'RPC type is required' }, 400)
@@ -328,7 +453,7 @@ async function handle(request: Request): Promise<Response> {
   }
 
   if (path[1] === 'extensions' && path[2] === 'projects') {
-    if (request.method === 'GET') return json({ projects: projects() })
+    if (request.method === 'GET') return json({ projects: projectResponses() })
     if (request.method === 'POST') {
       const input = await body(request)
       if (typeof input.sessionId !== 'string' || typeof input.project !== 'string') return json({ error: 'sessionId and project are required' }, 400)

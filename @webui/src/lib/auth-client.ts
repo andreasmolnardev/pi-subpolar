@@ -1,6 +1,7 @@
-export type AuthUser = Record<string, unknown> | null
+export type AuthUser = { id?: string; name?: string; email?: string; image?: string } | null
 
-let currentUser: AuthUser = null
+const LOCAL_USER = { id: 'local', name: 'Pi user', email: 'local@pi' }
+let currentUser: AuthUser = LOCAL_USER
 let authChangeListeners: Array<(user: AuthUser) => void> = []
 
 export function onAuthChange(listener: (user: AuthUser) => void) {
@@ -55,18 +56,8 @@ export async function signOut() {
 }
 
 export async function fetchSession() {
-  try {
-    const response = await fetch('/api/auth/session')
-    if (response.ok) {
-      const data = await response.json()
-      notifyAuthChange(data.user)
-      return data
-    }
-  } catch {
-    // Session fetch failed
-  }
-  notifyAuthChange(null)
-  return { user: null, token: null }
+  notifyAuthChange(LOCAL_USER)
+  return { user: LOCAL_USER, token: null }
 }
 
 export async function changePassword(currentPassword: string, newPassword: string) {

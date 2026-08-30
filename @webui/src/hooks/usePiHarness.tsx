@@ -358,7 +358,7 @@ const createOptimisticUserMessageInfo = (
     role: "user",
     sessionID,
     time: { created: Date.now() },
-  } as Message;
+  } as unknown as Message;
 
   if (model) {
     const parsedModel = parseModelString(model);
@@ -369,11 +369,11 @@ const createOptimisticUserMessageInfo = (
         agent,
         permission,
         variant,
-      } as Message;
+      } as unknown as Message;
     }
   }
 
-  return { ...message, agent, permission, variant } as Message;
+  return { ...message, agent, permission, variant } as unknown as Message;
 };
 
 const getPromptText = (prompt: string | undefined, parts: ContentPart[] | undefined): string => {

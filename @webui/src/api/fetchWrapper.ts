@@ -1,7 +1,34 @@
-import { FetchError } from '@subpolar/shared'
-import type { ApiErrorResponse } from '@subpolar/shared'
+export class FetchError extends Error {
+  readonly statusCode?: number
+  readonly code?: string
+  readonly detail?: string
+  readonly data?: Record<string, unknown>
 
-export { FetchError }
+  constructor(
+    message: string,
+    statusCode?: number,
+    code?: string,
+    detail?: string,
+    data?: Record<string, unknown>,
+  ) {
+    super(message)
+    this.name = 'FetchError'
+    this.statusCode = statusCode
+    this.code = code
+    this.detail = detail
+    this.data = data
+  }
+}
+
+interface ApiErrorResponse {
+  error?: string
+  message?: string
+  detail?: string
+  details?: unknown
+  code?: string
+  validationIssues?: unknown
+  removedFields?: unknown
+}
 
 interface FetchWrapperOptions extends RequestInit {
   timeout?: number

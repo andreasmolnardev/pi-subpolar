@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { FolderKanban, Paperclip, Send, Square, X } from "lucide-react";
+import { FolderKanban, Send, Square, X } from "lucide-react";
 import { GENERAL_CHAT_PROJECT_ID } from "@subpolar/shared/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -83,7 +83,6 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const navigate = useNavigate();
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const { preferences } = useSettings();
   const effectiveDefaultModel = defaultModel ?? preferences?.defaultModel ?? "__auto__";
 
@@ -270,7 +269,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       onPromptChange?.(false);
     },
     triggerFileUpload: () => {
-      fileInputRef.current?.click();
+      // File service is intentionally not part of local Pi bridge.
     },
   }), [onPromptChange]);
 
@@ -493,8 +492,6 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
           style={{ height: "auto", overflow: "hidden" }}
             className="w-full bg-transparent text-[18px] text-foreground placeholder-muted-foreground focus:outline-none resize-none rounded-lg"
           />
-        <input ref={fileInputRef} type="file" className="hidden" />
-
         <div className="flex mt-3 items-center">
           {!sessionID && (
           <Select
@@ -530,15 +527,6 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
             </SelectContent>
           </Select>
           )}
-
-          <Button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            size="icon"
-            className="h-8 w-8 flex-shrink-0 border-0 bg-muted hover:bg-muted/80 text-foreground ml-2"
-          >
-            <Paperclip className="h-4 w-4" />
-          </Button>
 
           {!hideAgentSelect && (
             <Select

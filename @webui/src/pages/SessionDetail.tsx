@@ -4,14 +4,12 @@ import { useQuery } from "@tanstack/react-query";
 import { getProject, hasProjectId, listProjects } from "@/api/projects";
 import { MessageThread } from "@/components/message/MessageThread";
 import { ChatInputBar, type ChatInputBarHandle, type PendingSessionPrompt } from "@/components/chat/ChatInputBar";
-import { FloatingTTSButton } from '@/components/message/FloatingTTSButton'
 import { ChevronDown, CornerUpLeft } from "lucide-react";
 import { Header } from "@/components/ui/header";
 import { SessionList } from "@/components/session/SessionList";
 import { getSessionListPath } from '@/lib/navigation'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 
-import { FileBrowserSheet } from "@/components/file-browser/FileBrowserSheet";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -31,19 +29,16 @@ import { useUIState } from "@/stores/uiStateStore";
 import { useModelSelection } from "@/hooks/useModelSelection";
 import { useSessionAgent } from "@/hooks/useSessionAgent";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { useSettingsDialog } from "@/hooks/useSettingsDialog";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { useMobile } from "@/hooks/useMobile";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
-import { useTTS } from "@/hooks/useTTS";
-import { getAssistantText, getLatestPlayableAssistantMessage, useAutoPlayLastResponse } from "@/hooks/useAutoPlayLastResponse";
+import { useSessionStatusForSession } from "@/stores/sessionStatusStore";
 import { useEffect, useRef, useCallback } from "react";
 import { MessageSkeleton } from "@/components/message/MessageSkeleton";
 import { getMessagesContentVersion } from "./sessionContentVersion";
 import { showToast } from "@/lib/toast";
 import { createSubpolarClient } from '@/api/subpolar';
 import { usePermissions, useQuestions } from "@/contexts/EventContext";
-import { useSessionStatusForSession } from "@/stores/sessionStatusStore";
 import type { QuestionRequest } from "@/api/types";
 import { QuestionPrompt } from "@/components/session/QuestionPrompt";
 import { MinimizedQuestionIndicator } from "@/components/session/MinimizedQuestionIndicator";
@@ -51,7 +46,6 @@ import { PermissionRequestDialog } from "@/components/session/PermissionRequestD
 import { PendingActionsGroup } from "@/components/notifications/PendingActionsGroup";
 import { SessionSendErrorBanner } from "@/components/session/SessionSendErrorBanner";
 import { SessionTodoDisplay } from "@/components/message/SessionTodoDisplay";
-import { useDialogParam } from "@/hooks/useDialogParam";
 import { useSidebarAction } from "@/hooks/useSidebarAction";
 import { SessionMoreButton } from "@/components/navigation/SessionMoreButton";
 
@@ -74,14 +68,10 @@ export function SessionDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const repoId = Number(id) || 0;
-  const { open: openSettings } = useSettingsDialog();
   const messageContainerRef = useRef<HTMLDivElement>(null);
   const promptInputRef = useRef<ChatInputBarHandle>(null);
   const consumedPendingPromptRef = useRef<string | null>(null);
   const [sessionsPopoverOpen, setSessionsPopoverOpen] = useState(false);
-  const [fileBrowserOpen, setFileBrowserOpen] = useDialogParam('files');
-  const [selectedFilePath, setSelectedFilePath] = useState<string | undefined>();
-  const [hasPromptContent, setHasPromptContent] = useState(false);
   const [minimizedQuestion, setMinimizedQuestion] = useState<QuestionRequest | null>(null);
 
   const isMobile = useMobile();
@@ -131,7 +121,7 @@ export function SessionDetail() {
 
   const { isConnected, isReconnecting } = useSSE(apiUrl, repoDirectory, sessionId);
 
-  const { data: rawMessages, isLoading: messagesLoading } = useMessages(apiUrl, sessionId, repoDirectory);
+  const { data: rawMessages, isLoading: messagesLoading } = useMessages(apiUrl, sessionId, repoDirectory, { fallbackPoll: true });
   const { data: session, isLoading: sessionLoading } = useSession(
     apiUrl,
     sessionId,
@@ -160,8 +150,6 @@ export function SessionDetail() {
   const { model, modelString } = useModelSelection(apiUrl, repoDirectory);
   const sessionAgent = useSessionAgent(apiUrl, sessionId, repoDirectory);
   const isEditingMessage = useUIState((state) => state.isEditingMessage);
-  const setActivePromptFileBasePath = useUIState((state) => state.setActivePromptFileBasePath);
-  const { isEnabled: ttsEnabled } = useTTS();
   const sessionStatus = useSessionStatusForSession(sessionId);
   const {
     pendingCount: pendingPermissionCount,
@@ -172,8 +160,6 @@ export function SessionDetail() {
   const { current: currentQuestion, reply: replyToQuestion, reject: rejectQuestion, syncForSession: syncQuestionsForSession } = useQuestions();
 
   const lastAssistantMessage = messages?.filter(m => m.info.role === 'assistant').at(-1);
-  const lastAssistantText = getAssistantText(lastAssistantMessage);
-  const latestPlayableAssistant = useMemo(() => getLatestPlayableAssistantMessage(messages), [messages]);
   
   const isSessionActive = useMemo(() => {
     if (session?.time?.compacting) return true
@@ -183,9 +169,8 @@ export function SessionDetail() {
   }, [lastAssistantMessage, session?.time?.compacting, sessionStatus.type])
   const hasIncompleteMessages = lastAssistantMessage ? !('completed' in lastAssistantMessage.info.time && lastAssistantMessage.info.time.completed) : false;
   const isStreamingResponse = hasIncompleteMessages && isSessionActive;
-  const workspaceBasePath = repo?.localPath;
   const pendingPrompt = (location.state as PendingPromptLocationState | null)?.pendingPrompt;
-  const activePermission = getPermissionForSession(sessionId);
+  const activePermission = getPermissionForSession(sessionId ?? '');
 
   useEffect(() => {
     if (!pendingPrompt || !sessionId || !isConnected || messagesLoading) return
@@ -214,21 +199,6 @@ export function SessionDetail() {
     sendPendingPrompt,
     sessionId,
   ])
-
-  useEffect(() => {
-    setActivePromptFileBasePath(repoDirectory ? workspaceBasePath ?? null : null)
-
-    return () => {
-      setActivePromptFileBasePath(null)
-    }
-  }, [repoDirectory, setActivePromptFileBasePath, workspaceBasePath])
-
-  useAutoPlayLastResponse({
-    sessionId: sessionId ?? '',
-    lastAssistantMessage,
-    lastAssistantText,
-    isStreamingResponse,
-  });
 
   const handleMinimizeQuestion = useCallback((question: QuestionRequest) => {
     setMinimizedQuestion(question)
@@ -339,14 +309,13 @@ export function SessionDetail() {
 
   const { leaderActive } = useKeyboardShortcuts({
     openSessions: () => setSessionsPopoverOpen(true),
-    openSettings,
     newSession: handleNewSession,
     closeSession: handleCloseSession,
     compact: handleCompact,
     undo: handleUndo,
     redo: handleRedo,
     fork: handleFork,
-    toggleSidebar: () => setFileBrowserOpen(!fileBrowserOpen),
+    toggleSidebar: () => {},
     toggleMode: () => {
       const modeButton = document.querySelector(
         "[data-toggle-mode]",
@@ -367,26 +336,6 @@ export function SessionDetail() {
   });
 
   
-
-  const handleFileClick = useCallback((filePath: string) => {
-    let pathToOpen = filePath
-    
-    if (filePath.startsWith('/') && repo?.fullPath) {
-      const workspaceReposPath = repo.fullPath.substring(0, repo.fullPath.lastIndexOf('/'))
-      
-      if (filePath.startsWith(workspaceReposPath + '/')) {
-        pathToOpen = filePath.substring(workspaceReposPath.length + 1)
-      }
-    }
-    
-    setSelectedFilePath(pathToOpen)
-    setFileBrowserOpen(true)
-  }, [repo?.fullPath, setFileBrowserOpen]);
-
-  const handleFileBrowserClose = useCallback(() => {
-    setFileBrowserOpen(false)
-    setSelectedFilePath(undefined)
-  }, [setFileBrowserOpen]);
 
   const handleChildSessionClick = useCallback((childSessionId: string) => {
     navigate(`/repos/${repoId}/sessions/${childSessionId}${sessionRouteSuffix}`)
@@ -540,7 +489,6 @@ export function SessionDetail() {
               sessionID={sessionId} 
               directory={repoDirectory}
               messages={messages}
-              onFileClick={handleFileClick}
               onChildSessionClick={handleChildSessionClick}
               onUndoMessage={handleUndoMessage}
               model={modelString || undefined}
@@ -555,12 +503,6 @@ export function SessionDetail() {
           >
             <div className="relative w-[94%] md:max-w-4xl">
               <div className="absolute -top-9 right-0 z-50 flex flex-col items-end gap-2">
-                {ttsEnabled && !hasPromptContent && !isSessionActive && latestPlayableAssistant && (
-                  <FloatingTTSButton
-                    messageId={latestPlayableAssistant.message.info.id}
-                    content={latestPlayableAssistant.text}
-                  />
-                )}
               </div>
               {leaderActive && (
                 <div className="absolute -top-12 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-primary/90 text-primary-foreground border border-primary shadow-lg backdrop-blur-md animate-pulse">
@@ -606,21 +548,12 @@ export function SessionDetail() {
                 disabled={!isConnected}
                 isSessionActive={isStreamingResponse}
                 onScrollToBottom={scrollToBottom}
-                onPromptChange={setHasPromptContent}
               />
             </div>
           </div>
         )}
       </div>
 
-      <FileBrowserSheet
-        isOpen={fileBrowserOpen}
-        onClose={handleFileBrowserClose}
-        basePath={workspaceBasePath}
-        repoName={workspaceDisplayName}
-        repoId={repoId}
-        initialSelectedFile={selectedFilePath}
-      />
     </div>
   );
 }

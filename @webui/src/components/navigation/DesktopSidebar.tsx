@@ -4,8 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDesktop } from "@/hooks/useDesktop";
 import { useSidebarCollapsed } from "@/hooks/useSidebarCollapsed";
 import { useAuth } from "@/hooks/useAuth";
-import { useUrlParams } from "@/hooks/useUrlParams";
-import { createProject, getProject, hasProjectId, listProjects } from "@/api/projects";
+import { getProject, hasProjectId, listProjects } from "@/api/projects";
 import { listStoredSessions } from "@/api/sessions";
 import { settingsApi, type AgentToolPolicyEffect } from "@/api/settings";
 import { DEFAULT_USER_PREFERENCES } from "@/api/types/settings";
@@ -23,7 +22,6 @@ import {
   Pencil,
   Plus,
   Trash2,
-  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sidebar, SidebarCollapseToggle } from "@/components/ui/sidebar";
@@ -34,9 +32,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { AgentDialog } from "@/components/settings/AgentDialog";
-import { ProjectDialog } from "@/components/project/ProjectDialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { showToast } from "@/lib/toast";
 import { getSidebarProjectRoute } from "@/lib/projectNavigation";
 
 function SidebarSection({
@@ -222,7 +218,6 @@ function subpolarPolicies(agent: Agent) {
 export function DesktopSidebar() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { updateParams } = useUrlParams();
   const [collapsed, toggle] = useSidebarCollapsed();
   const { isAuthenticated, isLoading, user } = useAuth();
   const { preferences } = useSettings();
@@ -233,7 +228,6 @@ export function DesktopSidebar() {
   const [selectedSidebarProjectId, setSelectedSidebarProjectId] = useState<string>(String(GENERAL_CHAT_PROJECT_ID));
   const [isCreateAgentDialogOpen, setIsCreateAgentDialogOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<{ name: string; agent: Agent } | null>(null);
-  const [isCreateProjectDialogOpen, setIsCreateProjectDialogOpen] = useState(false);
   const { data: projects } = useQuery({
     queryKey: ["projects"],
     queryFn: listProjects,
@@ -252,12 +246,10 @@ export function DesktopSidebar() {
     queryFn: listStoredSessions,
   });
 
-  const { data: generalChatAgents = [] } = useAgents(SUBPOLAR_API_BASE_URL, generalChatDirectory);
   const hiddenSidebarAgents = useMemo(
     () => new Set((preferences?.hiddenSidebarAgents ?? DEFAULT_USER_PREFERENCES.hiddenSidebarAgents).map((name) => name.toLowerCase())),
     [preferences?.hiddenSidebarAgents],
   );
-  const visibleGeneralChatAgents = generalChatAgents.filter((agent) => !hiddenSidebarAgents.has(agent.name.toLowerCase()));
   const navigableProjects = useMemo(() => projects?.filter(hasProjectId) ?? [], [projects]);
   const selectedSidebarProject = selectedSidebarProjectId === String(GENERAL_CHAT_PROJECT_ID)
     ? generalChatProject
@@ -354,14 +346,6 @@ export function DesktopSidebar() {
     updateConfigMutation.mutate({ agents: updatedAgents });
   };
 
-  const handleCreateProject = async (data: { name: string; directory?: string; agentNames?: string[] }) => {
-    const created = await createProject(data);
-    queryClient.invalidateQueries({ queryKey: ["projects"] });
-    setSelectedSidebarProjectId(String(created.id));
-    setIsCreateProjectDialogOpen(false);
-    showToast.success("Project created");
-  };
-
   if (isLoading || !isAuthenticated) {
     return null;
   }
@@ -394,7 +378,7 @@ export function DesktopSidebar() {
 
   return (
     <>
-      <Sidebar collapsed={collapsed} className="pt-0">
+      <Sidebar collapsed={collapsed} onToggle={toggle} className="pt-0">
         {/* Brand */}
         <div className="flex items-center justify-between px-3 py-3 border-b border-border">
           {!collapsed && (
@@ -417,25 +401,13 @@ export function DesktopSidebar() {
             onClick={() => navigate("/home")}
           />
 
-          {/* Automations */}
-          <SidebarNavItem
-            icon={Zap}
-            label="Automations"
-            onClick={() => navigate("/automations")}
-            active={location.pathname === "/automations"}
-          />
-
           {!collapsed && (
             <div className="mt-3 border-t border-border pt-3">
               <div className="mb-2 flex items-center gap-1 px-1">
                 <Select
                   value={selectedSidebarProjectId}
 onValueChange={(value) => {
-                     if (value === "new") {
-                       setIsCreateProjectDialogOpen(true);
-                       return;
-                     }
-                     const route = getSidebarProjectRoute(value, projects);
+                      const route = getSidebarProjectRoute(value, projects);
                      if (!route) return;
                      setSelectedSidebarProjectId(value);
                      navigate(route);
@@ -453,10 +425,6 @@ onValueChange={(value) => {
                         {project.name}
                       </SelectItem>
                     ))}
-                                          <SelectItem value="new" className="flex items-center">
-                          <Plus className="h-4 w-4 mr-1" />
-                          Create project
-                        </SelectItem>
                       </SelectContent>
                 </Select>
 
@@ -538,15 +506,7 @@ onValueChange={(value) => {
 
         {/* Profile */}
         <div className="border-t border-border mt-auto">
-          <button
-            type="button"
-            onClick={() => {
-              updateParams((p) => {
-                p.set("settings", "open");
-                p.set("settingsTab", "account");
-                p.delete("mobileTab");
-              }, "push");
-            }}
+          <div
             className={cn(
               "flex items-center gap-3 w-full p-3 hover:bg-accent/50 transition-colors",
               collapsed && "justify-center",
@@ -575,7 +535,7 @@ onValueChange={(value) => {
                 </span>
               </div>
             )}
-          </button>
+          </div>
         </div>
       </Sidebar>
 
@@ -594,13 +554,6 @@ onValueChange={(value) => {
         onSubmit={handleSaveAgent}
         editingAgent={editingAgent}
         availableSkills={subpolarSkills || []}
-      />
-      <ProjectDialog
-        open={isCreateProjectDialogOpen}
-        onOpenChange={setIsCreateProjectDialogOpen}
-        onSubmit={handleCreateProject}
-        availableAgents={visibleGeneralChatAgents}
-        userId={user?.name || user?.email || "default"}
       />
     </>
   );

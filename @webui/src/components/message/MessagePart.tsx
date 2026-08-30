@@ -171,9 +171,10 @@ export const MessagePart = memo(function MessagePart({ part, role, allParts, par
       {
         const isFree = part.cost === 0
         const totalTokens = part.tokens.input + part.tokens.output + (part.tokens.cache?.read || 0)
+        const stepTime = 'time' in part ? part.time as { start: number; end: number } : undefined
         const durationSeconds = assistantMetadata?.created && assistantMetadata.completed
           ? Math.max(0, assistantMetadata.completed - assistantMetadata.created) / 1000
-          : part.time ? (part.time.end - part.time.start) / 1000 : undefined
+          : stepTime ? (stepTime.end - stepTime.start) / 1000 : undefined
         const tokensPerSecond = durationSeconds && durationSeconds > 0 ? part.tokens.output / durationSeconds : undefined
         const startedAt = formatTime(assistantMetadata?.created)
         const endedAt = formatTime(assistantMetadata?.completed)

@@ -1,34 +1,23 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { getProject } from '@/api/projects'
 import { SessionList } from '@/components/session/SessionList'
 import { ChatInputBar } from '@/components/chat/ChatInputBar'
-import { FileBrowserSheet } from '@/components/file-browser/FileBrowserSheet'
 import { Header } from '@/components/ui/header'
-import { ProjectConfigDialog } from '@/components/project/ProjectConfigDialog'
-import { ProjectMcpDialog } from '@/components/project/ProjectMcpDialog'
-import { ProjectSkillsDialog } from '@/components/project/ProjectSkillsDialog'
 import { useCreateSession } from '@/hooks/usePiHarness'
 import { useProjectActivity } from '@/hooks/useProjectActivity'
 import { useSSE } from '@/hooks/useSSE'
-import { useDialogParam } from '@/hooks/useDialogParam'
 import { SUBPOLAR_API_BASE_URL } from '@/config'
 import { Button } from '@/components/ui/button'
 import { Plus, Loader2 } from 'lucide-react'
-import { invalidateConfigCaches } from '@/lib/queryInvalidation'
 import { useSidebarAction } from '@/hooks/useSidebarAction'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const projectId = Number(id) || 0
-  const [fileBrowserOpen, setFileBrowserOpen] = useDialogParam('files')
-  const [switchConfigOpen, setSwitchConfigOpen] = useState(false)
-  const [mcpDialogOpen, setMcpDialogOpen] = useDialogParam('mcp')
-  const [skillsDialogOpen, setSkillsDialogOpen] = useDialogParam('skills')
 
   const { data: project, isLoading: projectLoading } = useQuery({
     queryKey: ['project', projectId],
@@ -129,42 +118,6 @@ export function ProjectDetail() {
         <ChatInputBar defaultProjectId={projectId.toString()} sendImmediately />
       </div>
 
-      <FileBrowserSheet
-        isOpen={fileBrowserOpen}
-        onClose={() => setFileBrowserOpen(false)}
-        basePath={project.fullPath}
-        repoName={project.name}
-        repoId={projectId}
-        allowNavigateAboveBase={true}
-      />
-
-      <ProjectMcpDialog
-        open={mcpDialogOpen}
-        onOpenChange={setMcpDialogOpen}
-        directory={composerDirectory}
-      />
-
-      <ProjectSkillsDialog
-        open={skillsDialogOpen}
-        onOpenChange={setSkillsDialogOpen}
-        projectId={projectId}
-      />
-
-      {project && (
-        <ProjectConfigDialog
-          open={switchConfigOpen}
-          onOpenChange={setSwitchConfigOpen}
-          projectId={projectId}
-          currentConfigName={project.piConfigName}
-          onConfigSwitched={(configName) => {
-            queryClient.setQueryData(['project', projectId], {
-              ...project,
-              piConfigName: configName,
-            })
-            invalidateConfigCaches(queryClient)
-          }}
-        />
-      )}
     </div>
   )
 }

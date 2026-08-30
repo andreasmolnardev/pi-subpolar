@@ -39,7 +39,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const refreshSession = useCallback(async () => {
     const result = await fetchSession()
     setUser(result.user)
-    return result
   }, [])
 
   useEffect(() => {

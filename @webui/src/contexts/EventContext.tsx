@@ -513,9 +513,10 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
         case 'session.updated':
           if ('info' in event.properties) {
             const session = event.properties.info
-            rememberSessionDirectory(session.id, event.directory ?? session.directory)
+            const directory = (event as { directory?: string }).directory
+            rememberSessionDirectory(session.id, directory ?? session.directory)
             void updateStoredSession(session.id, {
-              directory: event.directory ?? session.directory ?? null,
+              directory: directory ?? session.directory ?? null,
               title: session.title ?? null,
               projectId: session.projectID ?? null,
             }).then(() => {

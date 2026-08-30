@@ -4,13 +4,6 @@ import { toast } from 'sonner'
 import { settingsApi } from '@/api/settings'
 import { invalidateConfigCaches, invalidateSettingsCaches } from '@/lib/queryInvalidation'
 import { fetchWrapper } from '@/api/fetchWrapper'
-import { useSettingsDialog } from '@/hooks/useSettingsDialog'
-
-const MISSING_PASSWORD_ERROR_PATTERN = /no password is configured|SERVER_PASSWORD/i
-
-function isMissingPasswordError(error: string | undefined): boolean {
-  return !!error && MISSING_PASSWORD_ERROR_PATTERN.test(error)
-}
 
 interface HealthResponse {
   status: 'healthy' | 'degraded' | 'unhealthy'
@@ -27,7 +20,6 @@ async function fetchHealth(): Promise<HealthResponse> {
 
 export function useServerHealth(enabled = true) {
   const queryClient = useQueryClient()
-  const { isOpen: isSettingsOpen, setActiveTab } = useSettingsDialog()
   const lastHealthStatusRef = useRef<'healthy' | 'unhealthy'>('healthy')
   const prevHealthRef = useRef<string | null>(null)
   const hasAutoOpenedSettingsRef = useRef(false)
@@ -81,17 +73,7 @@ export function useServerHealth(enabled = true) {
     const currentStatus = isUnhealthy ? 'unhealthy' : 'healthy'
     const previousStatus = lastHealthStatusRef.current
     const prevHealth = prevHealthRef.current
-    const missingPassword = isUnhealthy && isMissingPasswordError(health.error)
-
-    if (isUnhealthy && missingPassword && !hasAutoOpenedSettingsRef.current && !isSettingsOpen) {
-      hasAutoOpenedSettingsRef.current = true
-      setActiveTab('runtime')
-      toast.error(health.error || 'Server requires a password', {
-        id: 'server-health-password',
-        duration: Infinity,
-        description: 'Set a password under Settings to start the server.',
-      })
-    } else if (prevHealth && currentStatus !== prevHealth) {
+    if (prevHealth && currentStatus !== prevHealth) {
       if (isUnhealthy && previousStatus === 'healthy') {
         toast.error(health.error || 'Server is currently unhealthy', {
           id: 'server-health-unhealthy',
@@ -109,7 +91,7 @@ export function useServerHealth(enabled = true) {
 
     lastHealthStatusRef.current = currentStatus
     prevHealthRef.current = currentStatus
-  }, [health, restartMutation, isSettingsOpen, setActiveTab])
+  }, [health, restartMutation])
 
   return {
     ...query,

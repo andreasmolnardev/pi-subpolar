@@ -128,7 +128,7 @@ function getBelowBubbleParts(role: Message['role'], parts: Part[], bubbleParts: 
   const belowBubbleParts = parts.filter(isBelowBubblePart)
   if (role !== 'assistant' || bubbleParts.length === 0) return belowBubbleParts.filter(part => part.type !== 'step-finish')
 
-  const lastStepFinishIndex = parts.findLastIndex(part => part.type === 'step-finish')
+  const lastStepFinishIndex = parts.findLastIndex((part: Part) => part.type === 'step-finish')
   return belowBubbleParts.filter(part => part.type !== 'step-finish' || parts.indexOf(part) === lastStepFinishIndex)
 }
 
