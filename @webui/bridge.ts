@@ -12,6 +12,8 @@ type SessionRecord = {
   title: string
   createdAt: number
   updatedAt: number
+  profile?: string
+  model?: string
 }
 type RpcCommand = Record<string, unknown> & { type: string }
 type RpcMessage = Record<string, unknown> & { type?: string; id?: string }
@@ -118,6 +120,24 @@ function projectForDirectory(directory: string | undefined): Project {
   return projects()[0]
 }
 
+function profilesForDirectory(directory: string | undefined): Record<string, unknown> {
+  const project = projectForDirectory(directory)
+  const files = [
+    join(homedir(), '.pi', 'agent', 'agents.json'),
+    join(project.path, '.pi', 'agents.json'),
+  ]
+  const profiles: Record<string, unknown> = {
+    master: { systemPrompt: "Pi's normal runtime prompt", tools: [] },
+  }
+
+  for (const file of files) {
+    if (!existsSync(file)) continue
+    try { Object.assign(profiles, object(JSON.parse(readFileSync(file, 'utf8')))) } catch { continue }
+  }
+
+  return profiles
+}
+
 function projectResponse(project: Project, id: number) {
   return {
     id,
@@ -211,6 +231,8 @@ class PiRpcSession {
 
   constructor(readonly record: SessionRecord, project: Project) {
     const args = ['--mode', 'rpc', '--session-id', record.id, '--no-approve', '--no-extensions']
+    if (record.model) args.push('--model', record.model)
+    if (record.profile) args.push('--profile', record.profile)
     for (const extensionPath of extensionPaths) args.push('--extension', extensionPath)
     this.process = spawn('pi', args, { cwd: project.path, stdio: ['pipe', 'pipe', 'pipe'] })
     this.process.stdout.on('data', (chunk: Buffer) => this.read(chunk))
@@ -333,6 +355,52 @@ function openApiProviders(): Record<string, unknown> {
   return redactConfig(providers) as Record<string, unknown>
 }
 
+async function runtimeProviders(): Promise<{ all: Record<string, unknown>[]; connected: string[]; default: Record<string, string> }> {
+  const command = Bun.spawn(['pi', '--list-models'], { cwd: root, stdout: 'pipe', stderr: 'ignore' })
+  const output = await new Response(command.stdout).text()
+  await command.exited
+
+  const providers = new Map<string, Record<string, unknown>>()
+  for (const line of output.split('\n')) {
+    const match = line.trim().match(/^(\S+)\s+(\S+)/)
+    if (!match || match[1] === 'provider') continue
+
+    const providerId = match[1]
+    const modelId = match[2]
+    const provider = providers.get(providerId) ?? {
+      id: providerId,
+      source: 'builtin',
+      name: providerId,
+      env: [],
+      options: {},
+      models: {},
+    }
+    const models = provider.models as Record<string, unknown>
+    models[modelId] = {
+      id: modelId,
+      providerID: providerId,
+      name: modelId,
+      api: { id: modelId, npm: 'pi' },
+      status: 'active',
+      headers: {},
+      options: {},
+      cost: { input: 0, output: 0 },
+      limit: { context: 0, output: 0 },
+      capabilities: {
+        temperature: true,
+        reasoning: true,
+        attachment: false,
+        toolcall: true,
+        input: { text: true, audio: false, image: false, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+      },
+    }
+    providers.set(providerId, provider)
+  }
+
+  return { all: [...providers.values()], connected: [...providers.keys()], default: {} }
+}
+
 async function handle(request: Request): Promise<Response> {
   const url = new URL(request.url)
   const path = url.pathname.split('/').filter(Boolean)
@@ -343,9 +411,18 @@ async function handle(request: Request): Promise<Response> {
     const project = projectResponses().find((item) => item.id === Number(path[2]))
     return project ? json({ project }) : json({ error: 'Project not found' }, 404)
   }
-  if (request.method === 'GET' && url.pathname === '/api/agent') return json([{ name: 'build', mode: 'primary', description: 'Pi default agent' }])
-  if (request.method === 'GET' && url.pathname === '/api/provider') return json({ providers: [], default: {} })
-  if (request.method === 'GET' && url.pathname === '/api/config') return json({ model: undefined, default_agent: 'build', default_permission: 'ask' })
+  if (request.method === 'GET' && url.pathname === '/api/agent') {
+    const profiles = profilesForDirectory(url.searchParams.get('directory') ?? undefined)
+    return json(Object.keys(profiles).map((name) => ({
+      name,
+      mode: 'primary',
+      description: name === 'master' ? 'Pi default profile' : undefined,
+    })))
+  }
+  if (request.method === 'GET' && url.pathname === '/api/provider') {
+    try { return json(await runtimeProviders()) } catch { return json({ all: [], connected: [], default: {} }) }
+  }
+  if (request.method === 'GET' && url.pathname === '/api/config') return json({ model: undefined, default_agent: 'master', default_permission: 'ask' })
   if (request.method === 'GET' && url.pathname === '/api/command') return json([])
   if (request.method === 'GET' && url.pathname === '/api/sessions/status') return json(Object.fromEntries(sessions.map((session) => [session.id, { type: 'idle' }])))
   if (request.method === 'GET' && url.pathname === '/api/sse/stream') {
@@ -392,6 +469,8 @@ async function handle(request: Request): Promise<Response> {
       title: typeof input.title === 'string' && input.title.trim() ? input.title.trim() : 'Untitled session',
       createdAt: now,
       updatedAt: now,
+      profile: typeof input.agent === 'string' && input.agent.trim() ? input.agent : undefined,
+      model: typeof input.model === 'string' && input.model.trim() ? input.model : undefined,
     }
     sessions.push(record)
     await saveState()
@@ -431,6 +510,14 @@ async function handle(request: Request): Promise<Response> {
         const prompt = pendingPrompts.get(id)
         pendingPrompts.delete(id)
         if (!prompt?.content.trim()) return json({ error: 'Prompt content is required' }, 400)
+        const metadata = prompt.metadata ?? {}
+        const model = object(metadata.model)
+        if (typeof model.providerID === 'string' && typeof model.modelID === 'string') {
+          await sendRpc(id, { type: 'set_model', provider: model.providerID, modelId: model.modelID })
+        }
+        if (typeof metadata.agent === 'string' && metadata.agent.trim()) {
+          await sendRpc(id, { type: 'prompt', message: `/profile ${metadata.agent}` })
+        }
         return json(await sendRpc(id, { type: 'prompt', message: prompt.content }))
       }
       if (path.length === 4 && path[3] === 'state' && request.method === 'GET') return json(rpcData(await sendRpc(id, { type: 'get_state' })))
@@ -463,12 +550,7 @@ async function handle(request: Request): Promise<Response> {
   }
 
   if (path[1] === 'extensions' && (path[2] === 'profiles' || path[2] === 'agent-profiles') && request.method === 'GET') {
-    const files = [join(homedir(), '.pi', 'agent', 'agents.json'), join(root, '.pi', 'agents.json')]
-    const profiles: Record<string, unknown> = { master: { systemPrompt: "Pi's normal runtime prompt", tools: [] } }
-    for (const file of files) {
-      if (!existsSync(file)) continue
-      try { Object.assign(profiles, JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>) } catch { continue }
-    }
+    const profiles = profilesForDirectory(url.searchParams.get('directory') ?? undefined)
     return json({ profiles: redactConfig(profiles) })
   }
 

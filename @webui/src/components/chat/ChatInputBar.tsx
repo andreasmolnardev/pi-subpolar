@@ -373,7 +373,10 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     }
 
     try {
-      const session = await createSession.mutateAsync({});
+      const session = await createSession.mutateAsync({
+        agent: selectedAgentForRequest,
+        model: selectedModel === "__auto__" ? undefined : selectedModel,
+      });
 
       if (sendImmediately) {
         setActiveSessionId(session.id);
@@ -534,10 +537,10 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
               onValueChange={setSelectedAgent}
             >
               <SelectTrigger className="h-8 text-xs border-0 bg-transparent focus:ring-0 focus:ring-offset-0 gap-2">
-                <SelectValue placeholder="Agent" />
+                <SelectValue placeholder="Profile" />
               </SelectTrigger>
               <SelectContent className="max-h-[300px] overflow-y-auto">
-                <SelectItem value="__default__">Agent</SelectItem>
+                <SelectItem value="__default__">Default profile</SelectItem>
                 {visibleAgents.map((agent) => (
                   <SelectItem key={agent.name} value={agent.name}>
                     {agent.name}
