@@ -168,9 +168,19 @@ function rpcData(value: unknown): unknown {
   return response.data ?? value
 }
 
-function normalizeMessages(sessionId: string, value: unknown) {
+function parseModelSelection(model: string | undefined): { providerID: string; modelID: string } | undefined {
+  if (!model) return undefined
+  const [providerID, ...rest] = model.split('/')
+  const modelID = rest.join('/')
+  return providerID && modelID ? { providerID, modelID } : undefined
+}
+
+function normalizeMessages(sessionId: string, value: unknown, selection?: Pick<SessionRecord, 'profile' | 'model'>) {
   const messages = object(rpcData(value)).messages
   if (!Array.isArray(messages)) return { messages: [] }
+  const latestUserIndex = messages.reduce((latest, message, index) => (
+    object(message).role === 'user' ? index : latest
+  ), -1)
   return {
     messages: messages.map((message, index) => {
       const item = object(message)
@@ -184,12 +194,20 @@ function normalizeMessages(sessionId: string, value: unknown) {
       })
       const content = sessionMessageText(message)
       const metadata = object(item.metadata)
+      const restoredMetadata = item.role === 'user' && index === latestUserIndex
+        ? {
+            ...(selection?.profile && !metadata.agent ? { agent: selection.profile } : {}),
+            ...(selection?.model && !metadata.model ? { model: parseModelSelection(selection.model) } : {}),
+          }
+        : {}
       return {
         id: typeof item.id === 'string' ? item.id : `${sessionId}-${index}`,
         role: typeof item.role === 'string' ? item.role : 'assistant',
         content,
         createdAt: typeof item.timestamp === 'number' ? item.timestamp : Date.now(),
-        metadata: item.role === 'assistant' && assistantParts.length > 0 ? { ...metadata, assistantParts } : metadata,
+        metadata: item.role === 'assistant' && assistantParts.length > 0
+          ? { ...metadata, assistantParts }
+          : { ...metadata, ...restoredMetadata },
       }
     }),
   }
@@ -238,6 +256,7 @@ class PiRpcSession {
     this.process.stdout.on('data', (chunk: Buffer) => this.read(chunk))
     this.process.stderr.on('data', () => undefined)
     this.process.on('close', () => {
+      if (active.get(this.record.id) === this) active.delete(this.record.id)
       for (const request of this.pending.values()) request.reject(new Error('Pi RPC process exited'))
       this.pending.clear()
     })
@@ -500,10 +519,22 @@ async function handle(request: Request): Promise<Response> {
         await saveState()
         return json({ ok: true })
       }
-      if (path.length === 4 && path[3] === 'messages' && request.method === 'GET') return json(normalizeMessages(id, await sendRpc(id, { type: 'get_messages' })))
+      if (path.length === 4 && path[3] === 'messages' && request.method === 'GET') {
+        const record = recordFor(id)
+        return json(normalizeMessages(id, await sendRpc(id, { type: 'get_messages' }), record))
+      }
       if (path.length === 4 && path[3] === 'messages' && request.method === 'POST') {
         const input = await body(request)
-        pendingPrompts.set(id, { content: typeof input.content === 'string' ? input.content : '', metadata: object(input.metadata) })
+        const metadata = object(input.metadata)
+        const record = recordFor(id)
+        const agent = typeof metadata.agent === 'string' && metadata.agent.trim() ? metadata.agent : 'master'
+        const model = object(metadata.model)
+        record.profile = agent
+        if (typeof model.providerID === 'string' && typeof model.modelID === 'string') {
+          record.model = `${model.providerID}/${model.modelID}`
+        }
+        await saveState()
+        pendingPrompts.set(id, { content: typeof input.content === 'string' ? input.content : '', metadata })
         return json({ ok: true }, 201)
       }
       if (path.length === 4 && path[3] === 'runs' && request.method === 'POST') {
@@ -515,9 +546,7 @@ async function handle(request: Request): Promise<Response> {
         if (typeof model.providerID === 'string' && typeof model.modelID === 'string') {
           await sendRpc(id, { type: 'set_model', provider: model.providerID, modelId: model.modelID })
         }
-        if (typeof metadata.agent === 'string' && metadata.agent.trim()) {
-          await sendRpc(id, { type: 'prompt', message: `/profile ${metadata.agent}` })
-        }
+        await sendRpc(id, { type: 'prompt', message: `/profile ${typeof metadata.agent === 'string' && metadata.agent.trim() ? metadata.agent : 'master'}` })
         return json(await sendRpc(id, { type: 'prompt', message: prompt.content }))
       }
       if (path.length === 4 && path[3] === 'state' && request.method === 'GET') return json(rpcData(await sendRpc(id, { type: 'get_state' })))

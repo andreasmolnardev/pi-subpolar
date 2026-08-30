@@ -250,7 +250,10 @@ export function DesktopSidebar() {
     () => new Set((preferences?.hiddenSidebarAgents ?? DEFAULT_USER_PREFERENCES.hiddenSidebarAgents).map((name) => name.toLowerCase())),
     [preferences?.hiddenSidebarAgents],
   );
-  const navigableProjects = useMemo(() => projects?.filter(hasProjectId) ?? [], [projects]);
+  const navigableProjects = useMemo(
+    () => projects?.filter((project) => hasProjectId(project) && project.id !== GENERAL_CHAT_PROJECT_ID) ?? [],
+    [projects],
+  );
   const selectedSidebarProject = selectedSidebarProjectId === String(GENERAL_CHAT_PROJECT_ID)
     ? generalChatProject
     : navigableProjects.find((project) => String(project.id) === selectedSidebarProjectId);
