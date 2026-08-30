@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -104,6 +104,100 @@ function projects(): Project[] {
     ...readProjectsFile(join(root, '.pi', 'projects.json'), root),
   ]
   return [...new Map(values.map((project) => [project.name, project])).values()]
+}
+
+function nativeSessionsDir(): string {
+  const agentDir = process.env.PI_CODING_AGENT_DIR
+    ? resolve(process.env.PI_CODING_AGENT_DIR.replace(/^~/, homedir()))
+    : join(homedir(), '.pi', 'agent')
+  return process.env.PI_CODING_AGENT_SESSION_DIR
+    ? resolve(process.env.PI_CODING_AGENT_SESSION_DIR.replace(/^~/, homedir()))
+    : join(agentDir, 'sessions')
+}
+
+function entryTimestamp(value: unknown, fallback: number): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return fallback
+}
+
+function nativeSessionRecord(filePath: string, knownProjects: Project[]): SessionRecord | undefined {
+  try {
+    const lines = readFileSync(filePath, 'utf8').split('\n')
+    const header = object(JSON.parse(lines[0] ?? ''))
+    if (header.type !== 'session' || typeof header.id !== 'string' || typeof header.cwd !== 'string') return undefined
+
+    const project = knownProjects.find((item) => item.path === resolve(header.cwd as string))
+    if (!project) return undefined
+
+    const createdAt = entryTimestamp(header.timestamp, 0)
+    let updatedAt = createdAt
+    let title: string | undefined
+    let firstMessage: string | undefined
+
+    for (const line of lines) {
+      if (!line.trim()) continue
+      let entry: Record<string, unknown>
+      try { entry = object(JSON.parse(line)) } catch { continue }
+      updatedAt = Math.max(updatedAt, entryTimestamp(entry.timestamp, updatedAt))
+      if (entry.type === 'session_info' && typeof entry.name === 'string' && entry.name.trim()) {
+        title = entry.name.trim()
+      }
+      if (entry.type === 'message' && !firstMessage) {
+        const message = object(entry.message)
+        if (message.role === 'user') {
+          const text = sessionMessageText(message).replace(/\s+/g, ' ').trim()
+          if (text) firstMessage = text.slice(0, 120)
+        }
+      }
+    }
+
+    return {
+      id: header.id,
+      project: project.name,
+      title: title ?? firstMessage ?? 'Untitled session',
+      createdAt,
+      updatedAt,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function nativeSessionRecords(): SessionRecord[] {
+  const directory = nativeSessionsDir()
+  if (!existsSync(directory)) return []
+
+  try {
+    const knownProjects = projects()
+    return readdirSync(directory, { withFileTypes: true }).flatMap((projectDirectory) => {
+      if (!projectDirectory.isDirectory()) return []
+      return readdirSync(join(directory, projectDirectory.name), { withFileTypes: true }).flatMap((file) => {
+        if (!file.isFile() || !file.name.endsWith('.jsonl')) return []
+        const record = nativeSessionRecord(join(directory, projectDirectory.name, file.name), knownProjects)
+        return record ? [record] : []
+      })
+    })
+  } catch {
+    return []
+  }
+}
+
+function syncNativeSessions(): void {
+  const current = new Map(sessions.map((session) => [session.id, session]))
+  for (const native of nativeSessionRecords()) {
+    const stored = current.get(native.id)
+    if (!stored) {
+      sessions.push(native)
+      continue
+    }
+    if (stored.title === 'Untitled session' && native.title !== 'Untitled session') stored.title = native.title
+    stored.createdAt = Math.min(stored.createdAt, native.createdAt)
+    stored.updatedAt = Math.max(stored.updatedAt, native.updatedAt)
+  }
 }
 
 function projectFor(name: string | undefined): Project {
@@ -324,6 +418,7 @@ process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
 function recordFor(id: string): SessionRecord {
+  syncNativeSessions()
   const record = sessions.find((session) => session.id === id)
   if (!record) throw new Error(`Unknown session: ${id}`)
   return record
@@ -443,7 +538,10 @@ async function handle(request: Request): Promise<Response> {
   }
   if (request.method === 'GET' && url.pathname === '/api/config') return json({ model: undefined, default_agent: 'master', default_permission: 'ask' })
   if (request.method === 'GET' && url.pathname === '/api/command') return json([])
-  if (request.method === 'GET' && url.pathname === '/api/sessions/status') return json(Object.fromEntries(sessions.map((session) => [session.id, { type: 'idle' }])))
+  if (request.method === 'GET' && url.pathname === '/api/sessions/status') {
+    syncNativeSessions()
+    return json(Object.fromEntries(sessions.map((session) => [session.id, { type: 'idle' }])))
+  }
   if (request.method === 'GET' && url.pathname === '/api/sse/stream') {
     let heartbeat: ReturnType<typeof setInterval> | undefined
     const stream = new ReadableStream<Uint8Array>({
@@ -467,6 +565,7 @@ async function handle(request: Request): Promise<Response> {
   if (path[0] !== 'api') return json({ error: 'Not found' }, 404)
 
   if (path[1] === 'sessions' && path.length === 2 && request.method === 'GET') {
+    syncNativeSessions()
     const project = url.searchParams.get('project')
     const directory = url.searchParams.get('directory')
     return json({ sessions: sessions
