@@ -7,6 +7,12 @@ Local browser UI for the Pi installation in this repository. The bridge starts o
 From repository root:
 
 ```sh
+./start-webui.sh
+```
+
+Equivalent manual startup:
+
+```sh
 bun @webui/bridge.ts
 cd @webui && npm run dev
 ```
