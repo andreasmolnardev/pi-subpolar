@@ -1,0 +1,165 @@
+import { useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { createSubpolarClient } from '@/api/subpolar'
+import { useCreateSession } from '@/hooks/usePiHarness'
+import { useModelSelection } from '@/hooks/useModelSelection'
+import { showToast } from '@/lib/toast'
+import type { components } from '@/api/opencode-types'
+import { useSessionStatus } from '@/stores/sessionStatusStore'
+
+type CommandType = components['schemas']['Command']
+
+interface CommandHandlerProps {
+  apiUrl: string
+  sessionID: string
+  directory?: string
+  onShowSessionsDialog?: () => void
+  onShowModelsDialog?: () => void
+  onShowHelpDialog?: () => void
+  onToggleDetails?: () => boolean
+  onExportSession?: () => void
+  currentAgent?: string
+}
+
+export function useCommandHandler({
+  apiUrl,
+  sessionID,
+  directory,
+  onShowSessionsDialog,
+  onShowModelsDialog,
+  onShowHelpDialog,
+  onToggleDetails,
+  onExportSession,
+  currentAgent
+}: CommandHandlerProps) {
+  const navigate = useNavigate()
+  const createSession = useCreateSession(apiUrl, directory)
+  const { model, modelString } = useModelSelection(apiUrl, directory)
+  const setSessionStatus = useSessionStatus((state) => state.setStatus)
+  const [loading, setLoading] = useState(false)
+
+  const executeCommand = useCallback(async (command: CommandType, args: string = '') => {
+    if (!apiUrl) return
+
+    setLoading(true)
+    
+    try {
+      const client = createSubpolarClient(apiUrl, directory)
+      
+      switch (command.name) {
+        case 'sessions':
+        case 'resume':
+        case 'continue':
+          onShowSessionsDialog?.()
+          break
+          
+        case 'models':
+          onShowModelsDialog?.()
+          break
+          
+        case 'themes': {
+          await client.sendCommand(sessionID, {
+            command: command.name,
+            arguments: args,
+            agent: currentAgent,
+            model: modelString || undefined
+          })
+          break
+        }
+          
+        case 'help':
+          onShowHelpDialog?.()
+          break
+          
+        case 'new':
+        case 'clear': {
+          try {
+            const newSession = await createSession.mutateAsync({
+              agent: undefined
+            })
+            if (newSession?.id) {
+              const currentPath = window.location.pathname
+              const repoMatch = currentPath.match(/\/repos\/(\d+)\/sessions\//)
+              if (repoMatch) {
+                const repoId = repoMatch[1]
+                const newPath = `/repos/${repoId}/sessions/${newSession.id}`
+                navigate(newPath)
+              } else {
+                navigate(`/session/${newSession.id}`)
+              }
+            }
+          } catch (error) {
+            showToast.error(`Failed to create new session: ${error instanceof Error ? error.message : 'Unknown error'}`)
+          }
+          break
+        }
+          
+        case 'details':
+          if (onToggleDetails) {
+            const expanded = onToggleDetails()
+            showToast.success(expanded ? 'Tool details expanded' : 'Tool details collapsed')
+          }
+          break
+          
+        case 'export':
+          if (onExportSession) {
+            onExportSession()
+          }
+          break
+
+        case 'compact':
+        case 'summarize': {
+          if (!model?.providerID || !model?.modelID) {
+            showToast.error('No model selected. Please select a provider and model first.')
+            break
+          }
+
+          showToast.loading('Compacting session...', { id: `compact-${sessionID}` })
+
+          setSessionStatus(sessionID, { type: 'compact' })
+
+          await client.summarizeSession(
+            sessionID,
+            model.providerID,
+            model.modelID
+          )
+          break
+        }
+          
+        case 'share':
+        case 'unshare':
+        case 'undo':
+        case 'redo':
+        case 'editor':
+        case 'init': {
+          await client.sendCommand(sessionID, {
+            command: command.name,
+            arguments: args,
+            agent: currentAgent,
+            model: modelString || undefined
+          })
+          break
+        }
+
+        default: {
+          await client.sendCommand(sessionID, {
+            command: command.name,
+            arguments: args,
+            agent: currentAgent,
+            model: modelString || undefined
+          })
+        }
+      }
+    } catch (error) {
+      showToast.error(`Command failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      setSessionStatus(sessionID, { type: 'idle' })
+    } finally {
+      setLoading(false)
+    }
+  }, [sessionID, apiUrl, directory, onShowSessionsDialog, onShowModelsDialog, onShowHelpDialog, onToggleDetails, onExportSession, createSession, navigate, model, modelString, currentAgent, setSessionStatus])
+
+  return {
+    executeCommand,
+    loading
+  }
+}

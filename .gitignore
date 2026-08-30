@@ -1,0 +1,6 @@
+.pi/
+@webui/node_modules/
+@webui/dist/
+@webui/.sessions.json
+.DS_Store
+*.log

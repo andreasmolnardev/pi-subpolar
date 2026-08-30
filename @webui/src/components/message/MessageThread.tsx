@@ -1,0 +1,559 @@
+import { memo, useMemo, useState, useCallback, useEffect } from 'react'
+import { Pencil, Send } from 'lucide-react'
+import { MessagePart } from './MessagePart'
+import { UserMessageActionButtons } from './UserMessageActionButtons'
+import { EditableUserMessage, ClickableUserMessage } from './EditableUserMessage'
+import { MessageError } from './MessageError'
+import type { Message, Part, MessageWithParts } from '@/api/types'
+import { useSessionStatusForSession } from '@/stores/sessionStatusStore'
+import { useSessionTodos } from '@/stores/sessionTodosStore'
+import { useSettings } from '@/hooks/useSettings'
+import type { components } from '@/api/opencode-types'
+import type { Todo } from '@/components/message/SessionTodoDisplay'
+import type { RuntimeError } from '@/lib/runtime-errors'
+
+function getMessageTextContent(parts: Part[]): string {
+  return parts
+    .filter(p => p.type === 'text')
+    .map(p => p.text || '')
+    .join('\n\n')
+    .trim()
+}
+
+interface MessageThreadProps {
+  apiUrl: string
+  sessionID: string
+  directory?: string
+  messages?: MessageWithParts[]
+  onFileClick?: (filePath: string, lineNumber?: number) => void
+  onChildSessionClick?: (sessionId: string) => void
+  onUndoMessage?: (restoredPrompt: string) => void
+  model?: string
+}
+
+function SendingIndicator() {
+  return (
+    <div className="flex flex-col items-start">
+      <div className="flex items-center gap-2 px-1 py-1 text-sm text-muted-foreground">
+        <Send className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="reasoning-text-trail font-medium">Sending...</span>
+      </div>
+    </div>
+  )
+}
+
+const isMessageStreaming = (msg: Message): boolean => {
+  if (msg.role !== 'assistant') return false
+  return !('completed' in msg.time && msg.time.completed)
+}
+
+function isSessionStatusActive(sessionStatus: { type?: string }): boolean {
+  return sessionStatus?.type !== undefined && sessionStatus.type !== 'idle'
+}
+
+const compareMessageIds = (id1: string, id2: string): number => {
+  const num1 = parseInt(id1, 10)
+  const num2 = parseInt(id2, 10)
+  if (!isNaN(num1) && !isNaN(num2)) return num1 - num2
+  return id1.localeCompare(id2)
+}
+
+const hasRenderableContent = (role: Message['role'], parts: Part[], simpleChatMode: boolean, showReasoning: boolean): boolean => {
+  if (!parts || parts.length === 0) return false
+   
+  return parts.some(part => {
+    switch (part.type) {
+      case 'text':
+        return !!(part.text && part.text.trim())
+      case 'reasoning':
+        return !simpleChatMode && showReasoning && !!(part.text && part.text.trim())
+      case 'file':
+        return role === 'user'
+      case 'patch':
+      case 'snapshot':
+      case 'agent':
+        return !simpleChatMode
+      case 'tool':
+        return !simpleChatMode || part.tool === 'task'
+      case 'retry':
+        return true
+      case 'step-finish':
+      case 'step-start':
+      case 'compaction':
+        return false
+      case 'subtask':
+        return true
+      default:
+        return false
+    }
+  })
+}
+
+function isTaskToolPart(part: Part): part is components['schemas']['ToolPart'] {
+  return part.type === 'tool' && part.tool === 'task'
+}
+
+function isSubAgentActivityPart(part: Part): boolean {
+  return part.type === 'subtask' || isTaskToolPart(part)
+}
+
+function hasTextContent(parts: Part[]): boolean {
+  return parts.some(p => p.type === 'text' && !!(p.text && p.text.trim()))
+}
+
+function isBubblePart(part: Part): boolean {
+  return part.type === 'text' && !part.synthetic && !!part.text?.trim()
+}
+
+function isGenerationStepPart(part: Part): boolean {
+  if (part.type === 'reasoning') return !!part.text?.trim()
+  if (part.type === 'tool') return part.state.status === 'pending' || part.state.status === 'running'
+  if (part.type === 'text') return !part.synthetic && !!part.text?.trim()
+  return false
+}
+
+function getActiveGenerationPartIndex(parts: Part[]): number | undefined {
+  for (let index = parts.length - 1; index >= 0; index--) {
+    if (isGenerationStepPart(parts[index])) return index
+  }
+
+  return undefined
+}
+
+function isBelowBubblePart(part: Part): boolean {
+  return part.type === 'step-finish' || part.type === 'retry'
+}
+
+function getBelowBubbleParts(role: Message['role'], parts: Part[], bubbleParts: Part[]): Part[] {
+  const belowBubbleParts = parts.filter(isBelowBubblePart)
+  if (role !== 'assistant' || bubbleParts.length === 0) return belowBubbleParts.filter(part => part.type !== 'step-finish')
+
+  const lastStepFinishIndex = parts.findLastIndex(part => part.type === 'step-finish')
+  return belowBubbleParts.filter(part => part.type !== 'step-finish' || parts.indexOf(part) === lastStepFinishIndex)
+}
+
+function isIgnorableSubAgentMessagePart(part: Part): boolean {
+  if (part.type === 'step-start' || part.type === 'step-finish' || part.type === 'compaction') {
+    return true
+  }
+  if (part.type === 'text') {
+    return !part.text?.trim()
+  }
+  if (part.type === 'reasoning') {
+    return true
+  }
+  return false
+}
+
+function isStandaloneSubAgentMessage(role: Message['role'], parts: Part[]): boolean {
+  if (role !== 'assistant') return false
+  if (parts.length === 0) return false
+  if (hasTextContent(parts)) return false
+  
+  const hasSubAgentActivity = parts.some(isSubAgentActivityPart)
+  const allPartsAreSubAgentOrStructural = parts.every(part => {
+    if (isIgnorableSubAgentMessagePart(part)) {
+      return true
+    }
+    return isSubAgentActivityPart(part)
+  })
+  
+  return hasSubAgentActivity && allPartsAreSubAgentOrStructural
+}
+
+const findLastMessageByRole = (
+  messages: MessageWithParts[],
+  role: 'user' | 'assistant',
+  predicate?: (msg: Message) => boolean
+): string | undefined => {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i].info
+    if (msg.role === role && (!predicate || predicate(msg))) {
+      return msg.id
+    }
+  }
+  return undefined
+}
+
+interface MessageRowProps {
+  msgWithParts: MessageWithParts
+  nextAssistantMessage: MessageWithParts | undefined
+  pendingAssistantId: string | undefined
+  lastUserMessageId: string | undefined
+  isSessionBusy: boolean
+  onUndoMessage?: (restoredPrompt: string) => void
+  editingUserMessageId: string | null
+  editingForAssistantId: string | null
+  apiUrl: string
+  sessionID: string
+  directory?: string
+  onFileClick?: (filePath: string, lineNumber?: number) => void
+  onChildSessionClick?: (sessionId: string) => void
+  handleStartEditUserMessage: (userMessageId: string, assistantMessageId: string) => void
+  handleCancelEdit: () => void
+  model?: string
+  simpleChatMode: boolean
+  showReasoning: boolean
+}
+
+const MessageRow = memo(function MessageRow({
+  msgWithParts,
+  nextAssistantMessage,
+  pendingAssistantId,
+  lastUserMessageId,
+  isSessionBusy,
+  onUndoMessage,
+  editingUserMessageId,
+  editingForAssistantId,
+  apiUrl,
+  sessionID,
+  directory,
+  onFileClick,
+  onChildSessionClick,
+  handleStartEditUserMessage,
+  handleCancelEdit,
+  model,
+  simpleChatMode,
+  showReasoning,
+}: MessageRowProps) {
+  const msg = msgWithParts.info
+  const parts = msgWithParts.parts
+  const streaming = isMessageStreaming(msg)
+  const activeGenerationPartIndex = streaming ? getActiveGenerationPartIndex(parts) : undefined
+  const isQueued = msg.role === 'user' && pendingAssistantId && compareMessageIds(msg.id, pendingAssistantId) > 0
+  const isLastUserMessage = msg.role === 'user' && msg.id === lastUserMessageId
+  const messageTextContent = getMessageTextContent(parts)
+  const assistantMetadata = msg.role === 'assistant'
+    ? {
+      modelID: 'modelID' in msg ? msg.modelID : undefined,
+      created: msg.time?.created,
+      completed: 'completed' in msg.time ? msg.time.completed : undefined,
+    }
+    : undefined
+
+  const nextAssistantMsg = nextAssistantMessage?.info
+  const isUserBeforeAssistant = msg.role === 'user' && nextAssistantMessage
+  const canEditUserMessage = isLastUserMessage && isUserBeforeAssistant && !isSessionBusy
+  const canUndoUserMessage = isLastUserMessage && nextAssistantMessage && !isSessionBusy && onUndoMessage
+
+  const isEditingThisMessage = editingUserMessageId === msg.id
+
+  const hasContent = hasRenderableContent(msg.role, parts, simpleChatMode, showReasoning)
+  const hasError = msg.role === 'assistant' && 'error' in msg && msg.error
+  const standaloneSubAgentMessage = isStandaloneSubAgentMessage(msg.role, parts)
+  const bubbleParts = parts.filter(isBubblePart)
+  const aboveBubbleParts = parts.filter(part => !isBubblePart(part) && !isBelowBubblePart(part))
+  const belowBubbleParts = getBelowBubbleParts(msg.role, parts, bubbleParts)
+  const messageAlignment = msg.role === 'user' ? 'items-end' : 'items-start'
+  const messageWidth = msg.role === 'user' ? 'max-w-[80%]' : 'w-full'
+
+  if (!hasContent && !hasError) {
+    return null
+  }
+
+  if (standaloneSubAgentMessage) {
+    return (
+      <div
+        key={msg.id}
+        className="flex flex-col group"
+      >
+        <div className="space-y-1">
+          {parts.filter(isSubAgentActivityPart).map((part, partIndex) => (
+            <div key={`${msg.id}-${part.id}-${partIndex}`}>
+              <MessagePart
+                part={part}
+                role={msg.role}
+                allParts={parts}
+                partIndex={partIndex}
+                onFileClick={onFileClick}
+                onChildSessionClick={onChildSessionClick}
+                messageTextContent={messageTextContent}
+                isActiveGenerationStep={streaming && parts.indexOf(part) === activeGenerationPartIndex}
+                assistantMetadata={assistantMetadata}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      key={msg.id}
+      className={`flex flex-col group ${messageAlignment}`}
+    >
+      <div className={`flex flex-col gap-1 ${messageWidth}`}>
+        <div className="flex items-center justify-between gap-2 px-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">
+              {msg.role === 'user' ? 'You' : 'General Chat'}
+            </span>
+            {msg.role === 'user' && msg.time && (
+              <span className="text-xs text-muted-foreground">
+                {new Date(msg.time.created).toLocaleTimeString()}
+              </span>
+            )}
+            {canEditUserMessage && nextAssistantMsg && (
+              <button
+                onClick={() => handleStartEditUserMessage(msg.id, nextAssistantMsg.id)}
+                className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                title="Edit message"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {isQueued && (
+              <span className="text-xs font-semibold bg-amber-500 text-amber-950 px-1.5 py-0.5 rounded">
+                QUEUED
+              </span>
+            )}
+          </div>
+          
+          {msg.role === 'user' && canUndoUserMessage && (
+            <UserMessageActionButtons
+              apiUrl={apiUrl}
+              sessionId={sessionID}
+              directory={directory}
+              userMessageId={msg.id}
+              userMessageContent={messageTextContent}
+              onUndo={onUndoMessage}
+            />
+          )}
+        </div>
+
+        {aboveBubbleParts.length > 0 && (
+          <div className="space-y-2">
+            {aboveBubbleParts.map((part: Part, partIndex: number) => (
+              <div key={`${msg.id}-${part.id}-${partIndex}`}>
+                <MessagePart
+                  part={part}
+                  role={msg.role}
+                  allParts={parts}
+                  partIndex={parts.indexOf(part)}
+                  onFileClick={onFileClick}
+                  onChildSessionClick={onChildSessionClick}
+                  messageTextContent={msg.role === 'assistant' ? messageTextContent : undefined}
+                  isActiveGenerationStep={streaming && parts.indexOf(part) === activeGenerationPartIndex}
+                  assistantMetadata={assistantMetadata}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {(bubbleParts.length > 0 || (msg.role === 'user' && isEditingThisMessage && editingForAssistantId) || hasError) && (
+          <div
+            className={`rounded-lg p-1.5 ${
+              msg.role === 'user'
+                ? isQueued
+                  ? 'bg-amber-500/10 border border-amber-500/30'
+                  : isEditingThisMessage
+                    ? 'bg-blue-600/30 border border-blue-600/50'
+                    : 'bg-blue-600/20 border border-blue-600/30'
+                : 'bg-card/50 border border-border'
+            } ${streaming ? 'animate-pulse-subtle' : ''}`}
+          >
+            <div className="space-y-2">
+              {msg.role === 'user' && isEditingThisMessage && editingForAssistantId ? (
+                <EditableUserMessage
+                  apiUrl={apiUrl}
+                  sessionId={sessionID}
+                  directory={directory}
+                  content={messageTextContent}
+                  assistantMessageId={editingForAssistantId}
+                  onCancel={handleCancelEdit}
+                  model={model}
+                />
+              ) : msg.role === 'user' && canEditUserMessage && nextAssistantMsg ? (
+                <ClickableUserMessage
+                  content={messageTextContent}
+                  onClick={() => handleStartEditUserMessage(msg.id, nextAssistantMsg.id)}
+                  isEditable={false}
+                />
+              ) : msg.role === 'user' && simpleChatMode ? (
+                <ClickableUserMessage
+                  content={messageTextContent}
+                  onClick={() => {}}
+                  isEditable={false}
+                />
+              ) : bubbleParts.length > 0 ? (
+                bubbleParts.map((part: Part, partIndex: number) => (
+                  <div key={`${msg.id}-${part.id}-${partIndex}`}>
+                    <MessagePart
+                      part={part}
+                      role={msg.role}
+                      allParts={parts}
+                      partIndex={parts.indexOf(part)}
+                      onFileClick={onFileClick}
+                      onChildSessionClick={onChildSessionClick}
+                      messageTextContent={msg.role === 'assistant' ? messageTextContent : undefined}
+                      isActiveGenerationStep={streaming && parts.indexOf(part) === activeGenerationPartIndex}
+                      assistantMetadata={assistantMetadata}
+                    />
+                  </div>
+                ))
+              ) : null}
+              {hasError && (
+                <MessageError error={msg.error as RuntimeError} />
+              )}
+            </div>
+          </div>
+        )}
+
+        {belowBubbleParts.length > 0 && (
+          <div className="space-y-2">
+            {belowBubbleParts.map((part: Part, partIndex: number) => (
+              <div key={`${msg.id}-${part.id}-${partIndex}`}>
+                <MessagePart
+                  part={part}
+                  role={msg.role}
+                  allParts={parts}
+                  partIndex={parts.indexOf(part)}
+                  onFileClick={onFileClick}
+                  onChildSessionClick={onChildSessionClick}
+                  messageTextContent={msg.role === 'assistant' ? messageTextContent : undefined}
+                  isActiveGenerationStep={streaming && parts.indexOf(part) === activeGenerationPartIndex}
+                  assistantMetadata={assistantMetadata}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+})
+
+export const MessageThread = memo(function MessageThread({ 
+  apiUrl, 
+  sessionID, 
+  directory, 
+  messages, 
+  onFileClick, 
+  onChildSessionClick,
+  onUndoMessage,
+  model
+}: MessageThreadProps) {
+  const [editingUserMessageId, setEditingUserMessageId] = useState<string | null>(null)
+  const [editingForAssistantId, setEditingForAssistantId] = useState<string | null>(null)
+  const sessionStatus = useSessionStatusForSession(sessionID)
+  const { preferences } = useSettings()
+  const simpleChatMode = preferences?.simpleChatMode ?? false
+  const showReasoning = preferences?.showReasoning ?? false
+  
+  const pendingAssistantId = useMemo(() => {
+    if (!messages) return undefined
+    return findLastMessageByRole(messages, 'assistant', isMessageStreaming)
+  }, [messages])
+
+  const lastUserMessageId = useMemo(() => {
+    if (!messages) return undefined
+    return findLastMessageByRole(messages, 'user')
+  }, [messages])
+
+  const nextAssistantByMessageId = useMemo(() => {
+    const map = new Map<string, MessageWithParts | undefined>()
+    if (!messages) return map
+    let next: MessageWithParts | undefined
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      map.set(msg.info.id, next)
+      if (msg.info.role === 'assistant') {
+        next = msg
+      }
+    }
+    return map
+  }, [messages])
+
+  const isSessionBusy = !!pendingAssistantId || isSessionStatusActive(sessionStatus)
+  const isWaitingForAssistantResponse = isSessionStatusActive(sessionStatus) && !pendingAssistantId
+  const setSessionTodos = useSessionTodos((state) => state.setTodos)
+
+  useEffect(() => {
+    if (!messages || messages.length === 0) return
+
+    const allParts = messages.flatMap(m => m.parts)
+
+    const latestTodoPart = allParts
+      .filter((part): part is components['schemas']['ToolPart'] => part.type === 'tool' && (part.tool === 'todowrite' || part.tool === 'todoread'))
+      .filter(part => part.state.status === 'completed' && 'time' in part.state)
+      .sort((a, b) => {
+        const aState = a.state as { time?: { end?: number } }
+        const bState = b.state as { time?: { end?: number } }
+        const aEndTime = aState.time?.end ?? 0
+        const bEndTime = bState.time?.end ?? 0
+        return bEndTime - aEndTime
+      })[0]
+
+    if (latestTodoPart) {
+      const state = latestTodoPart.state
+      let todos: Todo[] = []
+
+      if ('metadata' in state && state.metadata?.todos && Array.isArray(state.metadata.todos)) {
+        todos = state.metadata.todos as Todo[]
+      } else if ('output' in state && state.output) {
+        try {
+          const parsed = JSON.parse(state.output)
+          todos = Array.isArray(parsed)
+            ? parsed as Todo[]
+            : parsed?.todos ? parsed.todos as Todo[]
+            : []
+        } catch (_) {
+          console.warn('Failed to parse todo output:', _)
+        }
+      }
+
+      if (todos.length > 0) {
+        setSessionTodos(sessionID, todos)
+      }
+    }
+  }, [messages, sessionID, setSessionTodos])
+
+  const handleStartEditUserMessage = useCallback((userMessageId: string, assistantMessageId: string) => {
+    setEditingUserMessageId(userMessageId)
+    setEditingForAssistantId(assistantMessageId)
+  }, [])
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingUserMessageId(null)
+    setEditingForAssistantId(null)
+  }, [])
+  
+  if (!messages || messages.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full text-muted-foreground">
+        No messages yet. Start a conversation below.
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col space-y-2 p-2 overflow-x-hidden">
+      {messages.map((msgWithParts) => (
+        <MessageRow
+          key={msgWithParts.info.id}
+          msgWithParts={msgWithParts}
+          nextAssistantMessage={nextAssistantByMessageId.get(msgWithParts.info.id)}
+          pendingAssistantId={pendingAssistantId}
+          lastUserMessageId={lastUserMessageId}
+          isSessionBusy={isSessionBusy}
+          onUndoMessage={onUndoMessage}
+          editingUserMessageId={editingUserMessageId}
+          editingForAssistantId={editingForAssistantId}
+          apiUrl={apiUrl}
+          sessionID={sessionID}
+          directory={directory}
+          onFileClick={onFileClick}
+          onChildSessionClick={onChildSessionClick}
+          handleStartEditUserMessage={handleStartEditUserMessage}
+          handleCancelEdit={handleCancelEdit}
+          model={model}
+          simpleChatMode={simpleChatMode}
+          showReasoning={showReasoning}
+        />
+      ))}
+      {isWaitingForAssistantResponse && <SendingIndicator />}
+    </div>
+  )
+})
