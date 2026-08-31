@@ -27,7 +27,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-const MANAGEMENT_TOOL = "manage_openapi_tools";
+const MANAGEMENT_TOOL = "manage_external_tools";
 const require = createRequire(import.meta.url);
 
 type AnyObject = Record<string, any>;
@@ -254,9 +254,9 @@ export default function openapiTools(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: MANAGEMENT_TOOL,
-    label: "Manage OpenAPI Tools",
-    description: "Add, edit, delete, or inspect OpenAPI HTTP tool providers. Supports baseUrl, headers, operations, and skipTlsVerify. Master profile only.",
-    promptSnippet: "Manage configured OpenAPI tools",
+    label: "Manage External Tools",
+    description: "Add, edit, delete, or inspect external HTTP tool providers. Supports OpenAPI providers with baseUrl, headers, operations, and skipTlsVerify. Master profile only.",
+    promptSnippet: "Manage configured external tools",
     parameters: Type.Object({
       action: Type.String({ description: "One of: add, edit, delete, get" }),
       provider: Type.Optional(Type.String({ description: "Provider name, such as web" })),

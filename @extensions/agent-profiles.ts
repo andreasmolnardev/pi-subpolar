@@ -25,7 +25,7 @@ import { Type } from "typebox";
 
 const MASTER = "master";
 const MASTER_ALIASES = new Set(["master", "omniscient"]);
-const MASTER_PROFILE_TOOLS = ["list_agent_profiles", "create_agent_profile", "edit_agent_profile", "manage_openapi_tools"];
+const MASTER_PROFILE_TOOLS = ["list_agent_profiles", "create_agent_profile", "edit_agent_profile", "manage_external_tools"];
 
 type Profile = {
   systemPrompt: string;

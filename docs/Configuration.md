@@ -104,7 +104,7 @@ Supported locations, from lower to higher precedence:
 Project-local providers override global providers with the same name. Set
 `skipTlsVerify` only for a provider that uses a trusted self-signed
 certificate. Reload Pi after changing this file, or use the extension's
-`manage_openapi_tools` tool from the master profile.
+`manage_external_tools` tool from the master profile.
 
 Never commit credentials. Prefer environment-variable references over literal
 header values.

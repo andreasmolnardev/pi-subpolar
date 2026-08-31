@@ -33,7 +33,7 @@ because model APIs restrict them to letters, numbers, underscores, and dashes. C
 `skipTlsVerify: true` only for providers using self-signed certificates.
 Reload Pi after changing the file. The master profile has access to every
 registered tool, including generated `provider_operationId` tools, and also
-has the `manage_openapi_tools` tool for `add`, `edit`, `delete`, and `get`; pass a
+has the `manage_external_tools` tool for `add`, `edit`, `delete`, and `get`; pass a
 `provider`, optional `scope` (`local` or `global`), and `config` for add/edit.
 
 ## Virtual projects
