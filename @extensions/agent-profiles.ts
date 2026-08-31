@@ -36,6 +36,16 @@ type Profiles = Record<string, Profile>;
 
 type ProfileState = { name: string };
 
+type BackgroundSession = { name: string; status: "running" | "done" };
+type BackgroundBridge = {
+  getSessions: () => BackgroundSession[];
+  setRefresh: (refresh: () => void) => void;
+};
+
+function backgroundBridge(): BackgroundBridge | undefined {
+  return (globalThis as Record<string, unknown>)["__piBackgroundSessions"] as BackgroundBridge | undefined;
+}
+
 function readProfiles(path: string): Profiles {
   if (!existsSync(path)) return {};
   try {
@@ -101,9 +111,12 @@ export default function agentProfiles(pi: ExtensionAPI) {
 
   function updateStatus(ctx: ExtensionContext): void {
     ctx.ui.setStatus("agent-profile", ctx.ui.theme.fg("accent", `profile:${activeName}`));
+    const sessions = backgroundBridge()?.getSessions() ?? [];
     ctx.ui.setWidget("agent-profiles", [
       "[Profiles]",
-      `  ${profileNames().join(", ")}`,
+      ...profileNames().map((name) => `  ${name}`),
+      "[Background sessions]",
+      ...sessions.map((session) => `  ${session.status === "done" ? "✓" : "•"} ${session.name}`),
     ]);
   }
 
@@ -316,6 +329,9 @@ export default function agentProfiles(pi: ExtensionAPI) {
 
   pi.on("session_start", async (event, ctx) => {
     profiles = loadProfiles(ctx.cwd);
+    backgroundBridge()?.setRefresh(() => updateStatus(ctx));
+    queueMicrotask(() => backgroundBridge()?.setRefresh(() => updateStatus(ctx)));
+    setTimeout(() => backgroundBridge()?.setRefresh(() => updateStatus(ctx)), 0);
     // Do not derive master access from the current active list: that list may
     // not yet include tools registered by another extension during startup.
     // Master must expose every registered tool.
