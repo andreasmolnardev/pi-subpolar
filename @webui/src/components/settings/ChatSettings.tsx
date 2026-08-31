@@ -243,9 +243,9 @@ export function ChatSettings() {
           <>
             <div className="flex flex-row items-center justify-between rounded-lg border border-border p-4">
               <div className="space-y-0.5">
-                <Label htmlFor="showReasoning" className="text-base">Show reasoning</Label>
+                <Label htmlFor="showReasoning" className="text-base">Show thinking</Label>
                 <p className="text-sm text-muted-foreground">
-                  Display model reasoning and thought process
+                  Display model thinking trails
                 </p>
               </div>
               <Switch

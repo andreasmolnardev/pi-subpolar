@@ -143,7 +143,7 @@ export const MessagePart = memo(function MessagePart({ part, role, allParts, par
         <details open={isActiveGenerationStep} className="group my-2 text-sm text-muted-foreground">
           <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md py-1 text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
             <Brain className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span className={isActiveGenerationStep ? 'reasoning-text-trail font-medium' : 'font-medium text-muted-foreground'}>Reasoning</span>
+            <span className={isActiveGenerationStep ? 'reasoning-text-trail font-medium' : 'font-medium text-muted-foreground'}>Thinking</span>
             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
           </summary>
           <div className="overflow-hidden whitespace-pre-wrap pl-6 pt-1 text-muted-foreground/90 animate-disclosure-down">

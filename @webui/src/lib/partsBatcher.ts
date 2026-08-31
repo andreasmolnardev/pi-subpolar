@@ -46,8 +46,15 @@ export function createTextPart(sessionID: string, messageID: string, partID: str
   return { id: partID, sessionID, messageID, type: 'text', text } as Part
 }
 
-export function createDeltaFallbackPart(sessionID: string, messageID: string, partID: string, text: string): Part {
-  if (partID.endsWith('-reasoning')) {
+function isReasoningPartId(partID: string): boolean {
+  return /(?:reasoning|thinking)(?:$|[-_:])/i.test(partID)
+}
+
+export function createDeltaFallbackPart(sessionID: string, messageID: string, partID: string, text: string, field = 'text'): Part {
+  // A delta can arrive before message.part.updated. Preserve thinking as its
+  // own marker instead of accidentally placing it in the final response.
+  const isThinkingField = /^(thinking|reasoning)(?:_|$)/i.test(field)
+  if (isThinkingField || isReasoningPartId(partID)) {
     return { id: partID, sessionID, messageID, type: 'reasoning', text, time: { start: Date.now() } } as Part
   }
   return createTextPart(sessionID, messageID, partID, text)
@@ -229,7 +236,7 @@ export function createPartsBatcher(
               updatedData,
               msgIdx,
               msg,
-              createDeltaFallbackPart(sessionID, operation.messageID, operation.partID, operation.delta),
+              createDeltaFallbackPart(sessionID, operation.messageID, operation.partID, operation.delta, operation.field),
               pIdx,
               supersededPartIDs,
             )

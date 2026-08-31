@@ -693,7 +693,7 @@ describe('MessagePart', () => {
       render(<MessagePart part={part} />)
       
       expect(screen.getByText('This is the reasoning text')).toBeInTheDocument()
-      expect(screen.getByText('Reasoning')).toBeInTheDocument()
+      expect(screen.getByText('Thinking')).toBeInTheDocument()
     })
 
     it('opens reasoning while it is the active generation step', () => {
