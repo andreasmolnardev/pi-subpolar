@@ -156,7 +156,10 @@ export class SubpolarClient {
   }
 
   async listMessages(sessionID: string) {
-    const response = await fetchWrapper<{ messages: Array<{ id: string; role: string; content: string; createdAt: number; metadata?: Record<string, unknown> }> }>(`${this.nativeBaseURL}/sessions/${sessionID}/messages`, { params: this.getParams() })
+    const response = await fetchWrapper<{ messages: Array<{ id?: string; role?: string; content?: string; createdAt?: number; metadata?: Record<string, unknown>; info?: MessageListResponse[number]['info']; parts?: MessageListResponse[number]['parts'] }> }>(`${this.nativeBaseURL}/sessions/${sessionID}/messages`, { params: this.getParams() })
+    if (response.messages.every((message) => message.info && Array.isArray(message.parts))) {
+      return response.messages.map((message) => ({ info: message.info!, parts: message.parts! })) as MessageListResponse
+    }
     return response.messages.map(message => {
       const userMetadata = message.role === 'user' ? getUserMessageMetadata(message.metadata) : {}
       const reasoning = typeof message.metadata?.reasoning === 'string' ? message.metadata.reasoning : ''

@@ -1,9 +1,10 @@
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
+import { entriesPayload, projectEntries, type TranscriptMessage } from './transcript/projector'
 
 type Project = { name: string; path: string }
 type SessionRecord = {
@@ -18,13 +19,14 @@ type SessionRecord = {
 type RpcCommand = Record<string, unknown> & { type: string }
 type RpcMessage = Record<string, unknown> & { type?: string; id?: string }
 type PendingRequest = { resolve: (value: unknown) => void; reject: (error: Error) => void }
-type SocketData = { sessionId: string; unsubscribe?: () => void }
+type SocketData = { sessionId: string; unsubscribe?: () => void; history?: TranscriptMessage[]; leafId?: string | null; historyReady?: boolean; buffered?: RpcMessage[] }
 type PendingPrompt = { content: string; metadata?: Record<string, unknown> }
 type SseClient = { enqueue: (chunk: Uint8Array) => void; close: () => void }
 
 const root = resolve(import.meta.dir, '..')
 const webuiDir = import.meta.dir
 const statePath = join(webuiDir, '.sessions.json')
+const settingsPath = join(webuiDir, '.settings.json')
 const port = Number(process.env.WEBUI_PORT ?? 4173)
 const allowedRpcCommands = new Set([
   'prompt', 'steer', 'follow_up', 'abort', 'clear_queue', 'new_session', 'get_state',
@@ -43,6 +45,33 @@ const extensionPaths = [
   'list-tools.ts',
   'openapi-tools.ts',
 ].map((file) => join(root, '@extensions', file))
+
+const DEFAULT_SETTINGS = {
+  theme: 'dark', mode: 'build', autoScroll: true, expandDiffs: true,
+  expandToolCalls: false, showReasoning: false, simpleChatMode: false,
+  defaultModels: {}, hiddenSidebarAgents: ['auto', 'compaction', 'summary', 'title'],
+  hiddenChatInputAgents: ['compaction', 'summary', 'title'], leaderKey: 'Cmd+O',
+  directShortcuts: ['submit', 'abort'], keyboardShortcuts: {
+    submit: 'Cmd+Enter', abort: 'Escape', toggleMode: 'T', undo: 'Z', redo: 'Shift+Z',
+    compact: 'K', fork: 'F', settings: ',', sessions: 'S', newSession: 'N', closeSession: 'W',
+    toggleSidebar: 'B', selectModel: 'M', variantCycle: 'Cmd+T',
+  }, customCommands: [], gitCredentials: [], gitIdentity: { name: 'Pi Agent', email: '' },
+  tts: { enabled: false }, stt: { enabled: false }, notifications: { enabled: false },
+  integrations: [], repoSortMode: 'recent', serverEnvVars: [], disabledDefaultServerEnvVars: [],
+}
+
+type StoredSettings = Record<string, Record<string, unknown>>
+function loadSettings(): StoredSettings {
+  if (!existsSync(settingsPath)) return {}
+  try { return object(JSON.parse(readFileSync(settingsPath, 'utf8'))) as StoredSettings } catch { return {} }
+}
+let userSettings = loadSettings()
+function settingsFor(userId: string): Record<string, unknown> {
+  return { ...DEFAULT_SETTINGS, ...(userSettings[userId] ?? {}) }
+}
+function saveSettings(): void {
+  writeFileSync(settingsPath, `${JSON.stringify(userSettings, null, 2)}\n`, 'utf8')
+}
 
 function loadState(): SessionRecord[] {
   if (!existsSync(statePath)) return []
@@ -232,6 +261,37 @@ function profilesForDirectory(directory: string | undefined): Record<string, unk
   return profiles
 }
 
+type SkillRecord = { name: string; description: string; body: string; scope: 'global' | 'project'; path: string; repoId?: number }
+
+function skillDirectories(directory?: string): Array<{ scope: 'global' | 'project'; directory: string; repoId?: number }> {
+  const result: Array<{ scope: 'global' | 'project'; directory: string; repoId?: number }> = []
+  const projectDirectory = directory ? resolve(directory) : undefined
+  if (projectDirectory) result.push({ scope: 'project', directory: join(projectDirectory, '.subpolar', 'skills') })
+  else result.push({ scope: 'project', directory: join(root, '.subpolar', 'skills'), repoId: 1 })
+  result.push({ scope: 'global', directory: join(homedir(), '.config', 'subpolar', 'skills') })
+  result.push({ scope: 'global', directory: join(homedir(), '.pi', 'skills') })
+  return result
+}
+
+function readSkills(directory?: string): SkillRecord[] {
+  const result: SkillRecord[] = []
+  for (const source of skillDirectories(directory)) {
+    if (!existsSync(source.directory)) continue
+    try {
+      for (const entry of readdirSync(source.directory, { withFileTypes: true })) {
+        const file = entry.isDirectory() ? join(source.directory, entry.name, 'SKILL.md') : entry.name === 'SKILL.md' ? join(source.directory, entry.name) : ''
+        if (!file || !existsSync(file)) continue
+        const content = readFileSync(file, 'utf8')
+        const heading = content.match(/^#\s+(.+)$/m)
+        const description = content.match(/^(?:description|summary):\s*(.+)$/im)?.[1]?.trim() ?? heading?.[1]?.trim() ?? ''
+        const name = entry.isDirectory() ? entry.name : source.directory.split('/').pop() ?? 'skill'
+        result.push({ name, description, body: content, scope: source.scope, path: file, repoId: source.repoId })
+      }
+    } catch { /* an unavailable skill directory should not break settings */ }
+  }
+  return [...new Map(result.map((skill) => [`${skill.scope}:${skill.repoId ?? ''}:${skill.name}`, skill])).values()]
+}
+
 function projectResponse(project: Project, id: number) {
   return {
     id,
@@ -269,42 +329,9 @@ function parseModelSelection(model: string | undefined): { providerID: string; m
   return providerID && modelID ? { providerID, modelID } : undefined
 }
 
-function normalizeMessages(sessionId: string, value: unknown, selection?: Pick<SessionRecord, 'profile' | 'model'>) {
-  const messages = object(rpcData(value)).messages
-  if (!Array.isArray(messages)) return { messages: [] }
-  const latestUserIndex = messages.reduce((latest, message, index) => (
-    object(message).role === 'user' ? index : latest
-  ), -1)
-  return {
-    messages: messages.map((message, index) => {
-      const item = object(message)
-      const rawContent = Array.isArray(item.content) ? item.content : []
-      const assistantParts = rawContent.flatMap((part, partIndex) => {
-        const content = object(part)
-        const id = typeof content.id === 'string' ? content.id : `${sessionId}-${index}-${partIndex}`
-        if (content.type === 'text' && typeof content.text === 'string') return [{ id, type: 'text', text: content.text }]
-        if ((content.type === 'thinking' || content.type === 'reasoning') && typeof content.thinking === 'string') return [{ id, type: 'reasoning', text: content.thinking }]
-        return []
-      })
-      const content = sessionMessageText(message)
-      const metadata = object(item.metadata)
-      const restoredMetadata = item.role === 'user' && index === latestUserIndex
-        ? {
-            ...(selection?.profile && !metadata.agent ? { agent: selection.profile } : {}),
-            ...(selection?.model && !metadata.model ? { model: parseModelSelection(selection.model) } : {}),
-          }
-        : {}
-      return {
-        id: typeof item.id === 'string' ? item.id : `${sessionId}-${index}`,
-        role: typeof item.role === 'string' ? item.role : 'assistant',
-        content,
-        createdAt: typeof item.timestamp === 'number' ? item.timestamp : Date.now(),
-        metadata: item.role === 'assistant' && assistantParts.length > 0
-          ? { ...metadata, assistantParts }
-          : { ...metadata, ...restoredMetadata },
-      }
-    }),
-  }
+async function transcriptHistory(sessionId: string, selection?: Pick<SessionRecord, 'profile' | 'model'>) {
+  const payload = entriesPayload(await sendRpc(sessionId, { type: 'get_entries' }))
+  return { ...payload, messages: projectEntries(payload.entries, payload.leafId, sessionId, selection) }
 }
 
 function json(value: unknown, status = 200): Response {
@@ -382,7 +409,14 @@ class PiRpcSession {
         else request.resolve(message)
       }
     }
-    broadcastSse(message)
+    const transcript = new Set(['message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end'])
+    if (!transcript.has(String(message.type))) {
+      const lifecycle = new Set(['agent_start', 'turn_start', 'agent_settled'])
+      const sessionID = typeof message.sessionID === 'string' ? message.sessionID : typeof message.sessionId === 'string' ? message.sessionId : undefined
+      if (sessionID && lifecycle.has(String(message.type))) {
+        broadcastSse({ type: 'session.status', properties: { sessionID, status: { type: message.type === 'agent_settled' ? 'idle' : 'busy' } } })
+      } else broadcastSse(message)
+    }
     for (const listener of this.listeners) listener(message)
   }
 
@@ -515,6 +549,58 @@ async function runtimeProviders(): Promise<{ all: Record<string, unknown>[]; con
   return { all: [...providers.values()], connected: [...providers.keys()], default: {} }
 }
 
+const TRANSCRIPT_FRAME_LIMIT = 192 * 1024
+const TRANSCRIPT_MESSAGE_LIMIT = 30
+
+type TranscriptSocket = { data: SocketData; send: (value: string) => unknown; close: (code?: number, reason?: string) => void }
+
+function sendHistoryChunk(socket: TranscriptSocket, mode: 'replace' | 'prepend', before?: string, limit = TRANSCRIPT_MESSAGE_LIMIT): void {
+  const all = socket.data.history ?? []
+  let end = before ? all.findIndex((message) => message.info.id === before) : all.length
+  if (end < 0) end = all.length
+  const selected: TranscriptMessage[] = []
+  for (let index = end - 1; index >= 0 && selected.length < Math.max(1, limit); index--) {
+    const candidate = all[index]
+    const proposed = [candidate, ...selected]
+    const frame = JSON.stringify({ type: 'history.chunk', mode, messages: proposed })
+    if (selected.length > 0 && frame.length > TRANSCRIPT_FRAME_LIMIT) break
+    selected.unshift(candidate)
+  }
+  const first = selected[0]
+  const beforeId = first ? (all.findIndex((message) => message.info.id === first.info.id) > 0 ? all[all.findIndex((message) => message.info.id === first.info.id) - 1].info.id : undefined) : undefined
+  socket.send(JSON.stringify({ type: 'history.chunk', mode, messages: selected, before: beforeId ?? null, hasMore: Boolean(beforeId), leafId: socket.data.leafId ?? null }))
+}
+
+async function loadSocketHistory(socket: TranscriptSocket, session: PiRpcSession, request: { type?: string; before?: string; limit?: number; leafId?: string }): Promise<void> {
+  const payload = entriesPayload(await session.send({ type: 'get_entries' }))
+  socket.data.history = projectEntries(payload.entries, payload.leafId, socket.data.sessionId, session.record)
+  socket.data.leafId = payload.leafId
+  socket.data.historyReady = true
+  if (request.type === 'history.resume') socket.send(JSON.stringify({ type: 'history.reset' }))
+  sendHistoryChunk(socket, request.type === 'history.load' && request.before ? 'prepend' : 'replace', request.before, request.limit)
+  socket.send(JSON.stringify({ type: 'history.ready', leafId: payload.leafId }))
+  for (const event of socket.data.buffered ?? []) {
+    if (event.type !== 'response') socket.send(JSON.stringify({ type: 'transcript.event', event }))
+  }
+  socket.data.buffered = []
+}
+
+async function handleSocketMessage(socket: TranscriptSocket, raw: unknown, session: PiRpcSession): Promise<void> {
+  try {
+    const request = object(typeof raw === 'string' ? JSON.parse(raw) : raw)
+    if (request.type === 'history.load' || request.type === 'history.resume') {
+      if (!socket.data.historyReady || request.type === 'history.resume') {
+        socket.data.historyReady = false
+        await loadSocketHistory(socket, session, request as any)
+      } else {
+        sendHistoryChunk(socket, request.before ? 'prepend' : 'replace', typeof request.before === 'string' ? request.before : undefined, typeof request.limit === 'number' ? request.limit : undefined)
+      }
+    }
+  } catch (error) {
+    socket.send(JSON.stringify({ type: 'history.error', error: error instanceof Error ? error.message : String(error) }))
+  }
+}
+
 async function handle(request: Request): Promise<Response> {
   const url = new URL(request.url)
   const path = url.pathname.split('/').filter(Boolean)
@@ -524,6 +610,10 @@ async function handle(request: Request): Promise<Response> {
   if (request.method === 'GET' && path[1] === 'projects' && path.length === 3) {
     const project = projectResponses().find((item) => item.id === Number(path[2]))
     return project ? json({ project }) : json({ error: 'Project not found' }, 404)
+  }
+  if (request.method === 'POST' && path[1] === 'projects' && path.length === 4 && path[3] === 'access') {
+    // Compatibility heartbeat used by the project activity hook.
+    return json({ ok: true })
   }
   if (request.method === 'GET' && url.pathname === '/api/agent') {
     const profiles = profilesForDirectory(url.searchParams.get('directory') ?? undefined)
@@ -563,6 +653,65 @@ async function handle(request: Request): Promise<Response> {
   if (request.method === 'POST' && (url.pathname === '/api/sse/subscribe' || url.pathname === '/api/sse/unsubscribe' || url.pathname === '/api/sse/visibility')) return json({ ok: true })
 
   if (path[0] !== 'api') return json({ error: 'Not found' }, 404)
+
+  // Settings are intentionally served by the local bridge as well as the full
+  // server.  Keeping these routes here prevents a Vite/bridge-only install
+  // from turning the settings page into a stream of 404s.
+  if (path[1] === 'settings' && path.length === 2 && request.method === 'GET') {
+    const userId = url.searchParams.get('userId') ?? 'default'
+    return json({ preferences: settingsFor(userId), updatedAt: Date.now() })
+  }
+  if (path[1] === 'settings' && path.length === 2 && request.method === 'PATCH') {
+    const userId = url.searchParams.get('userId') ?? 'default'
+    const input = await body(request)
+    const preferences = object(input.preferences)
+    userSettings[userId] = { ...settingsFor(userId), ...preferences }
+    saveSettings()
+    return json({ preferences: settingsFor(userId), updatedAt: Date.now() })
+  }
+  if (path[1] === 'settings' && path.length === 2 && request.method === 'DELETE') {
+    const userId = url.searchParams.get('userId') ?? 'default'
+    delete userSettings[userId]
+    saveSettings()
+    return json({ preferences: settingsFor(userId), updatedAt: Date.now() })
+  }
+  if (path[1] === 'settings' && path[2] === 'pi-settings' && request.method === 'GET') {
+    // Pi's native config is not required for the bridge to operate. Return a
+    // valid empty collection until a config is created by the UI.
+    return json({ configs: [], defaultConfig: null })
+  }
+  if (path[1] === 'settings' && path[2] === 'extensions' && request.method === 'GET') {
+    const extensions = extensionPaths.filter(existsSync).map((file) => ({ name: file.split('/').pop()?.replace(/\.[^.]+$/, '') ?? file, path: file, source: 'builtin' as const }))
+    const directories = [
+      { directory: join(homedir(), '.pi', 'agent', 'extensions'), source: 'global' as const },
+      { directory: join(root, '.pi', 'extensions'), source: 'project' as const },
+    ]
+    for (const source of directories) {
+      if (!existsSync(source.directory)) continue
+      try {
+        for (const entry of readdirSync(source.directory, { withFileTypes: true })) {
+          extensions.push({ name: entry.name.replace(/\.[^.]+$/, ''), path: join(source.directory, entry.name), source: source.source })
+        }
+      } catch { /* ignore unreadable extension directories */ }
+    }
+    return json({ extensions })
+  }
+  if (path[1] === 'settings' && path[2] === 'skills' && request.method === 'GET') {
+    const directory = url.searchParams.get('directory') ?? undefined
+    const repoId = url.searchParams.get('repoId')
+    const skills = readSkills(directory).filter((skill) => !repoId || String(skill.repoId ?? '') === repoId)
+    return json(skills)
+  }
+  if (path[1] === 'settings' && path[2] === 'skills' && request.method === 'POST') {
+    const input = await body(request)
+    if (typeof input.name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.name)) return json({ error: 'Valid skill name is required' }, 400)
+    const scope = input.scope === 'project' ? 'project' : 'global'
+    const base = scope === 'project' ? join(projectForDirectory(typeof input.directory === 'string' ? input.directory : undefined).path, '.subpolar', 'skills') : join(homedir(), '.config', 'subpolar', 'skills')
+    const file = join(base, input.name, 'SKILL.md')
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, `# ${input.name}\n\n${typeof input.description === 'string' ? input.description : ''}\n\n${typeof input.body === 'string' ? input.body : ''}\n`, 'utf8')
+    return json(readSkills(scope === 'project' ? dirname(dirname(file)) : undefined).find((skill) => skill.name === input.name) ?? { name: input.name, scope, body: input.body ?? '' }, 201)
+  }
 
   if (path[1] === 'sessions' && path.length === 2 && request.method === 'GET') {
     syncNativeSessions()
@@ -620,7 +769,19 @@ async function handle(request: Request): Promise<Response> {
       }
       if (path.length === 4 && path[3] === 'messages' && request.method === 'GET') {
         const record = recordFor(id)
-        return json(normalizeMessages(id, await sendRpc(id, { type: 'get_messages' }), record))
+        const history = await transcriptHistory(id, record)
+        return json({ messages: history.messages })
+      }
+      if (path.length === 5 && path[3] === 'tool-calls' && request.method === 'GET') {
+        const callID = decodeURIComponent(path[4] ?? '')
+        const payload = entriesPayload(await sendRpc(id, { type: 'get_entries' }))
+        for (const entry of payload.entries) {
+          const message = object(object(entry).message)
+          if (message.role === 'toolResult' && message.toolCallId === callID) {
+            return json({ callID, tool: message.toolName ?? null, input: object(message.input), output: sessionMessageText(message), details: object(message.details), error: message.isError ? sessionMessageText(message) : null })
+          }
+        }
+        return json({ callID, output: '', details: {}, error: null }, 404)
       }
       if (path.length === 4 && path[3] === 'messages' && request.method === 'POST') {
         const input = await body(request)
@@ -714,8 +875,8 @@ async function handle(request: Request): Promise<Response> {
     for (const record of sessions) {
       try {
         const response = await sendRpc(record.id, { type: 'get_messages' }) as RpcMessage
-        const messages = object(response.data).messages
-        const text = Array.isArray(messages) ? messages.map(sessionMessageText).join('\n') : ''
+        const payload = entriesPayload(response)
+        const text = projectEntries(payload.entries, payload.leafId, record.id).map((item) => sessionMessageText(item.info)).join('\n')
         if (`${record.title}\n${text}`.toLocaleLowerCase().includes(query)) matches.push(record)
       } catch {
         continue
@@ -776,17 +937,25 @@ const server = Bun.serve<SocketData>({
     open(socket) {
       try {
         const session = rpcSession(socket.data.sessionId)
-        socket.data.unsubscribe = session.onMessage((message) => socket.send(JSON.stringify(message)))
+        socket.data.buffered = []
+        // Subscribe before reading entries. Events generated during the read are replayed
+        // after the authoritative snapshot, so a reconnect cannot lose a turn.
+        socket.data.unsubscribe = session.onMessage((message) => {
+          if (!socket.data.historyReady) {
+            if ((socket.data.buffered ?? []).length < 200) socket.data.buffered!.push(message)
+            return
+          }
+          if (message.type !== 'response') socket.send(JSON.stringify({ type: 'transcript.event', event: message }))
+        })
       } catch {
         socket.close(1011, 'Unknown session')
       }
     },
     close(socket) {
-      const unsubscribe = socket.data.unsubscribe as unknown as (() => void) | undefined
-      unsubscribe?.()
+      socket.data.unsubscribe?.()
     },
-    message() {
-      return
+    message(socket, raw) {
+      void handleSocketMessage(socket, raw, rpcSession(socket.data.sessionId))
     },
   },
 })

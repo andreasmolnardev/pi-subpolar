@@ -21,10 +21,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ContextUsageIndicator } from "@/components/session/ContextUsageIndicator";
-import { useSession, useAbortSession, useMessages, useCreateSession, useSendPrompt } from "@/hooks/usePiHarness";
+import { useSession, useAbortSession, useCreateSession, useSendPrompt } from "@/hooks/usePiHarness";
 import { useProjectActivity } from "@/hooks/useProjectActivity";
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { useSSE } from "@/hooks/useSSE";
+import { useSessionTranscript } from "@/hooks/useSessionTranscript";
 import { useUIState } from "@/stores/uiStateStore";
 import { useModelSelection } from "@/hooks/useModelSelection";
 import { useSessionAgent } from "@/hooks/useSessionAgent";
@@ -69,6 +70,7 @@ export function SessionDetail() {
   const location = useLocation();
   const repoId = Number(id) || 0;
   const messageContainerRef = useRef<HTMLDivElement>(null);
+  const prependAnchorRef = useRef<{ height: number; top: number; count: number } | null>(null);
   const promptInputRef = useRef<ChatInputBarHandle>(null);
   const consumedPendingPromptRef = useRef<string | null>(null);
   const [sessionsPopoverOpen, setSessionsPopoverOpen] = useState(false);
@@ -121,7 +123,9 @@ export function SessionDetail() {
 
   const { isConnected, isReconnecting } = useSSE(apiUrl, repoDirectory, sessionId);
 
-  const { data: rawMessages, isLoading: messagesLoading } = useMessages(apiUrl, sessionId, repoDirectory, { fallbackPoll: true });
+  const transcript = useSessionTranscript(apiUrl, sessionId, repoDirectory);
+  const rawMessages = transcript.messages;
+  const messagesLoading = transcript.isLoading;
   const { data: session, isLoading: sessionLoading } = useSession(
     apiUrl,
     sessionId,
@@ -136,6 +140,27 @@ export function SessionDetail() {
   }, [rawMessages, session?.revert?.messageID]);
 
   const messagesContentVersion = useMemo(() => getMessagesContentVersion(messages), [messages]);
+
+  useEffect(() => {
+    const container = messageContainerRef.current
+    if (!container || !transcript.hasOlder) return
+    const onScroll = () => {
+      if (container.scrollTop < 350) {
+        if (!prependAnchorRef.current) prependAnchorRef.current = { height: container.scrollHeight, top: container.scrollTop, count: rawMessages?.length ?? 0 }
+        transcript.loadOlder()
+      }
+    }
+    container.addEventListener('scroll', onScroll)
+    return () => container.removeEventListener('scroll', onScroll)
+  }, [rawMessages?.length, transcript.hasOlder, transcript.loadOlder])
+
+  useEffect(() => {
+    const anchor = prependAnchorRef.current
+    const container = messageContainerRef.current
+    if (!anchor || !container || (rawMessages?.length ?? 0) <= anchor.count) return
+    container.scrollTop = anchor.top + (container.scrollHeight - anchor.height)
+    prependAnchorRef.current = null
+  }, [rawMessages?.length])
 
   const { scrollToBottom } = useAutoScroll({
     containerRef: messageContainerRef,
@@ -163,10 +188,11 @@ export function SessionDetail() {
   
   const isSessionActive = useMemo(() => {
     if (session?.time?.compacting) return true
+    if (transcript.isConnected && sessionStatus.type !== 'idle') return true
     if (sessionStatus.type !== 'idle') return true
     if (lastAssistantMessage && !('completed' in lastAssistantMessage.info.time)) return true
     return false
-  }, [lastAssistantMessage, session?.time?.compacting, sessionStatus.type])
+  }, [lastAssistantMessage, session?.time?.compacting, sessionStatus.type, transcript.isConnected])
   const hasIncompleteMessages = lastAssistantMessage ? !('completed' in lastAssistantMessage.info.time && lastAssistantMessage.info.time.completed) : false;
   const isStreamingResponse = hasIncompleteMessages && isSessionActive;
   const pendingPrompt = (location.state as PendingPromptLocationState | null)?.pendingPrompt;
