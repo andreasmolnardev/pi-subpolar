@@ -1,5 +1,12 @@
 # Agent profiles and virtual projects
 
+## Background sessions
+
+`background.ts` adds `/background [prompt]`. It copies the current saved session,
+starts it in a detached RPC-mode Pi process, and displays its progress under
+`[Background sessions]` in the profiles widget. Completed sessions are marked
+`✓`; switching to one removes it from that list.
+
 ## Stateless OpenAPI tools
 
 `openapi-tools.ts` turns OpenAPI operations into stateless HTTP tools. Add a
@@ -51,6 +58,19 @@ Commands:
 /project /tmp/foo          # switch directly to a directory
 /project new NAME DIRECTORY # add and switch to a project
 ```
+
+## Permissions
+
+`permissions.ts` enforces per-agent, per-tool `deny`, `manual`, or `auto` approval. The master agent bypasses the gate and has every tool. Configure it in `~/.pi/agent/permissions.json` or `.pi/permissions.json` (local wins):
+
+```json
+{
+  "permissionAutoApprovalModel": "openai-codex/gpt-5.4-mini",
+  "agents": { "reviewer": { "read": "auto", "bash": "manual", "write": "deny" } }
+}
+```
+
+Use `/permissions` in the TUI to inspect or change a rule. The web agent editor exposes the same three choices; the detailed `toolAccess` value is retained for the extension.
 
 ## Agent profiles
 

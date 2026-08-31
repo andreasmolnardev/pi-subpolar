@@ -7,6 +7,9 @@ Turning Pi into a general-purpose agent
 - Transparency
 - Portability: Run anywhere you need it to
 
+## Tool Calling
+[ ] Code Mode: Allow chaing tool calls, filtering etc via js
+
 ## WebUI
 
 `@webui` is a local browser UI connected to Pi through `pi --mode rpc`. Read
