@@ -25,6 +25,8 @@ import {
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSessionCompletedUnread, useSessionStatusForSession, useSessionStatus } from "@/stores/sessionStatusStore";
+import { Spinner } from "@/components/ui/spinner";
 import { Sidebar, SidebarCollapseToggle } from "@/components/ui/sidebar";
 import {
   DropdownMenu,
@@ -102,13 +104,18 @@ function SidebarNavItem({
   active,
   onClick,
   indent,
+  sessionID,
 }: {
   icon?: React.ElementType;
   label: string;
   active?: boolean;
   onClick?: () => void;
   indent?: boolean;
+  sessionID?: string;
 }) {
+  const status = useSessionStatusForSession(sessionID);
+  const completedUnread = useSessionCompletedUnread(sessionID);
+
   return (
     <button
       type="button"
@@ -122,6 +129,12 @@ function SidebarNavItem({
       )}
     >
       {Icon && <Icon className="h-4 w-4 flex-shrink-0" />}
+      {sessionID && status.type !== "idle" && (
+        <Spinner className="h-3.5 w-3.5 flex-shrink-0 text-primary" />
+      )}
+      {sessionID && status.type === "idle" && completedUnread && (
+        <span className="h-2 w-2 flex-shrink-0 rounded-full bg-primary" aria-label="New message" />
+      )}
       <span className="truncate">{label}</span>
     </button>
   );
@@ -501,8 +514,12 @@ onValueChange={(value) => {
                     key={session.id}
                     label={session.title || session.id}
                     active={isSessionActive(session.id)}
-                    onClick={() => navigate(`/projects/${projectId}/sessions/${encodeURIComponent(session.id)}`)}
+                    onClick={() => {
+                      useSessionStatus.getState().markRead(session.id);
+                      navigate(`/projects/${projectId}/sessions/${encodeURIComponent(session.id)}`);
+                    }}
                     indent
+                    sessionID={session.id}
                   />
                 );
               })}

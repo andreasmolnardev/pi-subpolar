@@ -70,6 +70,7 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
   const [error, setError] = useState<string | null>(null)
   const [isReconnecting, setIsReconnecting] = useState(false)
   const setSessionStatus = useSessionStatus((state) => state.setStatus)
+  const markSessionCompleted = useSessionStatus((state) => state.markCompleted)
   const replaceSessionStatuses = useSessionStatus((state) => state.replaceStatuses)
   const setSessionTodos = useSessionTodos((state) => state.setTodos)
   const batcherRef = useRef<ReturnType<typeof createPartsBatcher> | null>(null)
@@ -130,7 +131,11 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
       case 'session.status': {
         if (!('sessionID' in event.properties && 'status' in event.properties)) break
         const { sessionID, status } = event.properties
+        const wasRunning = useSessionStatus.getState().getStatus(sessionID).type !== 'idle'
         setSessionStatus(sessionID, status)
+        if (status.type === 'idle' && wasRunning) {
+          markSessionCompleted(sessionID)
+        }
         break
       }
 
@@ -228,8 +233,10 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
         if (!('sessionID' in event.properties)) break
         
         const { sessionID } = event.properties
+        const wasRunning = useSessionStatus.getState().getStatus(sessionID).type !== 'idle'
         
         setSessionStatus(sessionID, { type: 'idle' })
+        if (wasRunning) markSessionCompleted(sessionID)
         
         batcherRef.current?.flush({ sessionID, directory: cacheDirectory })
         
@@ -350,7 +357,7 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
       default:
         break
     }
-  }, [queryClient, apiUrl, directorySet, resolveCacheDirectory, setSessionStatus, setSessionTodos])
+  }, [queryClient, apiUrl, directorySet, resolveCacheDirectory, setSessionStatus, markSessionCompleted, setSessionTodos])
 
   const fetchInitialData = useCallback(async () => {
     if (!client || !primaryDirectory || !mountedRef.current) return

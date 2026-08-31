@@ -14,6 +14,9 @@ interface SessionStatusStore {
   replaceStatuses: (statuses: Record<string, SessionStatusType>) => void
   getStatus: (sessionID: string) => SessionStatusType
   clearStatus: (sessionID: string) => void
+  markCompleted: (sessionID: string) => void
+  markRead: (sessionID: string) => void
+  unreadCompleted: Set<string>
 }
 
 const DEFAULT_STATUS: SessionStatusType = { type: 'idle' }
@@ -37,6 +40,7 @@ const getStatusHash = (status: SessionStatusType): string => {
 export const useSessionStatus = create<SessionStatusStore>((set, get) => ({
   statuses: new Map(),
   statusCache: new Map(),
+  unreadCompleted: new Set(),
   
   setStatus: (sessionID: string, status: SessionStatusType) => {
     clearOptimisticActiveTimer(sessionID)
@@ -133,6 +137,24 @@ export const useSessionStatus = create<SessionStatusStore>((set, get) => ({
     return get().statuses.get(sessionID) || DEFAULT_STATUS
   },
   
+  markCompleted: (sessionID: string) => {
+    set((state) => {
+      if (state.unreadCompleted.has(sessionID)) return state
+      const unreadCompleted = new Set(state.unreadCompleted)
+      unreadCompleted.add(sessionID)
+      return { unreadCompleted }
+    })
+  },
+
+  markRead: (sessionID: string) => {
+    set((state) => {
+      if (!state.unreadCompleted.has(sessionID)) return state
+      const unreadCompleted = new Set(state.unreadCompleted)
+      unreadCompleted.delete(sessionID)
+      return { unreadCompleted }
+    })
+  },
+
   clearStatus: (sessionID: string) => {
     clearOptimisticActiveTimer(sessionID)
     const previousHash = get().statusCache.get(sessionID)
@@ -149,7 +171,11 @@ export const useSessionStatus = create<SessionStatusStore>((set, get) => ({
 }))
 
 export const useSessionStatusForSession = (sessionID: string | undefined): SessionStatusType => {
-  return useSessionStatus((state) => 
+  return useSessionStatus((state) =>
     sessionID ? (state.statuses.get(sessionID) ?? DEFAULT_STATUS) : DEFAULT_STATUS
   )
+}
+
+export const useSessionCompletedUnread = (sessionID: string | undefined): boolean => {
+  return useSessionStatus((state) => Boolean(sessionID && state.unreadCompleted.has(sessionID)))
 }
