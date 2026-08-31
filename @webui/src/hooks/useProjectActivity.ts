@@ -3,15 +3,13 @@ import { useMutation } from '@tanstack/react-query'
 import { touchProjectActivity } from '@/api/projects'
 
 export function useProjectActivity(projectId: number, enabled: boolean) {
-  const mutation = useMutation({
+  const { mutate, isPending } = useMutation({
     mutationFn: () => touchProjectActivity(projectId),
   })
 
   useEffect(() => {
-    if (enabled && projectId > 0) {
-      mutation.mutate()
-    }
-  }, [projectId, enabled, mutation])
+    if (enabled && projectId > 0) mutate()
+  }, [projectId, enabled, mutate])
 
-  return { touching: mutation.isPending }
+  return { touching: isPending }
 }
