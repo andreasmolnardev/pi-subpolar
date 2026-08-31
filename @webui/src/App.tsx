@@ -10,11 +10,13 @@ import { SessionDetail } from './pages/SessionDetail'
 import { History } from './pages/History'
 import { Agents } from './pages/Agents'
 import { AgentChat } from './pages/AgentChat'
+import { SettingsDialog } from './components/settings/SettingsDialog'
 
 import { MobileTabBar } from '@/components/navigation/MobileTabBar'
 import { MobileSheetHost } from '@/components/navigation/MobileSheetHost'
 import { DesktopSidebar } from '@/components/navigation/DesktopSidebar'
 import { useTheme } from './hooks/useTheme'
+import { useSettingsDialog } from './hooks/useSettingsDialog'
 import { useRightEdgeSwipe, useSwipeBack } from './hooks/useMobile'
 import { useMobileTabBar } from '@/hooks/useMobileTabBar'
 import { TTSProvider } from './contexts/TTSContext'
@@ -44,6 +46,26 @@ function RepoRedirect() {
 function HealthMonitor() {
   const { isAuthenticated } = useAuth()
   useServerHealth(isAuthenticated)
+  return null
+}
+
+function SettingsRoute() {
+  const navigate = useNavigate()
+  const { isOpen, open } = useSettingsDialog()
+  const didOpen = useRef(false)
+
+  useEffect(() => {
+    if (isOpen) {
+      didOpen.current = true
+      return
+    }
+    if (didOpen.current) {
+      navigate('/home', { replace: true })
+      return
+    }
+    open()
+  }, [isOpen, open, navigate])
+
   return null
 }
 
@@ -131,6 +153,7 @@ function AppShell() {
         <MobileTabBar />
         <MobileSheetHost />
          <HealthMonitor />
+        <SettingsDialog />
         <Toaster
           position="bottom-right"
           expand={false}
@@ -194,6 +217,10 @@ const router = createBrowserRouter([
       {
         path: '/history',
         element: <History />,
+      },
+      {
+        path: '/settings',
+        element: <SettingsRoute />,
       },
     ],
   },

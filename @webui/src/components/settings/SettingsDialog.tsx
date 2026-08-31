@@ -8,12 +8,13 @@ import { AccountSettings } from '@/components/settings/AccountSettings'
 import { VoiceSettings } from '@/components/settings/VoiceSettings'
 import { NotificationSettings } from '@/components/settings/NotificationSettings'
 import { IntegrationsSettings } from '@/components/settings/IntegrationsSettings'
+import { ExtensionsSettings } from '@/components/settings/ExtensionsSettings'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Settings2, Keyboard, ChevronLeft, Key, User, Volume2, Bell, X, MessageSquare, Palette, Plug } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSettingsDialog } from '@/hooks/useSettingsDialog'
 
-type SettingsView = 'menu' | 'general' | 'chat' | 'appearance' | 'shortcuts' | 'providers' | 'integrations' | 'account' | 'voice' | 'notifications'
+type SettingsView = 'menu' | 'general' | 'chat' | 'appearance' | 'shortcuts' | 'providers' | 'integrations' | 'extensions' | 'account' | 'voice' | 'notifications'
 
 export function SettingsDialog() {
   const { isOpen, close, activeTab, setActiveTab } = useSettingsDialog()
@@ -75,7 +76,8 @@ export function SettingsDialog() {
     { id: 'voice', icon: Volume2, label: 'Voice', description: 'Text-to-speech and speech-to-text settings' },
     { id: 'shortcuts', icon: Keyboard, label: 'Keyboard Shortcuts', description: 'Customize keyboard shortcuts' },
     { id: 'integrations', icon: Plug, label: 'Integrations', description: 'Configure MCP, calendars, and mail' },
-    { id: 'providers', icon: Key, label: 'Models', description: 'Manage AI providers and default models' },
+    { id: 'providers', icon: Key, label: 'Providers', description: 'Configure AI providers and default models' },
+    { id: 'extensions', icon: Plug, label: 'Extensions', description: 'View installed Pi extensions' },
   ]
 
   const handleOpenMobileView = useCallback((view: SettingsView) => {
@@ -136,6 +138,7 @@ export function SettingsDialog() {
                 {activeTab === 'shortcuts' && <KeyboardShortcuts />}
                 {activeTab === 'providers' && <ProviderSettings />}
                 {activeTab === 'integrations' && <IntegrationsSettings />}
+                {activeTab === 'extensions' && <ExtensionsSettings />}
               </div>
             </div>
           </div>
@@ -199,6 +202,7 @@ export function SettingsDialog() {
               {mobileView === 'shortcuts' && <div key="shortcuts"><KeyboardShortcuts /></div>}
                {mobileView === 'providers' && <div key="providers"><ProviderSettings /></div>}
                {mobileView === 'integrations' && <div key="integrations"><IntegrationsSettings /></div>}
+               {mobileView === 'extensions' && <div key="extensions"><ExtensionsSettings /></div>}
            </div>
         </div>
 

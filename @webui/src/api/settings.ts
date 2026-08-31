@@ -311,6 +311,10 @@ export const settingsApi = {
     return fetchWrapper(`${API_BASE_URL}/api/health/version`)
   },
 
+  listExtensions: async (): Promise<{ extensions: InstalledExtension[] }> => {
+    return fetchWrapper(`${API_BASE_URL}/api/settings/extensions`)
+  },
+
   listManagedSkills: async (repoId?: number, directory?: string): Promise<SkillFileInfo[]> => {
     const searchParams = new URLSearchParams()
     if (repoId) searchParams.set('repoId', String(repoId))
@@ -350,6 +354,12 @@ export const settingsApi = {
       method: 'DELETE',
     })
   },
+}
+
+export interface InstalledExtension {
+  name: string
+  path: string
+  source: 'builtin' | 'global' | 'project'
 }
 
 export interface VersionInfo {
