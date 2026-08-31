@@ -23,13 +23,14 @@ interface Agent {
   icon?: string
   skills?: string[]
   allowedCommands?: string[]
-  toolAccess?: Array<{ type: 'builtin' | 'skill' | 'cli' | 'subpolar'; id: string; permission: 'allow' | 'ask' | 'deny'; command?: string }>
+  toolAccess?: Array<{ type: 'builtin' | 'skill' | 'cli' | 'subpolar'; id: string; permission: 'allow' | 'ask' | 'deny' | 'auto'; command?: string }>
   disable?: boolean
   [key: string]: unknown
 }
 
-function policyEffect(permission: 'allow' | 'ask' | 'deny'): AgentToolPolicyEffect {
+function policyEffect(permission: 'allow' | 'ask' | 'deny' | 'auto'): AgentToolPolicyEffect {
   if (permission === 'ask') return 'approval'
+  if (permission === 'auto') return 'allow'
   return permission
 }
 

@@ -10,6 +10,7 @@ import { settingsApi, type AgentToolPolicyEffect } from "@/api/settings";
 import { DEFAULT_USER_PREFERENCES } from "@/api/types/settings";
 import { useAgents } from "@/hooks/usePiHarness";
 import { useSettings } from "@/hooks/useSettings";
+import { useSettingsDialog } from "@/hooks/useSettingsDialog";
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { GENERAL_CHAT_PROJECT_ID } from "@subpolar/shared/utils";
 import {
@@ -195,13 +196,14 @@ interface Agent {
   icon?: string;
   skills?: string[];
   allowedCommands?: string[];
-  toolAccess?: Array<{ type: "builtin" | "skill" | "cli" | "subpolar"; id: string; permission: "allow" | "ask" | "deny"; command?: string }>;
+  toolAccess?: Array<{ type: "builtin" | "skill" | "cli" | "subpolar"; id: string; permission: "allow" | "ask" | "deny" | "auto"; command?: string }>;
   disable?: boolean;
   [key: string]: unknown;
 }
 
-function policyEffect(permission: "allow" | "ask" | "deny"): AgentToolPolicyEffect {
+function policyEffect(permission: "allow" | "ask" | "deny" | "auto"): AgentToolPolicyEffect {
   if (permission === "ask") return "approval";
+  if (permission === "auto") return "allow";
   return permission;
 }
 
@@ -221,6 +223,7 @@ export function DesktopSidebar() {
   const [collapsed, toggle] = useSidebarCollapsed();
   const { isAuthenticated, isLoading, user } = useAuth();
   const { preferences } = useSettings();
+  const { open: openSettings, setActiveTab } = useSettingsDialog();
   const isDesktop = useDesktop();
 
   const [agentsExpanded, setAgentsExpanded] = useState(true);
@@ -509,9 +512,12 @@ onValueChange={(value) => {
 
         {/* Profile */}
         <div className="border-t border-border mt-auto">
-          <div
+          <button
+            type="button"
+            aria-label="Open account settings"
+            onClick={() => { setActiveTab('account'); openSettings(); }}
             className={cn(
-              "flex items-center gap-3 w-full p-3 hover:bg-accent/50 transition-colors",
+              "flex items-center gap-3 w-full p-3 hover:bg-accent/50 transition-colors text-left",
               collapsed && "justify-center",
             )}
           >
@@ -538,7 +544,7 @@ onValueChange={(value) => {
                 </span>
               </div>
             )}
-          </div>
+          </button>
         </div>
       </Sidebar>
 
