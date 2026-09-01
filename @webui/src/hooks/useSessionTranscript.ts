@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { MessageWithParts } from '@/api/types'
 import { messagesQueryKey } from '@/lib/queryInvalidation'
-import { isThinkingMarkerText } from '@/lib/thinkingMarkers'
 
 const asObject = (v: unknown): Record<string, any> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, any> : {}
 const wsUrl = (url: string) => {
@@ -45,10 +44,6 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
       if (inner.type === 'text_delta' || inner.type === 'thinking_delta') part = { ...part, text: `${part.text ?? ''}${inner.delta ?? ''}` }
       if (inner.type === 'text_end' || inner.type === 'thinking_end') part = { ...part, text: inner.text ?? part.text }
       if (kind === 'reasoning' && !part.time) part = { ...part, time: { start: message.info.time.created } }
-      // Retain the marker heuristic for transports that emit an untyped block.
-      if (kind === 'text' && isThinkingMarkerText(String(part.text ?? ''))) {
-        part = { ...part, type: 'reasoning', time: { start: message.info.time.created } }
-      }
       if ((inner.type === 'text_end' || inner.type === 'thinking_end') && part.type === 'reasoning') part = { ...part, time: { start: message.info.time.created, end: Date.now() } }
       if (inner.type === 'toolcall_end') { const call = asObject(inner.toolCall ?? inner); const id = call.id ?? part.callID; part = { ...part, callID: id, tool: call.name ?? part.tool, state: { status: 'pending', input: asObject(call.arguments), raw: JSON.stringify(call.arguments ?? {}) } }; if (typeof id === 'string') toolOwners.current.set(id, { messageId, partId }) }
       if (type === 'tool_execution_start' || inner.type === 'tool_execution_start') part = { ...part, state: { status: 'running', input: asObject(part.state?.input), time: { start: Date.now() } } }

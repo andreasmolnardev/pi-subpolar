@@ -1,5 +1,3 @@
-import { isThinkingMarkerText } from '../src/lib/thinkingMarkers'
-
 export type TranscriptMessage = { info: Record<string, any>; parts: Record<string, any>[] }
 
 type Obj = Record<string, any>
@@ -50,7 +48,7 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
     content.forEach((raw: unknown, index: number) => {
       const block = obj(raw); const partId = `${id}:content:${index}`
       if (block.type === 'text' && typeof block.text === 'string') {
-        const reasoning = index !== lastTextIndex || isThinkingMarkerText(block.text)
+        const reasoning = index !== lastTextIndex
         parts.push({ id: partId, sessionID: sessionId, messageID: id, type: reasoning ? 'reasoning' : 'text', text: block.text, ...(reasoning ? { time: { start: created, end: created } } : {}) })
       }
       else if ((block.type === 'thinking' || block.type === 'reasoning') && typeof (block.thinking ?? block.text) === 'string') parts.push({ id: partId, sessionID: sessionId, messageID: id, type: 'reasoning', text: block.thinking ?? block.text, time: { start: created, end: created } })

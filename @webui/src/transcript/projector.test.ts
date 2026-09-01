@@ -8,12 +8,12 @@ describe('Pi transcript projector', () => {
     const entries = [entry('a', undefined, { role: 'user', content: 'a' }), entry('b', 'a', { role: 'assistant', content: [{ type: 'text', text: 'b' }] }), entry('x', 'a', { role: 'user', content: 'x' }), entry('c', 'b', { role: 'user', content: 'c' })]
     expect(activeBranch(entries, 'c').map((x) => x.id)).toEqual(['a', 'b', 'c'])
   })
-  it('turns progress narration into reasoning markers without changing final text', () => {
+  it('uses text block position rather than wording to identify the final answer', () => {
     const entries = [
       entry('u', undefined, { role: 'user', content: 'summarize' }),
       entry('a', 'u', { role: 'assistant', timestamp: 1, content: [
         { type: 'text', text: 'Inspecting git status diff\nSummarizing unstaged changes and status' },
-        { type: 'text', text: 'Here is the summary.' },
+        { type: 'text', text: 'Testing the result gives this summary.' }
       ] }),
     ]
     const parts = projectEntries(entries, 'a', 's')[1].parts

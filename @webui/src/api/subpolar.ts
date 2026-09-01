@@ -1,6 +1,5 @@
 import type { paths } from './opencode-types'
 import { fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
-import { isThinkingMarkerText } from '@/lib/thinkingMarkers'
 
 type SessionListResponse = paths['/session']['get']['responses']['200']['content']['application/json']
 type SessionResponse = paths['/session/{sessionID}']['get']['responses']['200']['content']['application/json']
@@ -187,7 +186,7 @@ export class SubpolarClient {
                 id: typeof part.id === 'string' ? part.id : `${message.id}-text-${index}`,
                 sessionID,
                 messageID: message.id,
-                type: isThinkingMarkerText(part.text) ? 'reasoning' as const : 'text' as const,
+                type: 'text' as const,
                 text: part.text,
               }]
             }
@@ -222,7 +221,7 @@ export class SubpolarClient {
           })
         : [
             ...(reasoning ? [{ id: `${message.id}-reasoning`, sessionID, messageID: message.id, type: 'reasoning' as const, text: reasoning, time: { start: message.createdAt } }] : []),
-            ...(message.content ? [{ id: `${message.id}-text`, sessionID, messageID: message.id, type: isThinkingMarkerText(message.content) ? 'reasoning' as const : 'text' as const, text: message.content, ...(isThinkingMarkerText(message.content) ? { time: { start: message.createdAt, end: completedAt ?? message.createdAt } } : {}) }] : []),
+            ...(message.content ? [{ id: `${message.id}-text`, sessionID, messageID: message.id, type: 'text' as const, text: message.content }] : []),
             ...tools.map((tool, index) => {
               const item = tool && typeof tool === 'object' ? tool as Record<string, unknown> : {}
               const callID = typeof item.callID === 'string' ? item.callID : `tool-${index}`
