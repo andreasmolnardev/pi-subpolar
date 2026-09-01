@@ -1,3 +1,5 @@
+import { isThinkingMarkerText } from '../src/lib/thinkingMarkers'
+
 export type TranscriptMessage = { info: Record<string, any>; parts: Record<string, any>[] }
 
 type Obj = Record<string, any>
@@ -42,9 +44,15 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
     const id = typeof entry.id === 'string' ? entry.id : `${sessionId}:entry:${branchIndex}`
     const created = typeof message.timestamp === 'number' ? message.timestamp : (typeof entry.timestamp === 'number' ? entry.timestamp : Date.now())
     const parts: Obj[] = []; const content = Array.isArray(message.content) ? message.content : []
+    // Pi may serialize its intermediate narration as ordinary text blocks. Only
+    // the final text block is the answer; earlier text blocks are reasoning.
+    const lastTextIndex = content.findLastIndex((raw: unknown) => obj(raw).type === 'text')
     content.forEach((raw: unknown, index: number) => {
       const block = obj(raw); const partId = `${id}:content:${index}`
-      if (block.type === 'text' && typeof block.text === 'string') parts.push({ id: partId, sessionID: sessionId, messageID: id, type: 'text', text: block.text })
+      if (block.type === 'text' && typeof block.text === 'string') {
+        const reasoning = index !== lastTextIndex || isThinkingMarkerText(block.text)
+        parts.push({ id: partId, sessionID: sessionId, messageID: id, type: reasoning ? 'reasoning' : 'text', text: block.text, ...(reasoning ? { time: { start: created, end: created } } : {}) })
+      }
       else if ((block.type === 'thinking' || block.type === 'reasoning') && typeof (block.thinking ?? block.text) === 'string') parts.push({ id: partId, sessionID: sessionId, messageID: id, type: 'reasoning', text: block.thinking ?? block.text, time: { start: created, end: created } })
       else if (block.type === 'toolCall') {
         const callID = typeof block.id === 'string' ? block.id : `${id}:tool:${index}`

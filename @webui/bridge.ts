@@ -410,12 +410,24 @@ class PiRpcSession {
       }
     }
     const transcript = new Set(['message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end'])
+    const sessionID = typeof message.sessionID === 'string' ? message.sessionID : typeof message.sessionId === 'string' ? message.sessionId : undefined
+    // Pi can settle the agent just before the final assistant message (and its
+    // finish token) is delivered. Keep the sidebar busy until message_end.
+    const assistantEvent = object(message.assistantMessageEvent ?? message)
+    if (sessionID && (message.type === 'message_end' || assistantEvent.type === 'message_end')) {
+      const inner = assistantEvent
+      const assistant = object(inner.message ?? message.message)
+      const content = Array.isArray(assistant.content) ? assistant.content : []
+      const hasToolCall = content.some((part) => object(part).type === 'toolCall')
+      if (!hasToolCall) {
+        broadcastSse({ type: 'session.status', properties: { sessionID, status: { type: 'idle' } } })
+      }
+    }
     if (!transcript.has(String(message.type))) {
-      const lifecycle = new Set(['agent_start', 'turn_start', 'agent_settled'])
-      const sessionID = typeof message.sessionID === 'string' ? message.sessionID : typeof message.sessionId === 'string' ? message.sessionId : undefined
+      const lifecycle = new Set(['agent_start', 'turn_start'])
       if (sessionID && lifecycle.has(String(message.type))) {
-        broadcastSse({ type: 'session.status', properties: { sessionID, status: { type: message.type === 'agent_settled' ? 'idle' : 'busy' } } })
-      } else broadcastSse(message)
+        broadcastSse({ type: 'session.status', properties: { sessionID, status: { type: 'busy' } } })
+      } else if (message.type !== 'agent_settled') broadcastSse(message)
     }
     for (const listener of this.listeners) listener(message)
   }

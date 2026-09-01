@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { MessageWithParts } from '@/api/types'
 import { messagesQueryKey } from '@/lib/queryInvalidation'
+import { isThinkingMarkerText } from '@/lib/thinkingMarkers'
 
 const asObject = (v: unknown): Record<string, any> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, any> : {}
 const wsUrl = (url: string) => {
@@ -22,7 +23,11 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
     // Pi wraps streaming content in assistantMessageEvent. The bridge deliberately keeps
     // this small transport envelope; this reducer is the single live projector.
     const inner = asObject(event.assistantMessageEvent ?? event); const session = sessionID!; const contentIndex = inner.contentIndex
-    const eventMessageId = typeof event.messageId === 'string' ? event.messageId : (typeof event.messageID === 'string' ? event.messageID : `live:${session}:assistant`)
+    const eventMessage = asObject(inner.message ?? event.message)
+    const eventMessageId = typeof event.messageId === 'string' ? event.messageId
+      : typeof event.messageID === 'string' ? event.messageID
+        : typeof eventMessage.id === 'string' ? eventMessage.id
+          : `live:${session}:assistant`
     const callId = inner.toolCallId ?? event.toolCallId
     const owned = typeof callId === 'string' ? toolOwners.current.get(callId) : undefined
     const messageId = owned?.messageId ?? eventMessageId
@@ -32,10 +37,19 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
       if (!message) { message = { info: { id: messageId, sessionID: session, role: 'assistant', time: { created: Date.now() } } as any, parts: [] }; messages.push(message) }
       const parts = [...message.parts]; const at = parts.findIndex((p) => p.id === partId)
       const current = at >= 0 ? parts[at] as any : undefined
-      const kind = inner.type === 'thinking_start' || inner.type === 'thinking_delta' || inner.type === 'thinking_end' ? 'reasoning' : inner.type?.startsWith('toolcall') ? 'tool' : 'text'
+      // A streaming plain-text block is provisional: Pi also uses text blocks
+      // for intermediate narration. Keep it under Thinking until message_end
+      // tells us which (last) text block is the final answer.
+      const kind = inner.type === 'thinking_start' || inner.type === 'thinking_delta' || inner.type === 'thinking_end' || inner.type === 'text_start' || inner.type === 'text_delta' || inner.type === 'text_end' ? 'reasoning' : inner.type?.startsWith('toolcall') ? 'tool' : 'text'
       let part: any = current ?? { id: partId, sessionID: session, messageID: messageId, type: kind, ...(kind === 'text' || kind === 'reasoning' ? { text: '' } : { callID: inner.toolCallId ?? inner.id ?? partId, tool: inner.toolName ?? inner.name ?? 'unknown', state: { status: 'pending', input: {}, raw: '' } }) }
       if (inner.type === 'text_delta' || inner.type === 'thinking_delta') part = { ...part, text: `${part.text ?? ''}${inner.delta ?? ''}` }
-      if (inner.type === 'text_end' || inner.type === 'thinking_end') part = { ...part, text: inner.text ?? part.text, ...(kind === 'reasoning' ? { time: { start: message.info.time.created, end: Date.now() } } : {}) }
+      if (inner.type === 'text_end' || inner.type === 'thinking_end') part = { ...part, text: inner.text ?? part.text }
+      if (kind === 'reasoning' && !part.time) part = { ...part, time: { start: message.info.time.created } }
+      // Retain the marker heuristic for transports that emit an untyped block.
+      if (kind === 'text' && isThinkingMarkerText(String(part.text ?? ''))) {
+        part = { ...part, type: 'reasoning', time: { start: message.info.time.created } }
+      }
+      if ((inner.type === 'text_end' || inner.type === 'thinking_end') && part.type === 'reasoning') part = { ...part, time: { start: message.info.time.created, end: Date.now() } }
       if (inner.type === 'toolcall_end') { const call = asObject(inner.toolCall ?? inner); const id = call.id ?? part.callID; part = { ...part, callID: id, tool: call.name ?? part.tool, state: { status: 'pending', input: asObject(call.arguments), raw: JSON.stringify(call.arguments ?? {}) } }; if (typeof id === 'string') toolOwners.current.set(id, { messageId, partId }) }
       if (type === 'tool_execution_start' || inner.type === 'tool_execution_start') part = { ...part, state: { status: 'running', input: asObject(part.state?.input), time: { start: Date.now() } } }
       // Tool output is intentionally not streamed. It can be very large and is
@@ -43,6 +57,21 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
       if (type === 'tool_execution_update' || inner.type === 'tool_execution_update') part = { ...part, state: { ...part.state, status: 'running' } }
       if (type === 'tool_execution_end' || inner.type === 'tool_execution_end') { const error = inner.isError || event.isError; const call = part.callID; const detailsUrl = `${apiUrl}/sessions/${session}/tool-calls/${encodeURIComponent(String(call))}`; part = { ...part, state: error ? { status: 'error', input: part.state.input, error: 'Tool execution failed (expand for details)', metadata: { detailsUrl }, time: { start: part.state.time?.start ?? Date.now(), end: Date.now() } } : { status: 'completed', input: part.state.input, output: '', title: '', metadata: { detailsUrl }, time: { start: part.state.time?.start ?? Date.now(), end: Date.now() } } } }
       if (at >= 0) parts[at] = part; else parts.push(part)
+      if (inner.type === 'message_end') {
+        const content = Array.isArray(eventMessage.content) ? eventMessage.content : []
+        const lastTextIndex = content.findLastIndex((value: unknown) => asObject(value).type === 'text')
+        for (let index = 0; index < content.length; index++) {
+          const block = asObject(content[index])
+          if (block.type !== 'text') continue
+          const id = `${messageId}:content:${index}`
+          const partIndex = parts.findIndex((value) => value.id === id)
+          if (partIndex < 0) continue
+          const reasoning = index !== lastTextIndex || isThinkingMarkerText(String(block.text ?? ''))
+          parts[partIndex] = reasoning
+            ? { ...parts[partIndex], type: 'reasoning', text: block.text ?? (parts[partIndex] as any).text, time: { start: (parts[partIndex] as any).time?.start ?? message.info.time.created, end: Date.now() } } as any
+            : { ...parts[partIndex], type: 'text', text: block.text ?? (parts[partIndex] as any).text, time: undefined } as any
+        }
+      }
       messages[messages.indexOf(message)] = { ...message, parts, info: (inner.type === 'message_end' ? { ...message.info, time: { ...message.info.time, completed: Date.now() } } : message.info) as any }
       return messages
     })
