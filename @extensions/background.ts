@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type BackgroundSession = {
   path: string;
@@ -56,6 +56,16 @@ function removeSession(path: string): void {
 
 function getBridge(): BackgroundBridge | undefined {
   return (globalThis as Record<string, unknown>)[bridgeKey] as BackgroundBridge | undefined;
+}
+
+function activeProfile(ctx: ExtensionContext, fallback = "master"): string {
+  let profile: string | undefined;
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry.type !== "custom" || entry.customType !== "agent-profile-state") continue;
+    const name = (entry.data as { name?: unknown } | undefined)?.name;
+    if (typeof name === "string" && name.trim()) profile = name.trim();
+  }
+  return profile ?? fallback;
 }
 
 export default function backgroundExtension(pi: ExtensionAPI) {
@@ -113,6 +123,52 @@ export default function backgroundExtension(pi: ExtensionAPI) {
       child.stdin?.write(`${JSON.stringify({ type: "prompt", message: args?.trim() || "Continue working on the current task." })}\n`);
       child.unref();
       ctx.ui.notify(`Background session started: ${name}`, "info");
+    },
+  });
+
+  pi.registerCommand("new-bg", {
+    description: "Start a blank new session in the background",
+    handler: async (args, ctx) => {
+      const blankSession = SessionManager.create(ctx.cwd, ctx.sessionManager.getSessionDir());
+      const target = blankSession.getSessionFile();
+      if (!target) {
+        ctx.ui.notify("Unable to create a background session", "error");
+        return;
+      }
+
+      const prompt = args?.trim() || "Start working on a new task.";
+      const name = prompt.replace(/\s+/g, " ").slice(0, 70) || "New background session";
+      const modelArgs = ctx.model ? ["--model", `${ctx.model.provider}/${ctx.model.id}`] : [];
+      const configuredProfile = pi.getFlag("profile");
+      const fallbackProfile = typeof configuredProfile === "string" && configuredProfile.trim()
+        ? configuredProfile.trim()
+        : "master";
+      const profileArgs = ["--profile", activeProfile(ctx, fallbackProfile)];
+      const childArgs = ["--mode", "rpc", "--session", target, ...modelArgs, ...profileArgs];
+      const executable = process.argv[1];
+      const child = executable
+        ? spawn(process.execPath, [executable, ...childArgs], {
+            cwd: ctx.cwd,
+            detached: true,
+            stdio: ["pipe", "ignore", "ignore"],
+            env: { ...process.env, PI_BACKGROUND_SESSION_FILE: target },
+          })
+        : spawn("pi", childArgs, {
+            cwd: ctx.cwd,
+            detached: true,
+            stdio: ["pipe", "ignore", "ignore"],
+            env: { ...process.env, PI_BACKGROUND_SESSION_FILE: target },
+          });
+
+      const sessions = readSessions().filter((session) => session.path !== target);
+      sessions.push({ path: target, name, status: "running", createdAt: Date.now() });
+      writeSessions(sessions);
+      redraw();
+      child.once("error", () => { updateSession(target, "done"); redraw(); });
+      child.once("exit", () => { updateSession(target, "done"); redraw(); });
+      child.stdin?.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
+      child.unref();
+      ctx.ui.notify(`New background session started: ${name}`, "info");
     },
   });
 

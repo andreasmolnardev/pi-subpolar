@@ -1,11 +1,20 @@
 # Agent profiles and virtual projects
 
+## Session archive
+
+`session-archive.ts` adds `/archive`, which moves the current persisted session
+into an `archive/` directory beside the project's regular session directory and
+starts a new session. `/archived` browses those sessions and resumes a selected
+one. Archived files are not returned by `/sessions`.
+
+
 ## Background sessions
 
 `background.ts` adds `/background [prompt]`. It copies the current saved session,
 starts it in a detached RPC-mode Pi process, and displays its progress under
 `[Background sessions]` in the profiles widget. Completed sessions are marked
-`✓`; switching to one removes it from that list.
+`✓`; switching to one removes it from that list. `/new-bg [prompt]` starts a
+blank session in the same project with the current model and profile.
 
 ## Stateless OpenAPI tools
 
