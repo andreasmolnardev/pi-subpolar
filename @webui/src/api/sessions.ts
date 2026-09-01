@@ -8,6 +8,7 @@ export interface StoredSession {
   title: string | null
   createdAt: number
   updatedAt: number
+  archived: boolean
 }
 
 export async function listStoredSessions(): Promise<StoredSession[]> {
@@ -17,7 +18,7 @@ export async function listStoredSessions(): Promise<StoredSession[]> {
 
 export async function updateStoredSession(
   sessionId: string,
-  data: { directory?: string | null; title?: string | null; projectId?: number | string | null },
+  data: { directory?: string | null; title?: string | null; projectId?: number | string | null; archived?: boolean },
 ): Promise<void> {
   await fetchWrapper(`${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'PATCH',

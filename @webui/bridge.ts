@@ -13,6 +13,7 @@ type SessionRecord = {
   title: string
   createdAt: number
   updatedAt: number
+  archived?: boolean
   profile?: string
   model?: string
 }
@@ -40,6 +41,7 @@ const extensionPaths = [
   'agent-profiles.ts',
   'projects.ts',
   'usage.ts',
+  'session-archive.ts',
   'session-title.ts',
   'session-history-search.ts',
   'list-tools.ts',
@@ -314,7 +316,7 @@ function projectResponses() {
 function storedSessionResponse(record: SessionRecord) {
   const project = projectFor(record.project)
   const projectId = Math.max(1, projects().findIndex((item) => item.name === project.name) + 1)
-  return { ...record, projectId, directory: project.path }
+  return { ...record, archived: record.archived ?? false, projectId, directory: project.path }
 }
 
 function rpcData(value: unknown): unknown {
@@ -768,9 +770,10 @@ async function handle(request: Request): Promise<Response> {
         if (title) {
           await sendRpc(id, { type: 'set_session_name', name: title })
           recordFor(id).title = title
-          await saveState()
         }
-        return json({ session: recordFor(id) })
+        if (typeof input.archived === 'boolean') recordFor(id).archived = input.archived
+        await saveState()
+        return json({ session: storedSessionResponse(recordFor(id)) })
       }
       if (path.length === 3 && request.method === 'DELETE') {
         active.get(id)?.close()

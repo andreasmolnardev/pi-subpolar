@@ -68,7 +68,7 @@ export class SubpolarClient {
     return this.baseURL.replace(/\/api\/opencode$/, '/api')
   }
 
-  private toLegacySession(session: { id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }) {
+  private toLegacySession(session: { id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; archived?: boolean }) {
     const created = session.createdAt ?? Date.now()
     const updated = session.updatedAt ?? created
     return {
@@ -78,6 +78,7 @@ export class SubpolarClient {
       title: session.title || 'Untitled Session',
       version: 'pi',
       time: { created, updated },
+      archived: session.archived ?? false,
     } as LegacySession
   }
 
@@ -127,6 +128,15 @@ export class SubpolarClient {
     return fetchWrapperVoid(`${this.baseURL}/experimental/workspace/${workspaceID}`, {
       method: 'DELETE',
       params: this.getParams(),
+    })
+  }
+
+  async archiveSession(sessionID: string, archived: boolean) {
+    return fetchWrapper(`${this.nativeBaseURL}/sessions/${sessionID}`, {
+      method: 'PATCH',
+      params: this.getParams(),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archived }),
     })
   }
 

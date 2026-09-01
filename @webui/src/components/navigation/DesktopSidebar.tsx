@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDesktop } from "@/hooks/useDesktop";
@@ -281,17 +281,26 @@ export function DesktopSidebar() {
     return overrideNames ? base.filter((agent) => overrideNames.has(agent.name)) : base;
   }, [hiddenSidebarAgents, projectAgents, selectedSidebarProject?.agentNames, selectedSidebarProject?.hasAgentOverride]);
 
+  const projectMatchesSelected = useCallback((session: { projectId: number | null; directory: string | null }) => {
+    if (selectedSidebarProjectId === String(GENERAL_CHAT_PROJECT_ID)) {
+      return session.projectId === GENERAL_CHAT_PROJECT_ID || session.directory === generalChatDirectory;
+    }
+    return String(session.projectId) === selectedSidebarProjectId || session.directory === selectedSidebarDirectory;
+  }, [generalChatDirectory, selectedSidebarDirectory, selectedSidebarProjectId]);
+
   const selectedProjectSessions = useMemo(() => {
     if (!storedSessions) return [];
     return storedSessions
       .filter((session) => {
-        if (selectedSidebarProjectId === String(GENERAL_CHAT_PROJECT_ID)) {
-          return session.projectId === GENERAL_CHAT_PROJECT_ID || session.directory === generalChatDirectory;
-        }
-        return String(session.projectId) === selectedSidebarProjectId || session.directory === selectedSidebarDirectory;
+        if (session.archived) return false;
+        return projectMatchesSelected(session);
       })
       .slice(0, 5);
-  }, [generalChatDirectory, selectedSidebarDirectory, selectedSidebarProjectId, storedSessions]);
+  }, [projectMatchesSelected, storedSessions]);
+
+  const archivedProjectSessions = useMemo(() => {
+    return (storedSessions ?? []).filter((session) => session.archived && projectMatchesSelected(session)).slice(0, 5);
+  }, [projectMatchesSelected, storedSessions]);
 
   const { data: configs } = useQuery({
     queryKey: ["subpolar-configs"],
@@ -523,6 +532,27 @@ onValueChange={(value) => {
                   />
                 );
               })}
+            {archivedProjectSessions.length > 0 && (
+              <>
+                <div className="mx-2 my-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="h-px flex-1 bg-border" />
+                  <span>Archived</span>
+                  <span className="h-px flex-1 bg-border" />
+                </div>
+                {archivedProjectSessions.map((session) => {
+                  const projectId = getSessionProjectId(session.directory, session.projectId);
+                  return (
+                    <SidebarNavItem
+                      key={session.id}
+                      label={session.title || session.id}
+                      active={isSessionActive(session.id)}
+                      onClick={() => navigate(`/projects/${projectId}/sessions/${encodeURIComponent(session.id)}`)}
+                      indent
+                    />
+                  );
+                })}
+              </>
+            )}
 
           </SidebarSection>
         </div>
