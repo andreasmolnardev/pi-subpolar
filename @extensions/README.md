@@ -85,6 +85,32 @@ Use `/permissions` in the TUI to inspect or change a rule. The web agent editor 
 
 `agent-profiles.ts` adds named profiles containing a replacement system prompt and an allowlist of active tools. `list-tools.ts` adds `/list-tools`, which shows all registered tools and dims those unavailable to the active profile.
 
+## Skills
+
+`skills.ts` discovers `SKILL.md` files from the project `.subpolar/skills` directory, `~/.config/subpolar/skills`, and `~/.pi/skills`. A skill may be a `SKILL.md` file directly in one of those directories or a directory containing `SKILL.md`.
+
+Optional YAML-style front matter controls how the skill is added to the agent context:
+
+```markdown
+---
+load: agent-skill
+profiles:
+  - reviewer
+  - planner
+---
+# Review code
+
+Instructions that are always included for the matching profiles.
+```
+
+`load` accepts:
+
+- `name-only` (default): adds only the skill name to the available-skills list.
+- `metadata`: adds the name and a description to the available-skills list. The description is read from a `description:` or `summary:` line, or falls back to the first Markdown heading.
+- `agent-skill`: adds the complete skill body to the profile context when the active profile is listed in `profiles`. Use `*` in the array to apply it to every profile.
+
+The `profiles` property is an array of profile names and is used for `agent-skill` entries. Skill files are re-read before each agent turn, so changes take effect without restarting the session.
+
 Commands:
 
 ```text
