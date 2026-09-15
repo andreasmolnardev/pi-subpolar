@@ -224,8 +224,8 @@ function subpolarPolicies(agent: Agent) {
   const policies = (agent.toolAccess ?? [])
     .filter((tool) => tool.type === "subpolar")
     .map((tool) => ({ toolId: tool.id, effect: policyEffect(tool.permission) }));
-  if (policies.some((policy) => policy.effect !== "deny") && !policies.some((policy) => policy.toolId === "tools.list")) {
-    return [{ toolId: "tools.list", effect: "allow" as const }, ...policies];
+  if (policies.some((policy) => policy.effect !== "deny") && !policies.some((policy) => policy.toolId === "search-tool")) {
+    return [{ toolId: "search-tool", effect: "allow" as const }, ...policies];
   }
   return policies;
 }

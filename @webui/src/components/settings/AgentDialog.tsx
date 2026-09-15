@@ -108,7 +108,7 @@ function policyPermission(effect: AgentToolPolicy['effect']): 'allow' | 'ask' | 
 function buildToolAccess(agent?: Agent, policies: AgentToolPolicy[] = []): ToolAccess[] {
   const configured = agent?.toolAccess?.length ? agent.toolAccess.filter(tool => tool.type !== 'subpolar' && tool.type !== 'skill') as ToolAccess[] : undefined
   const bashPermission = agent?.permission?.bash
-  const piBashPolicy = policies.find(policy => policy.tool_id === 'pi.bash')
+  const piBashPolicy = policies.find(policy => policy.tool_id === 'bash')
   const fallback = [
     { type: 'builtin' as const, id: 'edit', permission: permissionFrom(agent?.permission?.edit, 'allow') },
     { type: 'builtin' as const, id: 'webfetch', permission: permissionFrom(agent?.permission?.webfetch, 'allow') },
@@ -116,7 +116,8 @@ function buildToolAccess(agent?: Agent, policies: AgentToolPolicy[] = []): ToolA
     ...(agent?.allowedCommands || []).map((command): ToolAccess => ({ type: 'cli', id: command, command, permission: 'allow' })),
   ]
   const base = configured ?? fallback
-  const subpolar = policies.filter(policy => !policy.tool_id.startsWith('pi.')).map((policy): ToolAccess => ({
+  const builtinToolIds = new Set(['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'search-tool'])
+  const subpolar = policies.filter(policy => !builtinToolIds.has(policy.tool_id)).map((policy): ToolAccess => ({
     type: 'subpolar',
     id: policy.tool_id,
     permission: policyPermission(policy.effect),

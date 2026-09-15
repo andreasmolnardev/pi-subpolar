@@ -7,6 +7,7 @@ import { ChatInputBar, type ChatInputBarHandle, type PendingSessionPrompt } from
 import { ChevronDown, CornerUpLeft } from "lucide-react";
 import { Header } from "@/components/ui/header";
 import { SessionList } from "@/components/session/SessionList";
+import { ProjectNotFoundDialog } from "@/components/project/ProjectNotFoundDialog";
 import { getSessionListPath } from '@/lib/navigation'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 
@@ -99,7 +100,7 @@ export function SessionDetail() {
     };
   }, []);
 
-  const { data: repo, isLoading: repoLoading } = useQuery({
+  const { data: repo, isLoading: repoLoading, isError: repoError } = useQuery({
     queryKey: ["repo", repoId],
     queryFn: () => getProject(repoId),
     enabled: id !== undefined,
@@ -381,15 +382,8 @@ export function SessionDetail() {
     return <Navigate to="/" replace />;
   }
 
-  if (!repo) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-background via-background to-background">
-        <div className="flex flex-col items-center gap-2">
-          <div className="w-8 h-8 animate-spin rounded-full border-2 border-muted border-t-foreground" />
-          <span className="text-muted-foreground">Loading project...</span>
-        </div>
-      </div>
-    );
+  if (repoError || !repo) {
+    return <ProjectNotFoundDialog projectId={id} />
   }
 
   const workspaceDisplayName = repo?.name || repo?.directory.split('/').pop() || repo?.directory || 'Workspace';

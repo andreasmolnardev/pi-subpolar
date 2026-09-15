@@ -463,6 +463,17 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
     const handleSSEMessage = (data: unknown) => {
       if (!data || typeof data !== 'object' || !('type' in data)) return
       
+      const rawEvent = data as { type: string; properties?: Record<string, unknown> }
+      if (rawEvent.type === 'session_info_changed') {
+        // Pi SDK emits this directly when automatic title generation finishes.
+        // Refresh both the legacy sidebar cache and directory-scoped session lists.
+        queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        queryClient.invalidateQueries({
+          predicate: (query) => query.queryKey[0] === 'subpolar' && query.queryKey[1] === 'sessions',
+        })
+        return
+      }
+
       const event = data as SSEEvent
       
       switch (event.type) {

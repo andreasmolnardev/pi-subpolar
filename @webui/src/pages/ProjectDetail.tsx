@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { getProject } from '@/api/projects'
 import { SessionList } from '@/components/session/SessionList'
+import { ProjectNotFoundDialog } from '@/components/project/ProjectNotFoundDialog'
 import { ChatInputBar } from '@/components/chat/ChatInputBar'
 import { Header } from '@/components/ui/header'
 import { useCreateSession } from '@/hooks/usePiHarness'
@@ -19,7 +20,7 @@ export function ProjectDetail() {
   const navigate = useNavigate()
   const projectId = Number(id) || 0
 
-  const { data: project, isLoading: projectLoading } = useQuery({
+  const { data: project, isLoading: projectLoading, isError: projectError } = useQuery({
     queryKey: ['project', projectId],
     queryFn: () => getProject(projectId),
     enabled: !!projectId,
@@ -74,14 +75,8 @@ export function ProjectDetail() {
     return null
   }
 
-  if (!project) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-background">
-        <p className="text-muted-foreground">
-          Project not found
-        </p>
-      </div>
-    )
+  if (projectError || !project) {
+    return <ProjectNotFoundDialog projectId={id} />
   }
 
   return (

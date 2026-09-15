@@ -9,12 +9,14 @@ import { VoiceSettings } from '@/components/settings/VoiceSettings'
 import { NotificationSettings } from '@/components/settings/NotificationSettings'
 import { IntegrationsSettings } from '@/components/settings/IntegrationsSettings'
 import { ExtensionsSettings } from '@/components/settings/ExtensionsSettings'
+import { UsageSettings } from '@/components/settings/UsageSettings'
+import { ProxySettings } from '@/components/settings/ProxySettings'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
-import { Settings2, Keyboard, ChevronLeft, Key, User, Volume2, Bell, X, MessageSquare, Palette, Plug } from 'lucide-react'
+import { Settings2, Keyboard, ChevronLeft, Key, User, Volume2, Bell, X, MessageSquare, Palette, Plug, BarChart3, Network } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSettingsDialog } from '@/hooks/useSettingsDialog'
 
-type SettingsView = 'menu' | 'general' | 'chat' | 'appearance' | 'shortcuts' | 'providers' | 'integrations' | 'extensions' | 'account' | 'voice' | 'notifications'
+type SettingsView = 'menu' | 'general' | 'chat' | 'appearance' | 'shortcuts' | 'providers' | 'integrations' | 'extensions' | 'account' | 'voice' | 'notifications' | 'usage' | 'proxy'
 
 export function SettingsDialog() {
   const { isOpen, close, activeTab, setActiveTab } = useSettingsDialog()
@@ -78,6 +80,8 @@ export function SettingsDialog() {
     { id: 'integrations', icon: Plug, label: 'Integrations', description: 'Configure MCP, calendars, and mail' },
     { id: 'providers', icon: Key, label: 'Providers', description: 'Configure AI providers and default models' },
     { id: 'extensions', icon: Plug, label: 'Extensions', description: 'View installed Pi extensions' },
+    { id: 'usage', icon: BarChart3, label: 'Usage', description: 'Daily input, output, and cache-read tokens' },
+    { id: 'proxy', icon: Network, label: 'Proxy', description: 'OpenAI-compatible message-only proxy' },
   ]
 
   const handleOpenMobileView = useCallback((view: SettingsView) => {
@@ -139,6 +143,8 @@ export function SettingsDialog() {
                 {activeTab === 'providers' && <ProviderSettings />}
                 {activeTab === 'integrations' && <IntegrationsSettings />}
                 {activeTab === 'extensions' && <ExtensionsSettings />}
+                {activeTab === 'usage' && <UsageSettings />}
+                {activeTab === 'proxy' && <ProxySettings />}
               </div>
             </div>
           </div>
@@ -203,6 +209,8 @@ export function SettingsDialog() {
                {mobileView === 'providers' && <div key="providers"><ProviderSettings /></div>}
                {mobileView === 'integrations' && <div key="integrations"><IntegrationsSettings /></div>}
                {mobileView === 'extensions' && <div key="extensions"><ExtensionsSettings /></div>}
+               {mobileView === 'usage' && <div key="usage"><UsageSettings /></div>}
+               {mobileView === 'proxy' && <div key="proxy"><ProxySettings /></div>}
            </div>
         </div>
 

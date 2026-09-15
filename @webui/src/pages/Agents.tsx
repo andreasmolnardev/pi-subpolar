@@ -52,9 +52,9 @@ function subpolarPolicies(agent: Agent) {
     .filter(tool => tool.type === 'subpolar')
     .map(tool => ({ toolId: tool.id, effect: policyEffect(tool.permission) }))
   const bashTool = (agent.toolAccess ?? []).find(tool => tool.type === 'builtin' && tool.id === 'other-bash')
-  if (bashTool) policies.push({ toolId: 'pi.bash', effect: policyEffect(bashTool.permission) })
-  if (policies.some(policy => policy.effect !== 'deny') && !policies.some(policy => policy.toolId === 'tools.list')) {
-    return [{ toolId: 'tools.list', effect: 'allow' as const }, ...policies]
+  if (bashTool) policies.push({ toolId: 'bash', effect: policyEffect(bashTool.permission) })
+  if (policies.some(policy => policy.effect !== 'deny') && !policies.some(policy => policy.toolId === 'search-tool')) {
+    return [{ toolId: 'search-tool', effect: 'allow' as const }, ...policies]
   }
   return policies
 }
@@ -334,7 +334,7 @@ export function Agents() {
                                 key={action}
                                 className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${colorMap[levelStr] || 'bg-muted text-muted-foreground'}`}
                               >
-                                {action} permissions: {levelStr === 'auto' ? 'auto approval' : levelStr === 'ask' ? 'manual approval' : levelStr}
+                                {action} permissions: {levelStr === 'ask' ? 'manual approval' : levelStr}
                               </span>
                             )
                           })}

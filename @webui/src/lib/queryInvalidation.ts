@@ -9,6 +9,9 @@ export function messagesQueryKey(
 }
 
 export function invalidateProviderCaches(queryClient: QueryClient) {
+  queryClient.invalidateQueries({ queryKey: ['provider-accounts'] })
+  queryClient.invalidateQueries({ queryKey: ['provider-catalog'] })
+  queryClient.invalidateQueries({ queryKey: ['provider-login-flow'] })
   queryClient.invalidateQueries({ queryKey: ['provider-credentials'] })
   queryClient.invalidateQueries({ queryKey: ['provider-auth-methods'] })
   queryClient.invalidateQueries({ queryKey: ['providers'] })
