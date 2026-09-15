@@ -35,15 +35,13 @@ provider to `~/.pi/tools.json`, `~/.pi/agent/tools.json`, or the project-local
 ```
 
 The OpenAPI document can be JSON, YAML, or an embedded object. Each operation
-with an `operationId` becomes `provider_operationId`; the example registers
-`web_search` (shown as `web.search` in the label) and maps its arguments to
-query, path, header, or JSON body parameters. Tool names cannot contain dots
-because model APIs restrict them to letters, numbers, underscores, and dashes. Configure `baseUrl` to override the first OpenAPI server. Set
-`skipTlsVerify: true` only for providers using self-signed certificates.
-Reload Pi after changing the file. The master profile has access to every
-registered tool, including generated `provider_operationId` tools, and also
-has the `manage_external_tools` tool for `add`, `edit`, `delete`, and `get`; pass a
-`provider`, optional `scope` (`local` or `global`), and `config` for add/edit.
+with an `operationId` is registered centrally as `provider/operationId`, for
+example `web/search`. The operation's query, path, header, and JSON body
+parameters are retained by the bridge adapter. External tools are not
+registered as individual Pi functions; use `search-tool` to discover them and
+`subpolar-tools` to describe or call them. Configure `baseUrl` to override the
+first OpenAPI server. Tool policy, approvals, auditing, credentials, and HTTP
+execution all happen in the bridge.
 
 ## Virtual projects
 

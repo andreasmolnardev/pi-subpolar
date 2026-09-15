@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import { type Message, uuidv7 } from "@earendil-works/pi-ai";
-import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const SYSTEM_PROMPT = `Create a concise title for this coding-agent session.
 Return only the title, with no quotes, punctuation at the end, or explanation.
@@ -51,7 +51,7 @@ function updateSessionStatus(ctx: ExtensionContext, title?: string) {
 export default function sessionTitleExtension(pi: ExtensionAPI) {
   pi.registerCommand("sessions", {
     description: "Browse and switch sessions for this project",
-    handler: async (_args, ctx) => {
+    handler: async (_args, ctx: ExtensionCommandContext) => {
       if (!ctx.hasUI) return ctx.ui.notify("/sessions requires interactive mode", "error");
       const sessions = await SessionManager.list(ctx.cwd);
       if (!sessions.length) return ctx.ui.notify("No saved sessions", "info");
@@ -102,9 +102,10 @@ export default function sessionTitleExtension(pi: ExtensionAPI) {
     if (!firstUser || firstUser.type !== "message") return;
     generating = true;
     try {
+      const userContent = (firstUser.message as unknown as { content: Message["content"] }).content
       const prompt: Message = {
         role: "user",
-        content: `User's first request:\n\n${textOf(firstUser.message.content)}`,
+        content: `User's first request:\n\n${textOf(userContent)}`,
         timestamp: Date.now(),
       };
       const response = await ctx.modelRegistry.complete(model, {

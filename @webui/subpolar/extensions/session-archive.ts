@@ -1,7 +1,7 @@
 /** Archive sessions out of /sessions and browse archived sessions. */
 import { mkdir, rename } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { SessionManager, type ExtensionAPI, type ExtensionContext, type SessionInfo } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type SessionInfo } from "@earendil-works/pi-coding-agent";
 
 const ARCHIVE_DIRECTORY = "archive";
 
@@ -19,7 +19,7 @@ function sessionLabel(session: SessionInfo): string {
   return `${title || "Unnamed session"} · ${session.messageCount} messages · ${session.modified.toLocaleString()}`;
 }
 
-async function browseArchived(ctx: ExtensionContext): Promise<void> {
+async function browseArchived(ctx: ExtensionCommandContext): Promise<void> {
   const sessions = await SessionManager.list(ctx.cwd, archiveDirectory(ctx));
   if (!sessions.length) {
     ctx.ui.notify("No archived sessions", "info");
@@ -66,7 +66,7 @@ export default function sessionArchiveExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("archived", {
     description: "Browse and switch to archived sessions",
-    handler: async (_args, ctx) => {
+    handler: async (_args, ctx: ExtensionCommandContext) => {
       if (!ctx.hasUI) {
         ctx.ui.notify("/archived requires interactive mode", "error");
         return;

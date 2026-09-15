@@ -1,0 +1,99 @@
+export {
+  authenticateRequest,
+  authCookie,
+  clearAuthCookie,
+  ensureApplicationCollections,
+  getPocketBaseAdmin,
+  getPocketBaseUrl,
+  getUserPreferences,
+  newPocketBaseClient,
+  saveUserPreferences,
+  type PocketBaseUser,
+} from './pocketbase'
+
+export {
+  authConfig,
+  changePassword,
+  signIn,
+  signOut,
+  signUp,
+  syncAdminFromEnv,
+} from './auth'
+
+export {
+  authorizePiToolCall,
+  callTool,
+  canonicalToolId,
+  continueApprovedTool,
+  searchToolsForAgent,
+  upsertRegisteredTool,
+  describeToolForAgent,
+  ensureToolRegistry,
+  ensureUserDefaults,
+  listAgents,
+  listPendingApprovals,
+  listToolsForAgent,
+  respondToApproval,
+  type AgentDefinition,
+  type Approval,
+  type PermissionOverride,
+  type ToolDefinition,
+} from './tools'
+
+export {
+  ApprovalFlowService,
+  createApprovalFlow,
+  type ApprovalFlowApproval,
+  type ApprovalContinueResult,
+  type ApprovalDecision,
+} from './approval-flow.ts'
+
+export {
+  createToolGateway,
+  createToolGatewayExecutor,
+  createToolGatewayFromCallTool,
+  InProcessToolGateway,
+  ToolGatewayAdapterRegistry,
+  type ToolGateway,
+  type ToolGatewayContext,
+  type ToolGatewayRequest,
+  type ToolGatewayResult,
+} from './tool-gateway.ts'
+
+export {
+  AgentRuntimeError,
+  createPocketBaseAgentRuntimeAdapter,
+  loadAgentRuntime,
+  type AgentRuntime,
+  type PiRuntimeConfiguration,
+} from './agent-runtime.ts'
+
+export {
+  SessionContextError,
+  createSessionContextResolver,
+  createSqliteSessionContextStore,
+  resolveSessionContext,
+  type ResolvedSessionContext,
+  type SessionContextDependencies,
+} from './session-context.ts'
+
+export {
+  ProjectSessionRepository,
+  createProjectSessionRepository,
+  ensureProjectSessionCollections,
+} from './project-store.ts'
+
+export {
+  McpAdapterError,
+  createMcpAdapter,
+  DefaultMcpAdapter,
+  type McpAdapter,
+  type McpServerConfig,
+  type McpToolReference,
+} from './mcp-adapter.ts'
+
+export * from './provider-accounts.ts'
+export * from './provider-catalog.ts'
+export * from './provider-login-flow.ts'
+export * from './provider-login-flow-store.ts'
+export * from './provider-runtime.ts'

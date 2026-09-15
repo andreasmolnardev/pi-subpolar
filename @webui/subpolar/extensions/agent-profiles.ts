@@ -93,9 +93,9 @@ export default function agentProfiles(pi: ExtensionAPI) {
   let activeName = MASTER;
   let activeProfile: Profile | undefined;
 
-  // The master profile is omniscient: it always receives every tool currently
-  // registered, including tools generated later by extensions (for example,
-  // provider_operationId tools from openapi-tools.ts).
+  // The master profile receives every tool currently allowed by the SDK. The
+  // WebUI session allowlist contains only centrally routed wrappers and the
+  // Subpolar gateway, so native extension tools cannot bypass the router.
   function allToolNames(): string[] {
     return [...new Set(pi.getAllTools().map((tool) => tool.name))];
   }
@@ -128,8 +128,12 @@ export default function agentProfiles(pi: ExtensionAPI) {
     activeProfile = normalized === MASTER ? undefined : profiles[normalized];
     // Profile-management tools are deliberately master-only, even if a config
     // file accidentally includes them in another profile's tool list.
-    const profileTools = activeProfile?.tools.filter((tool) => !MASTER_PROFILE_TOOLS.includes(tool));
-    pi.setActiveTools(activeProfile ? profileTools ?? [] : allToolNames());
+    const profileTools = activeProfile?.tools.filter((tool) => !MASTER_PROFILE_TOOLS.includes(tool)) ?? [];
+    // Discovery and the central gateway must remain available even when a
+    // profile has a narrow tool allowlist; the PocketBase router still applies
+    // the profile's actual policy when either tool is used.
+    if (activeProfile) profileTools.push("search-tool", "subpolar-tools");
+    pi.setActiveTools(activeProfile ? [...new Set(profileTools)] : allToolNames());
     updateStatus(ctx);
     return true;
   }

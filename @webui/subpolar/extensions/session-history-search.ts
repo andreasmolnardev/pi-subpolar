@@ -1,6 +1,6 @@
 /** Search saved session titles and message history, then resume a matching session. */
 import { basename } from "node:path";
-import { SessionManager, type ExtensionAPI, type SessionInfo } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type SessionInfo } from "@earendil-works/pi-coding-agent";
 
 function snippet(session: SessionInfo, query: string): string {
   const text = session.allMessagesText;
@@ -22,13 +22,13 @@ function sessionLabel(session: SessionInfo, query: string): string {
 export default function sessionHistorySearchExtension(pi: ExtensionAPI) {
   pi.registerCommand("search", {
     description: "Search session message history and switch to a matching session",
-    handler: async (args, ctx) => {
+    handler: async (args, ctx: ExtensionCommandContext) => {
       if (!ctx.hasUI) {
         ctx.ui.notify("/search requires interactive mode", "error");
         return;
       }
 
-      const query = (args?.trim() || await ctx.ui.input("Search session history")).trim();
+      const query = (args?.trim() || (await ctx.ui.input("Search session history")) || "").trim();
       if (!query) return;
 
       const sessions = await SessionManager.listAll();
