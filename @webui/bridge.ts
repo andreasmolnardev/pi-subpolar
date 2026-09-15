@@ -14,6 +14,7 @@ import {
   SessionManager,
 } from '@earendil-works/pi-coding-agent'
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent'
+
 import { Hono } from 'hono'
 import { entriesPayload, projectEntries, type TranscriptMessage } from './transcript/projector'
 
@@ -60,6 +61,20 @@ import {
   loadAgentRuntime,
   type PermissionOverride,
   type ToolGateway,
+  createProviderAccountService,
+  ensureProviderAccountCollections,
+  type ProviderAccount,
+  createProviderCatalog,
+  createProviderRuntime,
+  composeProviderRuntimeId,
+  parseProviderRuntimeId,
+  providerRuntimeMapping,
+  type ProviderRuntime,
+  ProviderLoginFlowController,
+  ProviderLoginFlowError,
+  PocketBaseProviderLoginFlowStorage,
+  ensureProviderLoginFlowCollection,
+
 } from './server/index.ts'
 
 type Project = { name: string; path: string }
@@ -99,6 +114,8 @@ process.env.SUBPOLAR_INTERNAL_TOKEN = internalToken
 let applicationDatabasePromise: ReturnType<typeof getPocketBaseAdmin> | undefined
 let applicationCollectionsReady: Promise<void> | undefined
 let inProcessToolGateway: ToolGateway | undefined
+let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccountService>> | undefined
+let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
 const migratedUsers = new Set<string>()
 
 async function applicationDatabase() {
@@ -110,7 +127,12 @@ async function applicationDatabase() {
   }
   const client = await applicationDatabasePromise
   if (!applicationCollectionsReady) {
-    applicationCollectionsReady = ensureApplicationCollections(client).then(() => ensureProjectSessionCollections(client)).then(() => ensureToolRegistry(client)).catch((error) => {
+    applicationCollectionsReady = ensureApplicationCollections(client)
+      .then(() => ensureProjectSessionCollections(client))
+      .then(() => ensureToolRegistry(client))
+      .then(() => ensureProviderAccountCollections(client))
+      .then(() => ensureProviderLoginFlowCollection(client))
+      .catch((error) => {
       applicationCollectionsReady = undefined
       throw error
     })
@@ -120,7 +142,128 @@ async function applicationDatabase() {
   return client
 }
 
-void applicationDatabase().then(async () => {
+async function providerAccountService() {
+  if (!providerAccountServicePromise) {
+    providerAccountServicePromise = applicationDatabase().then((client) => createProviderAccountService({ client })).catch((error) => {
+      providerAccountServicePromise = undefined
+      throw error
+    })
+  }
+  return providerAccountServicePromise
+}
+
+function providerAccountStatus(account: ProviderAccount) {
+  const expired = account.credentialExpiresAt !== undefined && account.credentialExpiresAt <= Date.now()
+  const state = account.status !== 'active'
+    ? 'unconfigured'
+    : expired
+      ? 'expired'
+      : account.hasCredential
+        ? 'authenticated'
+        : 'unconfigured'
+  return {
+    state,
+    configured: state === 'authenticated',
+    method: account.authType,
+    source: 'pocketbase',
+    label: account.displayName,
+  }
+}
+
+function providerAccountInstance(account: ProviderAccount) {
+  const runtimeProviderId = composeProviderRuntimeId(account.providerType, account.instanceId)
+  return {
+    id: runtimeProviderId,
+    instanceId: runtimeProviderId,
+    providerId: account.providerType,
+    label: account.displayName,
+    source: 'pocketbase' as const,
+    authMethod: account.authType,
+    status: providerAccountStatus(account),
+  }
+}
+
+function providerCatalogAccount(account: ProviderAccount): Record<string, unknown> {
+  const status = providerAccountStatus(account)
+  return {
+    id: account.instanceId,
+    provider_id: account.providerType,
+    display_name: account.displayName,
+    auth_type: account.authType,
+    status: status.state,
+    ...(account.credentialExpiresAt === undefined ? {} : { credential_expires_at: account.credentialExpiresAt }),
+  }
+}
+
+async function ownedProviderAccount(userId: string, wireInstanceId: string): Promise<{ account: ProviderAccount } | null> {
+  const parsed = parseProviderRuntimeId(decodeURIComponent(wireInstanceId))
+  if (!parsed) return null
+  const account = await (await providerAccountService()).getAccount(userId, parsed.instanceId)
+  if (!account || account.providerType !== parsed.providerType) return null
+  return { account }
+}
+
+async function userProviderRuntime(userId: string, accounts?: readonly ProviderAccount[]): Promise<ProviderRuntime> {
+  const accountService = await providerAccountService()
+  const selectedAccounts = accounts ?? await accountService.listAccounts(userId)
+  return createProviderRuntime({
+    userId,
+    accountService,
+    accounts: selectedAccounts,
+    baseRuntime: await modelRuntimePromise,
+    refreshOnCreate: false,
+    allowModelNetwork: false,
+  })
+}
+
+async function providerLoginFlowController(): Promise<ProviderLoginFlowController> {
+  if (!providerLoginFlowControllerPromise) {
+    providerLoginFlowControllerPromise = (async () => {
+      const client = await applicationDatabase()
+      const accountService = await providerAccountService()
+      const baseRuntime = await modelRuntimePromise
+      return new ProviderLoginFlowController({
+        storage: new PocketBaseProviderLoginFlowStorage(client),
+        resolveProviderInstance: async (providerInstanceId, ownerId) => {
+          const parsed = parseProviderRuntimeId(providerInstanceId)
+          if (parsed) {
+            const account = await accountService.getAccount(ownerId, parsed.instanceId).catch(() => null)
+            return account && account.providerType === parsed.providerType ? providerRuntimeMapping(account) : undefined
+          }
+          return baseRuntime.getProvider(providerInstanceId) ? { runtimeProviderId: providerInstanceId } : undefined
+        },
+        runtimeFactory: async (context) => {
+          const parsed = parseProviderRuntimeId(context.providerInstanceId)
+          if (!parsed) return baseRuntime
+          const account = await accountService.getAccount(context.ownerId, parsed.instanceId)
+          if (!account || account.providerType !== parsed.providerType) throw new Error('Provider account not found')
+          return userProviderRuntime(context.ownerId, [account])
+        },
+        credentialSink: async (context, credential) => {
+          const parsed = parseProviderRuntimeId(context.providerInstanceId)
+          if (parsed) {
+            const account = await accountService.getAccount(context.ownerId, parsed.instanceId)
+            if (!account || account.providerType !== parsed.providerType) throw new Error('Provider account not found')
+            await accountService.updateAccount(context.ownerId, account.instanceId, { authType: credential.type, credential })
+            return
+          }
+          await accountService.createAccount(context.ownerId, {
+            providerType: context.runtimeProviderId,
+            displayName: context.displayName ?? context.runtimeProviderId,
+            authType: credential.type,
+            credential,
+          })
+        },
+      })
+    })().catch((error) => {
+      providerLoginFlowControllerPromise = undefined
+      throw error
+    })
+  }
+  return providerLoginFlowControllerPromise
+}
+
+void providerAccountService().then(async () => {
   await syncAdminFromEnv()
   console.log('PocketBase application collections ready')
 }).catch((error) => {
@@ -669,6 +812,7 @@ class PiSdkSession {
   private readonly listeners = new Set<(message: RpcMessage) => void>()
   private readonly ready: Promise<void>
   private session!: AgentSession
+  private modelRuntime!: ProviderRuntime
 
   constructor(readonly record: SessionRecord, readonly project: Project) {
     this.ready = this.initialize()
@@ -719,12 +863,13 @@ class PiSdkSession {
       ],
     })
     await resourceLoader.reload()
-    const modelRuntime = await modelRuntimePromise
+    this.modelRuntime = await userProviderRuntime(userId)
     const selectedModel = this.record.model ? parseModelSelection(this.record.model) : undefined
-    const model = selectedModel ? modelRuntime.getModel(selectedModel.providerID, selectedModel.modelID) : undefined
+    const model = selectedModel ? this.modelRuntime.getModel(selectedModel.providerID, selectedModel.modelID) : undefined
+    if (selectedModel && !model) throw new Error('Selected provider account or model is unavailable')
     const result = await createAgentSession({
       cwd: this.project.path,
-      modelRuntime,
+      modelRuntime: this.modelRuntime,
       model,
       sessionManager,
       resourceLoader,
@@ -777,7 +922,7 @@ class PiSdkSession {
       case 'abort': await this.session.abort(); break
       case 'clear_queue': data = this.session.clearQueue(); break
       case 'set_model': {
-        const model = (await modelRuntimePromise).getModel(String(command.provider ?? ''), String(command.modelId ?? ''))
+        const model = this.modelRuntime.getModel(String(command.provider ?? ''), String(command.modelId ?? ''))
         if (!model) throw new Error(`Unknown model: ${command.provider}/${command.modelId}`)
         await this.session.setModel(model)
         break
@@ -873,8 +1018,8 @@ function openApiProviders(): Record<string, unknown> {
   return redactConfig(providers) as Record<string, unknown>
 }
 
-async function runtimeProviders(): Promise<{ all: Record<string, unknown>[]; connected: string[]; default: Record<string, string> }> {
-  const runtime = await modelRuntimePromise
+async function runtimeProviders(userId: string): Promise<{ all: Record<string, unknown>[]; connected: string[]; default: Record<string, string> }> {
+  const runtime = await userProviderRuntime(userId)
   const providers = new Map<string, Record<string, unknown>>()
   for (const model of runtime.getModels()) {
     const provider = providers.get(model.provider) ?? {
@@ -1157,6 +1302,109 @@ async function handle(request: Request): Promise<Response> {
     }
   }
 
+  if (path[1] === 'providers' && authenticatedUser) {
+    try {
+      const userId = authenticatedUser.id
+      const accountService = await providerAccountService()
+
+      if (path[2] === 'catalog' && request.method === 'GET' && path.length === 3) {
+        const runtime = await modelRuntimePromise
+        const authStatus = Object.fromEntries(runtime.getProviders().map((provider) => [provider.id, { configured: false }]))
+        const accounts = await accountService.listAccounts(userId)
+        const catalog = createProviderCatalog(runtime, {
+          accounts: accounts.map(providerCatalogAccount),
+          includeRuntimeInstance: false,
+          authStatus,
+        })
+        return json({ catalog })
+      }
+
+      if (path[2] === 'accounts') {
+        if (path.length === 3 && request.method === 'GET') {
+          const accounts = await accountService.listAccounts(userId)
+          return json({ accounts: accounts.map(providerAccountInstance) })
+        }
+        if (path.length >= 4) {
+          const wireInstanceId = path[3]
+          const owned = await ownedProviderAccount(userId, wireInstanceId)
+          if (!owned) return json({ message: 'Provider account not found' }, 404)
+          if (path[4] === 'status' && request.method === 'GET' && path.length === 5) {
+            const status = await accountService.getAccountStatus(userId, owned.account.instanceId)
+            return json({ status })
+          }
+          if (path.length === 4 && request.method === 'GET') return json({ account: providerAccountInstance(owned.account) })
+          if (path.length === 4 && request.method === 'PATCH') {
+            const input = await body(request)
+            const update: { displayName?: string; status?: 'active' | 'disabled' } = {
+              ...(typeof input.displayName === 'string' ? { displayName: input.displayName } : {}),
+              ...(input.status === 'active' || input.status === 'disabled' ? { status: input.status } : {}),
+            }
+            const updated = await accountService.updateAccount(userId, owned.account.instanceId, update)
+            return updated ? json({ account: providerAccountInstance(updated) }) : json({ message: 'Provider account not found' }, 404)
+          }
+          if (path.length === 4 && request.method === 'DELETE') {
+            await accountService.deleteAccount(userId, owned.account.instanceId)
+            return json({ ok: true })
+          }
+        }
+      }
+
+      if (path[2] === 'login-flows') {
+        const controller = await providerLoginFlowController()
+        if (path.length === 3 && request.method === 'POST') {
+          const input = await body(request)
+          if (typeof input.providerInstanceId !== 'string' || typeof input.type !== 'string') return json({ message: 'providerInstanceId and type are required' }, 400)
+          if (input.type !== 'api_key' && input.type !== 'oauth') return json({ message: 'type must be api_key or oauth' }, 400)
+          const providerInstanceId = input.providerInstanceId.trim()
+          if (!providerInstanceId) return json({ message: 'providerInstanceId is required' }, 400)
+          const parsed = parseProviderRuntimeId(providerInstanceId)
+          if (parsed) {
+            if (!(await ownedProviderAccount(userId, providerInstanceId))) return json({ message: 'Provider account not found' }, 404)
+          } else if (!(await modelRuntimePromise).getProvider(providerInstanceId)) {
+            return json({ message: 'Provider not found' }, 404)
+          }
+          const flow = await controller.start({
+            ownerId: userId,
+            providerInstanceId,
+            type: input.type,
+            ...(typeof input.displayName === 'string' && input.displayName.trim() ? { displayName: input.displayName } : {}),
+          })
+          return json({ flow }, 201)
+        }
+        if (path.length >= 4) {
+          const flowId = decodeURIComponent(path[3] ?? '')
+          if (path.length === 4 && request.method === 'GET') return json({ status: await controller.status({ ownerId: userId, flowId }) })
+          if (path.length === 5 && path[4] === 'events' && request.method === 'GET') {
+            const after = url.searchParams.get('after')
+            const limit = url.searchParams.get('limit')
+            return json(await controller.getEvents({
+              ownerId: userId,
+              flowId,
+              ...(after === null ? {} : { after: Number(after) }),
+              ...(limit === null ? {} : { limit: Number(limit) }),
+            }))
+          }
+          if (path.length === 5 && path[4] === 'respond' && request.method === 'POST') {
+            const input = await body(request)
+            if (typeof input.promptId !== 'string' || typeof input.value !== 'string') return json({ message: 'promptId and value are required' }, 400)
+            return json({ status: await controller.respond({ ownerId: userId, flowId, promptId: input.promptId, value: input.value }) })
+          }
+          if (path.length === 5 && path[4] === 'cancel' && request.method === 'POST') {
+            return json({ status: await controller.cancel({ ownerId: userId, flowId }) })
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof ProviderLoginFlowError) {
+        const status = error.code === 'FLOW_NOT_FOUND' ? 404
+          : error.code === 'FLOW_EXPIRED' ? 410
+            : error.code === 'INVALID_INPUT' || error.code === 'INVALID_PROMPT_RESPONSE' ? 400 : 409
+        return json({ message: error.message, code: error.code }, status)
+      }
+      return json({ message: error instanceof Error ? error.message : 'Provider store unavailable' }, 503)
+    }
+  }
+
   if (request.method === 'GET' && url.pathname === '/api/usage/daily') return json(await dailyUsage())
   if (url.pathname === '/api/proxy/credentials' && request.method === 'GET') return json({ credentials: loadProxyCredentials().map(proxyCredentialResponse) })
   if (url.pathname === '/api/proxy/credentials' && request.method === 'POST') {
@@ -1265,7 +1513,10 @@ async function handle(request: Request): Promise<Response> {
     }
   }
   if (request.method === 'GET' && url.pathname === '/api/provider') {
-    try { return json(await runtimeProviders()) } catch { return json({ all: [], connected: [], default: {} }) }
+    try {
+      if (!authenticatedUser) return json({ all: [], connected: [], default: {} }, 401)
+      return json(await runtimeProviders(authenticatedUser.id))
+    } catch { return json({ all: [], connected: [], default: {} }) }
   }
   if (request.method === 'GET' && url.pathname === '/api/config') return json({ model: undefined, default_agent: 'master', default_permission: 'ask' })
   if (request.method === 'GET' && url.pathname === '/api/command') return json([])

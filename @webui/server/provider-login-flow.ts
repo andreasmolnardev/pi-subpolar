@@ -4,6 +4,7 @@ import type {
   AuthInteraction,
   AuthPrompt,
   AuthType,
+  Credential,
 } from '@earendil-works/pi-ai'
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 
@@ -19,6 +20,7 @@ export type ProviderInstanceRegistry =
 
 export type ProviderInstanceResolver = (
   providerInstanceId: string,
+  ownerId: string,
 ) => ProviderInstanceMapping | undefined | Promise<ProviderInstanceMapping | undefined>
 
 /** The part of ModelRuntime needed by this controller, convenient for test doubles. */
@@ -29,6 +31,8 @@ export interface ProviderRuntimeFactoryContext {
   ownerId: string
   providerInstanceId: string
   runtimeProviderId: string
+  /** Optional non-secret label used when provisioning a new provider account. */
+  displayName?: string
   accountContext?: unknown
   type: AuthType
 }
@@ -36,6 +40,12 @@ export interface ProviderRuntimeFactoryContext {
 export type ProviderRuntimeFactory = (
   context: ProviderRuntimeFactoryContext,
 ) => ProviderLoginRuntime | Promise<ProviderLoginRuntime>
+
+/** Server-only sink for the credential returned by a completed login flow. */
+export type ProviderLoginCredentialSink = (
+  context: ProviderRuntimeFactoryContext,
+  credential: Credential,
+) => Promise<void>
 
 /** Auth prompts are persisted and sent to clients without the provider's signal. */
 export type ProviderLoginFlowPrompt =
@@ -132,6 +142,8 @@ export interface ProviderLoginFlowStorage {
 
 export interface CreateProviderLoginFlowControllerOptions {
   runtimeFactory: ProviderRuntimeFactory
+  /** Persist credentials without exposing them in flow state or HTTP responses. */
+  credentialSink?: ProviderLoginCredentialSink
   storage?: ProviderLoginFlowStorage
   providerInstances?: ProviderInstanceRegistry
   resolveProviderInstance?: ProviderInstanceResolver
@@ -147,6 +159,8 @@ export interface StartProviderLoginFlowInput {
   ownerId: string
   providerInstanceId: string
   type: AuthType
+  /** Optional non-secret label used when provisioning a new provider account. */
+  displayName?: string
 }
 
 export interface ProviderLoginFlowReference {
@@ -206,6 +220,7 @@ type DeferredPrompt = {
 
 type ActiveFlow = {
   record: StoredProviderLoginFlow
+  displayName?: string
   abortController: AbortController
   currentPrompt?: DeferredPrompt
   timer: ReturnType<typeof setTimeout>
@@ -322,6 +337,7 @@ export class InMemoryProviderLoginFlowStorage implements ProviderLoginFlowStorag
 export class ProviderLoginFlowController {
   private readonly storage: ProviderLoginFlowStorage
   private readonly runtimeFactory: ProviderRuntimeFactory
+  private readonly credentialSink?: ProviderLoginCredentialSink
   private readonly providerInstances?: ProviderInstanceRegistry
   private readonly resolveProviderInstance?: ProviderInstanceResolver
   private readonly ttlMs: number
@@ -336,6 +352,7 @@ export class ProviderLoginFlowController {
     }
 
     this.runtimeFactory = options.runtimeFactory
+    this.credentialSink = options.credentialSink
     this.storage = options.storage ?? new InMemoryProviderLoginFlowStorage()
     this.providerInstances = options.providerInstances
     this.resolveProviderInstance = options.resolveProviderInstance
@@ -349,11 +366,12 @@ export class ProviderLoginFlowController {
   async start(input: StartProviderLoginFlowInput): Promise<ProviderLoginFlowStatus> {
     const ownerId = requiredString('ownerId', input.ownerId)
     const providerInstanceId = requiredString('providerInstanceId', input.providerInstanceId)
+    const displayName = input.displayName === undefined ? undefined : requiredString('displayName', input.displayName)
     if (!isAuthType(input.type)) {
       throw new ProviderLoginFlowError('INVALID_INPUT', 'type must be api_key or oauth')
     }
 
-    const mapping = await this.resolveInstance(providerInstanceId)
+    const mapping = await this.resolveInstance(providerInstanceId, ownerId)
     const createdAt = this.now()
     const flowId = this.newFlowId()
     const record: StoredProviderLoginFlow = {
@@ -377,6 +395,7 @@ export class ProviderLoginFlowController {
     }, this.ttlMs)
     const active: ActiveFlow = {
       record,
+      ...(displayName === undefined ? {} : { displayName }),
       abortController,
       timer,
       writes: Promise.resolve(),
@@ -475,9 +494,9 @@ export class ProviderLoginFlowController {
     return this.getResult(input)
   }
 
-  private async resolveInstance(providerInstanceId: string): Promise<ProviderInstanceMapping> {
+  private async resolveInstance(providerInstanceId: string, ownerId: string): Promise<ProviderInstanceMapping> {
     const resolved = this.resolveProviderInstance
-      ? await this.resolveProviderInstance(providerInstanceId)
+      ? await this.resolveProviderInstance(providerInstanceId, ownerId)
       : this.providerInstances
         ? this.providerInstances instanceof Map
           ? this.providerInstances.get(providerInstanceId)
@@ -555,6 +574,7 @@ export class ProviderLoginFlowController {
         ownerId: record.ownerId,
         providerInstanceId: record.providerInstanceId,
         runtimeProviderId: record.runtimeProviderId,
+        ...(active.displayName === undefined ? {} : { displayName: active.displayName }),
         ...(mapping.accountContext === undefined ? {} : { accountContext: mapping.accountContext }),
         type: record.type,
       })
@@ -566,6 +586,16 @@ export class ProviderLoginFlowController {
       const credential = await runtime.login(record.runtimeProviderId, record.type, interaction)
       if (record.phase !== 'pending') return
       if (!credential || !isAuthType(credential.type)) throw new Error('Provider returned an invalid credential')
+      if (this.credentialSink) {
+        await this.credentialSink({
+          flowId: record.flowId,
+          ownerId: record.ownerId,
+          providerInstanceId: record.providerInstanceId,
+          runtimeProviderId: record.runtimeProviderId,
+          ...(active.displayName === undefined ? {} : { displayName: active.displayName }),
+          type: record.type,
+        }, credential)
+      }
       const completedAt = this.now()
       record.phase = 'completed'
       record.updatedAt = completedAt

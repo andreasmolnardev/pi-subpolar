@@ -167,7 +167,10 @@ export class ProviderRuntimeCredentialStore implements CredentialStore {
       const next = await fn(current)
       throwIfAborted(options?.signal)
       if (next === undefined) return current
-      const updated = await this.options.accountService.updateAccount(this.options.userId, account.instanceId, { credential: next })
+      const updated = await this.options.accountService.updateAccount(this.options.userId, account.instanceId, {
+        authType: next.type,
+        credential: next,
+      })
       if (!updated) throw new Error(`Provider account not found: ${account.instanceId}`)
       this.loggedOut.delete(providerId)
       return next
