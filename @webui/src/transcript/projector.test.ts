@@ -8,11 +8,11 @@ describe('Pi transcript projector', () => {
     const entries = [entry('a', undefined, { role: 'user', content: 'a' }), entry('b', 'a', { role: 'assistant', content: [{ type: 'text', text: 'b' }] }), entry('x', 'a', { role: 'user', content: 'x' }), entry('c', 'b', { role: 'user', content: 'c' })]
     expect(activeBranch(entries, 'c').map((x) => x.id)).toEqual(['a', 'b', 'c'])
   })
-  it('uses text block position rather than wording to identify the final answer', () => {
+  it('preserves typed thinking and text blocks', () => {
     const entries = [
       entry('u', undefined, { role: 'user', content: 'summarize' }),
       entry('a', 'u', { role: 'assistant', timestamp: 1, content: [
-        { type: 'text', text: 'Inspecting git status diff\nSummarizing unstaged changes and status' },
+        { type: 'thinking', thinking: 'Inspecting git status diff\nSummarizing unstaged changes and status' },
         { type: 'text', text: 'Testing the result gives this summary.' }
       ] }),
     ]
