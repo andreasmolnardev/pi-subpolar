@@ -64,7 +64,7 @@ import {
   createProviderAccountService,
   ensureProviderAccountCollections,
   type ProviderAccount,
-  createProviderCatalog,
+  createProviderCatalogAsync,
   createProviderRuntime,
   composeProviderRuntimeId,
   parseProviderRuntimeId,
@@ -74,6 +74,7 @@ import {
   ProviderLoginFlowError,
   PocketBaseProviderLoginFlowStorage,
   ensureProviderLoginFlowCollection,
+  providerLoginFlowStorageError,
 
 } from './server/index.ts'
 
@@ -98,6 +99,17 @@ type SocketData = { sessionId: string; unsubscribe?: () => void; history?: Trans
 type PendingPrompt = { content: string; metadata?: Record<string, unknown> }
 type SseClient = { enqueue: (chunk: Uint8Array) => void; close: () => void }
 type ProxyCredential = { id: string; prefix: string; hash: string; createdAt: number; lastUsedAt?: number }
+type CustomProvider = {
+  id: string
+  name: string
+  baseUrl: string
+  api: string
+  apiKey?: string
+  headers?: Record<string, string>
+  authHeader: boolean
+  models: Array<Record<string, unknown>>
+  modelOverrides?: Record<string, unknown>
+}
 
 const root = resolve(import.meta.dir, '..')
 const webuiDir = import.meta.dir
@@ -108,6 +120,7 @@ const legacyStatePath = join(webuiDir, '.sessions.json')
 const legacyProjectStatePath = join(subpolarDataDir, 'projects.json')
 const generalChatRoot = join(subpolarDataDir, 'general-chat')
 const legacyProxyCredentialsPath = join(subpolarDataDir, 'proxy-credentials.json')
+const customProvidersPath = join(subpolarDataDir, 'custom-providers.json')
 const port = Number(process.env.WEBUI_PORT ?? 4173)
 const internalToken = process.env.SUBPOLAR_INTERNAL_TOKEN || randomBytes(32).toString('hex')
 process.env.SUBPOLAR_INTERNAL_TOKEN = internalToken
@@ -203,7 +216,16 @@ async function ownedProviderAccount(userId: string, wireInstanceId: string): Pro
   return { account }
 }
 
-async function userProviderRuntime(userId: string, accounts?: readonly ProviderAccount[]): Promise<ProviderRuntime> {
+interface UserProviderRuntimeOptions {
+  refreshOnCreate?: boolean
+  allowModelNetwork?: boolean
+}
+
+async function userProviderRuntime(
+  userId: string,
+  accounts?: readonly ProviderAccount[],
+  options: UserProviderRuntimeOptions = {},
+): Promise<ProviderRuntime> {
   const accountService = await providerAccountService()
   const selectedAccounts = accounts ?? await accountService.listAccounts(userId)
   return createProviderRuntime({
@@ -211,8 +233,8 @@ async function userProviderRuntime(userId: string, accounts?: readonly ProviderA
     accountService,
     accounts: selectedAccounts,
     baseRuntime: await modelRuntimePromise,
-    refreshOnCreate: false,
-    allowModelNetwork: false,
+    refreshOnCreate: options.refreshOnCreate ?? false,
+    allowModelNetwork: options.allowModelNetwork ?? false,
   })
 }
 
@@ -406,6 +428,28 @@ function saveProxyCredentials(credentials: ProxyCredential[]): void {
 
 function hashProxySecret(secret: string): string {
   return createHash('sha256').update(secret).digest('hex')
+}
+
+function loadCustomProviders(): CustomProvider[] {
+  try {
+    const value = JSON.parse(readFileSync(customProvidersPath, 'utf8')) as unknown
+    return Array.isArray(value) ? value.filter((item): item is CustomProvider => {
+      const entry = object(item)
+      return typeof entry.id === 'string' && typeof entry.name === 'string' && typeof entry.baseUrl === 'string' && typeof entry.api === 'string' && Array.isArray(entry.models)
+    }) : []
+  } catch {
+    return []
+  }
+}
+
+function saveCustomProviders(providers: CustomProvider[]): void {
+  mkdirSync(dirname(customProvidersPath), { recursive: true })
+  writeFileSync(customProvidersPath, JSON.stringify(providers, null, 2), 'utf8')
+}
+
+function publicCustomProvider(provider: CustomProvider) {
+  const { apiKey: _apiKey, ...safe } = provider
+  return safe
 }
 
 function proxyCredentialResponse(credential: ProxyCredential) {
@@ -1305,16 +1349,83 @@ async function handle(request: Request): Promise<Response> {
   if (path[1] === 'providers' && authenticatedUser) {
     try {
       const userId = authenticatedUser.id
+
+      if (path[2] === 'custom') {
+        const providers = loadCustomProviders()
+        if (path.length === 3 && request.method === 'GET') return json({ providers: providers.map(publicCustomProvider) })
+        if (path.length === 3 && request.method === 'POST') {
+          const input = object(await body(request))
+          const id = typeof input.id === 'string' ? input.id.trim() : ''
+          const name = typeof input.name === 'string' ? input.name.trim() : ''
+          const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim().replace(/\/$/, '') : ''
+          if (!id || !/^[a-zA-Z0-9_-]+$/.test(id) || !name || !baseUrl) return json({ message: 'id, name, and baseUrl are required' }, 400)
+          const existing = providers.find((provider) => provider.id === id)
+          const provider: CustomProvider = {
+            id,
+            name,
+            baseUrl,
+            api: typeof input.api === 'string' ? input.api : 'openai-completions',
+            ...(typeof input.apiKey === 'string' && input.apiKey ? { apiKey: input.apiKey } : existing?.apiKey ? { apiKey: existing.apiKey } : {}),
+            ...(object(input.headers) && Object.keys(object(input.headers)).length > 0 ? { headers: object(input.headers) as Record<string, string> } : {}),
+            authHeader: input.authHeader === true,
+            models: Array.isArray(input.models) ? input.models.map((model) => object(model)) : [],
+            ...(object(input.modelOverrides) ? { modelOverrides: object(input.modelOverrides) } : {}),
+          }
+          saveCustomProviders([...providers.filter((item) => item.id !== id), provider])
+          return json({ provider: publicCustomProvider(provider) }, existing ? 200 : 201)
+        }
+        if (path.length === 4 && request.method === 'DELETE') {
+          const id = decodeURIComponent(path[3] ?? '')
+          saveCustomProviders(providers.filter((provider) => provider.id !== id))
+          return json({ ok: true })
+        }
+        if (path.length === 4 && path[3] === 'discover-models' && request.method === 'POST') {
+          const input = object(await body(request))
+          const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim().replace(/\/$/, '') : ''
+          if (!baseUrl) return json({ message: 'baseUrl is required' }, 400)
+          const headers: Record<string, string> = { Accept: 'application/json' }
+          if (typeof input.apiKey === 'string' && input.apiKey) headers.Authorization = `Bearer ${input.apiKey}`
+          const response = await fetch(`${baseUrl}/v1/models`, { headers })
+          if (!response.ok) return json({ message: `Model discovery failed with HTTP ${response.status}` }, 502)
+          const payload = object(await response.json())
+          const models = Array.isArray(payload.data)
+            ? payload.data.map((model) => object(model)).map((model) => model.id).filter((id): id is string => typeof id === 'string')
+            : []
+          return json({ models })
+        }
+        return json({ message: 'Not found' }, 404)
+      }
+
       const accountService = await providerAccountService()
 
       if (path[2] === 'catalog' && request.method === 'GET' && path.length === 3) {
-        const runtime = await modelRuntimePromise
-        const authStatus = Object.fromEntries(runtime.getProviders().map((provider) => [provider.id, { configured: false }]))
+        const query = new URL(request.url).searchParams
+        const shouldRefresh = query.get('refresh') !== 'false'
+        const forceRefresh = query.get('force') === 'true' || query.get('force') === '1'
         const accounts = await accountService.listAccounts(userId)
-        const catalog = createProviderCatalog(runtime, {
+        // Use the global catalog here so unconfigured providers remain visible
+        // and users can start a login flow. The account records are still
+        // scoped to this user and are the only account instances returned.
+        const runtime = await modelRuntimePromise
+
+        if (shouldRefresh) {
+          // Refresh the shared provider catalog when possible. A failed
+          // provider refresh must not hide models already in the local catalog.
+          try {
+            await runtime.refresh({
+              allowNetwork: true,
+              force: forceRefresh,
+              signal: AbortSignal.timeout(15_000),
+            })
+          } catch (error) {
+            console.warn(`Provider catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+
+        const catalog = await createProviderCatalogAsync(runtime, {
           accounts: accounts.map(providerCatalogAccount),
           includeRuntimeInstance: false,
-          authStatus,
+          signal: AbortSignal.timeout(15_000),
         })
         return json({ catalog })
       }
@@ -1401,7 +1512,9 @@ async function handle(request: Request): Promise<Response> {
             : error.code === 'INVALID_INPUT' || error.code === 'INVALID_PROMPT_RESPONSE' ? 400 : 409
         return json({ message: error.message, code: error.code }, status)
       }
-      return json({ message: error instanceof Error ? error.message : 'Provider store unavailable' }, 503)
+      const storageError = providerLoginFlowStorageError(error)
+      console.error('Provider login flow request failed', storageError)
+      return json({ message: storageError.message, ...(storageError.data ? { details: storageError.data } : {}) }, 503)
     }
   }
 
@@ -1682,6 +1795,12 @@ async function handle(request: Request): Promise<Response> {
     } catch (error) {
       return json({ error: error instanceof Error ? error.message : 'Tool gateway unavailable' }, 503)
     }
+  }
+
+  if (path[1] === 'question' && request.method === 'GET') {
+    // Questions are delivered through the session SSE stream. Keep the
+    // legacy polling endpoint for clients that use it during startup.
+    return json([])
   }
 
   if (path[1] === 'permission' && request.method === 'GET') {

@@ -1,0 +1,44 @@
+services:
+  pocketbase:
+    image: elestio/pocketbase:latest
+    user: root
+    environment:
+      POCKETBASE_EMAIL: ${POCKETBASE_EMAIL}
+      POCKETBASE_PASSWORD: ${POCKETBASE_PASSWORD}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        /usr/local/bin/pocketbase --dir /pb_data superuser upsert "$$POCKETBASE_EMAIL" "$$POCKETBASE_PASSWORD"
+        && exec /usr/local/bin/pocketbase --dir /pb_data serve --http=0.0.0.0:8090
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./pocketbase/pb_data:/pb_data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8090/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  webui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      POCKETBASE_URL: http://pocketbase:8090
+      WEBUI_PORT: 4173
+    depends_on:
+      pocketbase:
+        condition: service_healthy
+    ports:
+      - "5173:5173"
+      - "4173:4173"
+    volumes:
+      - .:/app
+      - webui_node_modules:/app/@webui/node_modules
+
+volumes:
+  webui_node_modules:

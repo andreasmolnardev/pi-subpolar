@@ -1,5 +1,5 @@
 import type { paths } from './opencode-types'
-import { fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
+import { FetchError, fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
 
 type SessionListResponse = paths['/session']['get']['responses']['200']['content']['application/json']
 type SessionResponse = paths['/session/{sessionID}']['get']['responses']['200']['content']['application/json']
@@ -429,9 +429,16 @@ export class SubpolarClient {
   }
 
   async listPendingQuestions() {
-    return fetchWrapper<QuestionListResponse>(`${this.nativeBaseURL}/question`, {
-      params: this.getParams(),
-    })
+    try {
+      return await fetchWrapper<QuestionListResponse>(`${this.nativeBaseURL}/question`, {
+        params: this.getParams(),
+      })
+    } catch (error) {
+      // The bridge receives questions over SSE; older bridge versions do not
+      // expose the optional polling endpoint used for initial reconciliation.
+      if (error instanceof FetchError && error.statusCode === 404) return []
+      throw error
+    }
   }
 
   async listAgents() {

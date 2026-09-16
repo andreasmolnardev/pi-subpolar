@@ -34,8 +34,8 @@ export const PROVIDER_LOGIN_FLOW_SCHEMA: ProviderLoginFlowSchema = {
     { name: 'created_at', type: 'number', required: true },
     { name: 'updated_at', type: 'number', required: true },
     { name: 'expires_at', type: 'number', required: true },
-    { name: 'next_sequence', type: 'number', required: true },
-    { name: 'events', type: 'json', required: true },
+    { name: 'next_sequence', type: 'number' },
+    { name: 'events', type: 'json' },
     { name: 'current_prompt', type: 'json' },
     { name: 'result', type: 'json' },
     { name: 'error', type: 'json' },
@@ -66,6 +66,8 @@ type CollectionManager = {
   update: (id: string, data: Record<string, unknown>) => Promise<FlowRecord>
 }
 
+const PROVIDER_LOGIN_FLOW_CREATE_RULE = '@request.auth.id = @request.body.user_id'
+const PROVIDER_LOGIN_FLOW_OWNER_RULE = '@request.auth.id = user_id'
 const DEFAULT_MAX_EVENTS = 1000
 const MAX_TEXT_LENGTH = 4_000
 const MAX_ID_LENGTH = 500
@@ -83,6 +85,17 @@ function collectionManager(client: PocketBase): CollectionManager {
 
 function isNotFound(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'status' in error && (error as { status?: unknown }).status === 404
+}
+
+/** Return PocketBase validation details without exposing request credentials. */
+export function providerLoginFlowStorageError(error: unknown): { message: string; data?: Record<string, unknown> } {
+  if (typeof error !== 'object' || error === null) return { message: error instanceof Error ? error.message : String(error) }
+  const value = error as { message?: unknown; response?: { data?: unknown } }
+  const data = value.response?.data
+  return {
+    message: typeof value.message === 'string' ? value.message : 'Failed to persist provider login flow',
+    ...(typeof data === 'object' && data !== null ? { data: data as Record<string, unknown> } : {}),
+  }
 }
 
 async function firstOrNull(operation: () => Promise<FlowRecord>): Promise<FlowRecord | null> {
@@ -289,7 +302,7 @@ function sanitizeFlow(value: unknown, maxEvents: number): StoredProviderLoginFlo
   return flow
 }
 
-function storageData(flow: StoredProviderLoginFlow): Record<string, unknown> {
+function storageData(flow: StoredProviderLoginFlow, includeEmptyOptionalFields = true): Record<string, unknown> {
   // Construct every field explicitly. In particular, never spread `flow` into a
   // PocketBase payload: callers cannot smuggle answers, credentials, or signals in.
   return {
@@ -304,9 +317,11 @@ function storageData(flow: StoredProviderLoginFlow): Record<string, unknown> {
     expires_at: flow.expiresAt,
     next_sequence: flow.nextSequence,
     events: flow.events,
-    current_prompt: flow.currentPrompt ?? null,
-    result: flow.result ?? null,
-    error: flow.error ?? null,
+    // Some PocketBase versions reject null for optional JSON fields during
+    // record creation, while updates must explicitly clear stale values.
+    ...(flow.currentPrompt ? { current_prompt: flow.currentPrompt } : includeEmptyOptionalFields ? { current_prompt: null } : {}),
+    ...(flow.result ? { result: flow.result } : includeEmptyOptionalFields ? { result: null } : {}),
+    ...(flow.error ? { error: flow.error } : includeEmptyOptionalFields ? { error: null } : {}),
   }
 }
 
@@ -350,11 +365,11 @@ async function ensureCollection(
         type: 'base',
         fields: [...schema.fields],
         indexes: [...schema.indexes],
-        listRule: '@request.auth.id = user_id',
-        viewRule: '@request.auth.id = user_id',
-        createRule: '@request.auth.id = user_id',
-        updateRule: '@request.auth.id = user_id',
-        deleteRule: '@request.auth.id = user_id',
+        listRule: PROVIDER_LOGIN_FLOW_OWNER_RULE,
+        viewRule: PROVIDER_LOGIN_FLOW_OWNER_RULE,
+        createRule: PROVIDER_LOGIN_FLOW_CREATE_RULE,
+        updateRule: PROVIDER_LOGIN_FLOW_OWNER_RULE,
+        deleteRule: PROVIDER_LOGIN_FLOW_OWNER_RULE,
       })
     } catch (error) {
       const raced = await firstOrNull(() => manager.getOne(schema.name))
@@ -375,11 +390,18 @@ async function extendCollection(manager: CollectionManager, existing: FlowRecord
     : []
   const knownFields = new Set(currentFields.map((field) => String(field.name)))
   const missingFields = schema.fields.filter((field) => !knownFields.has(String(field.name)))
+  const updatedFields = currentFields.map((field) => (
+    (field.name === 'events' || field.name === 'next_sequence') && field.required === true
+      ? { ...field, required: false }
+      : field
+  ))
+  const fieldsChanged = updatedFields.some((field, index) => field !== currentFields[index])
   const missingIndexes = schema.indexes.filter((index) => !currentIndexes.includes(index))
-  if (missingFields.length || missingIndexes.length) {
+  if (missingFields.length || missingIndexes.length || fieldsChanged || existing.createRule !== PROVIDER_LOGIN_FLOW_CREATE_RULE) {
     await manager.update(existing.id, {
-      ...(missingFields.length ? { fields: [...currentFields, ...missingFields] } : {}),
+      ...(missingFields.length || fieldsChanged ? { fields: [...updatedFields, ...missingFields] } : {}),
       ...(missingIndexes.length ? { indexes: [...currentIndexes, ...missingIndexes] } : {}),
+      ...(existing.createRule !== PROVIDER_LOGIN_FLOW_CREATE_RULE ? { createRule: PROVIDER_LOGIN_FLOW_CREATE_RULE } : {}),
     })
   }
 }
@@ -443,7 +465,7 @@ export class PocketBaseProviderLoginFlowStorage implements ProviderLoginFlowStor
       return
     }
     try {
-      await flows.create(storageData(safe))
+      await flows.create(storageData(safe, false))
     } catch (error) {
       // A concurrent writer may have won the unique flow_id race. Do not allow
       // that writer's owner to be overwritten by this update.

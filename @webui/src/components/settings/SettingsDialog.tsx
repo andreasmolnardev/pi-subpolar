@@ -11,7 +11,7 @@ import { IntegrationsSettings } from '@/components/settings/IntegrationsSettings
 import { ExtensionsSettings } from '@/components/settings/ExtensionsSettings'
 import { UsageSettings } from '@/components/settings/UsageSettings'
 import { ProxySettings } from '@/components/settings/ProxySettings'
-import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Settings2, Keyboard, ChevronLeft, Key, User, Volume2, Bell, X, MessageSquare, Palette, Plug, BarChart3, Network } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSettingsDialog } from '@/hooks/useSettingsDialog'
@@ -103,6 +103,7 @@ export function SettingsDialog() {
           onFocusOutside={(e) => e.preventDefault()}
           onPointerDownOutside={(e) => e.preventDefault()}
         >
+          <DialogTitle className="sr-only">Settings</DialogTitle>
 <div className="hidden sm:flex sm:flex-col sm:h-full sm:min-h-0">
             <div className="sticky top-0 z-10 bg-gradient-to-b from-background via-background to-transparent border-b border-border backdrop-blur-sm px-6 py-4 flex-shrink-0 flex items-center justify-between">
               <h2 className="text-2xl font-semibold bg-gradient-to-r from-foreground to-muted-foreground bg-clip-text text-transparent">

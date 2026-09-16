@@ -60,3 +60,19 @@ cp /path/to/pi-subpolar/.env.example /path/to/pi-subpolar/.env
 
 Open `http://localhost:5173`. The first unauthenticated visit opens the PocketBase-backed
 setup flow; subsequent application routes require a valid `pb_auth` session cookie.
+
+### Docker development
+
+Docker Compose runs PocketBase and the WebUI in separate containers. Create the local
+configuration first, and set the PocketBase superuser credentials:
+
+```sh
+cp .env.example .env
+# Edit .env and set POCKETBASE_EMAIL and POCKETBASE_PASSWORD
+
+docker compose -f docker-compose.dev.yaml up --build
+```
+
+Then open `http://localhost:5173`. PocketBase is available at `http://localhost:8090`.
+The PocketBase data is persisted in `pocketbase/pb_data`. Stop the stack with
+`Ctrl-C`, or run `docker compose -f docker-compose.dev.yaml down` from another terminal.

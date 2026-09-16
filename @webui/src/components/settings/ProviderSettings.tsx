@@ -423,6 +423,7 @@ export function ProviderSettings() {
   const { data: customProviders = [], isLoading: customProvidersLoading } = useQuery({
     queryKey: ['custom-providers'],
     queryFn: () => customProvidersApi.list(),
+    retry: false,
   })
 
   const deleteAccountMutation = useMutation({
