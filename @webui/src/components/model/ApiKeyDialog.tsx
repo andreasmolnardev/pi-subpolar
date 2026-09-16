@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Key, ExternalLink, Copy, Shield, Smartphone } from "lucide-react";
+import { Loader2, Key, ExternalLink, Copy, Shield } from "lucide-react";
 import { providerLoginFlowApi, type ProviderLoginEvent, type ProviderLoginFlowStatus, type ProviderLoginPrompt, type ProviderLoginType } from "@/api/oauth";
 import type { ProviderAuthMethod, ProviderAuthMethodKind } from "@/api/providers";
 
@@ -43,7 +43,6 @@ function methodIcon(kind: ProviderAuthMethodKind) {
 function eventText(event: ProviderLoginEvent): string | null {
   if (event.type === "info" || event.type === "progress") return event.message;
   if (event.type === "auth_url") return event.instructions || "Open the authorization page to continue.";
-  if (event.type === "device_code") return "Use the device code below to authorize this account.";
   if (event.type === "prompt") return event.prompt.message;
   return null;
 }
@@ -310,18 +309,6 @@ export function ApiKeyDialog({
               </div>
             ))}
 
-            {events.filter((event) => event.type === "device_code").map((event) => (
-              <div key={event.sequence} className="rounded-md border border-border p-3 space-y-2">
-                <div className="flex items-center gap-2 text-sm font-medium"><Smartphone className="h-4 w-4" /> Device authorization</div>
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 rounded bg-muted px-3 py-2 text-sm font-mono">{event.userCode}</code>
-                  <Button variant="ghost" size="icon" aria-label="Copy device code" onClick={() => void copyText(event.userCode)}><Copy className="h-4 w-4" /></Button>
-                </div>
-                <Button variant="outline" size="sm" onClick={() => window.open(event.verificationUri, "_blank", "noopener,noreferrer")}>
-                  <ExternalLink className="h-4 w-4 mr-2" /> Open verification page
-                </Button>
-              </div>
-            ))}
 
             {currentPrompt && isPrompt(currentPrompt.prompt) && (
               <div className="space-y-2">
@@ -330,7 +317,7 @@ export function ApiKeyDialog({
                   <Select value={promptValue} onValueChange={setPromptValue} disabled={isResponding}>
                     <SelectTrigger id="provider-login-prompt"><SelectValue placeholder="Select an option" /></SelectTrigger>
                     <SelectContent>
-                      {currentPrompt.prompt.options.map((option) => (
+                      {currentPrompt.prompt.options.filter((option) => option.id !== "device_code").map((option) => (
                         <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
                       ))}
                     </SelectContent>
