@@ -36,7 +36,7 @@ export function useSTT(userId = 'default') {
 
   const isEnabled = preferences?.stt?.enabled ?? false
   const config = preferences?.stt ?? DEFAULT_STT_CONFIG
-  const isExternalProvider = config.provider === 'external'
+  const isExternalProvider = config.provider !== 'browser'
 
   const isSupported = isExternalProvider 
     ? AudioRecorder.isSupported()

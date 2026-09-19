@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, type Resolver } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useSettings } from '@/hooks/useSettings'
@@ -30,19 +30,20 @@ function isKokoroStyleVoice(voice: string): boolean {
 
 const ttsFormSchema = z.object({
   enabled: z.boolean(),
-  provider: z.enum(['external', 'builtin']),
+  provider: z.enum(['local', 'browser', 'cloud']),
   autoPlay: z.boolean(),
   endpoint: z.string(),
   apiKey: z.string(),
+  apiKeyRef: z.string(),
   voice: z.string(),
   model: z.string(),
   speed: z.number().min(0.25).max(4.0),
 }).superRefine((data, ctx) => {
   if (!data.enabled) return
   
-  // External provider specific validation
-  if (data.provider === 'external') {
-    if (!data.apiKey || data.apiKey.trim().length === 0) {
+  // Cloud credentials may be supplied as a protected server-side reference.
+  if (data.provider === 'cloud') {
+    if ((!data.apiKey || data.apiKey.trim().length === 0) && (!data.apiKeyRef || data.apiKeyRef.trim().length === 0)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['apiKey'],
@@ -60,7 +61,7 @@ const ttsFormSchema = z.object({
   
   // Voice requirement depends on provider
   if (!data.voice || data.voice.trim().length === 0) {
-    if (data.provider === 'builtin') {
+    if (data.provider === 'browser') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['voice'],
@@ -86,13 +87,13 @@ export function TTSSettings() {
   const lastSavedDataRef = useRef<TTSFormValues | null>(null)
   
   const form = useForm<TTSFormValues>({
-    resolver: zodResolver(ttsFormSchema),
-    defaultValues: DEFAULT_TTS_CONFIG,
+    resolver: zodResolver(ttsFormSchema) as Resolver<TTSFormValues>,
+    defaultValues: { ...DEFAULT_TTS_CONFIG, provider: 'local', apiKeyRef: '' },
   })
   
   const { reset, formState: { isDirty, isValid }, getValues } = form
   
-  // Fetch available models and voices for external provider
+  // Fetch available models and voices for backend providers
   const { data: modelsData, isLoading: isLoadingModels, refetch: refetchModels } = useTTSModels(
     undefined,
     true
@@ -111,12 +112,13 @@ export function TTSSettings() {
   const watchEnabled = form.watch('enabled')
   const watchProvider = form.watch('provider')
   const watchApiKey = form.watch('apiKey')
+  const watchApiKeyRef = form.watch('apiKeyRef')
   const watchEndpoint = form.watch('endpoint')
   const watchVoice = form.watch('voice')
   const watchModel = form.watch('model')
   const watchSpeed = form.watch('speed')
   
-  // Check builtin Web Speech API support
+  // Check browser Web Speech API support
   const hasWebSpeechSupport = isWebSpeechSupported()
   
   // Determine if test button should be enabled
@@ -124,16 +126,16 @@ export function TTSSettings() {
   const canTest = (() => {
     if (!watchEnabled) return false
     
-    if (watchProvider === 'builtin') {
+    if (watchProvider === 'browser') {
       return hasWebSpeechSupport && browserVoices.length > 0 && !!watchVoice && !isCheckingBuiltin
     } else {
-      return !!watchApiKey && !!watchVoice && !isLoadingVoices
+      return (watchProvider === 'local' || !!watchApiKey || !!watchApiKeyRef) && !!watchVoice && !isLoadingVoices
     }
   })()
   
-  // Load browser voices when provider is builtin
+  // Load browser voices when provider is browser
   useEffect(() => {
-    if (watchProvider === 'builtin' && watchEnabled) {
+    if (watchProvider === 'browser' && watchEnabled) {
       setIsCheckingBuiltin(true)
       getAvailableVoiceNames()
         .then((voices) => {
@@ -178,7 +180,8 @@ export function TTSSettings() {
         provider: preferences.tts.provider ?? DEFAULT_TTS_CONFIG.provider,
         autoPlay: preferences.tts.autoPlay ?? DEFAULT_TTS_CONFIG.autoPlay,
         endpoint: preferences.tts.endpoint ?? DEFAULT_TTS_CONFIG.endpoint,
-        apiKey: preferences.tts.apiKey ?? DEFAULT_TTS_CONFIG.apiKey,
+        apiKey: '',
+        apiKeyRef: preferences.tts.apiKeyRef ?? '',
         voice: preferences.tts.voice ?? DEFAULT_TTS_CONFIG.voice,
         model: preferences.tts.model ?? DEFAULT_TTS_CONFIG.model,
         speed: preferences.tts.speed ?? DEFAULT_TTS_CONFIG.speed,
@@ -229,7 +232,7 @@ export function TTSSettings() {
         clearTimeout(saveTimeoutRef.current)
       }
     }
-  }, [watchEnabled, watchProvider, watchApiKey, watchEndpoint, watchVoice, watchModel, watchSpeed, isValid, isDirty, getValues, updateSettings])
+  }, [watchEnabled, watchProvider, watchApiKey, watchApiKeyRef, watchEndpoint, watchVoice, watchModel, watchSpeed, isValid, isDirty, getValues, updateSettings])
   
   const handleTest = () => {
     const formData = getValues()
@@ -315,22 +318,31 @@ export function TTSSettings() {
 
           {watchEnabled && (
             <>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
+                <button
+                  type="button"
+                  onClick={() => form.setValue('provider', 'local', { shouldDirty: true })}
+                  className={`flex flex-col items-center justify-center gap-2 rounded-lg border-2 p-4 transition ${watchProvider === 'local' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-border hover:border-blue-300'}`}
+                >
+                  <MonitorSpeaker className={`h-6 w-6 ${watchProvider === 'local' ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`} />
+                  <span className="font-medium">Local backend</span>
+                  <span className="text-xs text-muted-foreground text-center">Private, configurable</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => {
-                    form.setValue('provider', 'builtin', { shouldDirty: true })
+                    form.setValue('provider', 'browser', { shouldDirty: true })
                     form.setValue('apiKey', '', { shouldDirty: true })
                     form.setValue('endpoint', '', { shouldDirty: true })
                   }}
                   className={`flex flex-col items-center justify-center gap-2 rounded-lg border-2 p-4 transition ${
-                    watchProvider === 'builtin'
+                    watchProvider === 'browser'
                       ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
                       : 'border-border hover:border-blue-300'
                   }`}
                 >
-                  <MonitorSpeaker className={`h-6 w-6 ${watchProvider === 'builtin' ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`} />
-                  <span className={`font-medium ${watchProvider === 'builtin' ? 'text-blue-700 dark:text-blue-300' : ''}`}>
+                  <MonitorSpeaker className={`h-6 w-6 ${watchProvider === 'browser' ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`} />
+                  <span className={`font-medium ${watchProvider === 'browser' ? 'text-blue-700 dark:text-blue-300' : ''}`}>
                     Built-in Browser
                   </span>
                   <span className="text-xs text-muted-foreground text-center">
@@ -340,17 +352,17 @@ export function TTSSettings() {
                 <button
                   type="button"
                   onClick={() => {
-                    form.setValue('provider', 'external', { shouldDirty: true })
+                    form.setValue('provider', 'cloud', { shouldDirty: true })
                   }}
                   className={`flex flex-col items-center justify-center gap-2 rounded-lg border-2 p-4 transition ${
-                    watchProvider === 'external'
+                    watchProvider === 'cloud'
                       ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
                       : 'border-border hover:border-blue-300'
                   }`}
                 >
-                  <Globe className={`h-6 w-6 ${watchProvider === 'external' ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`} />
-                  <span className={`font-medium ${watchProvider === 'external' ? 'text-blue-700 dark:text-blue-300' : ''}`}>
-                    External API
+                  <Globe className={`h-6 w-6 ${watchProvider === 'cloud' ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`} />
+                  <span className={`font-medium ${watchProvider === 'cloud' ? 'text-blue-700 dark:text-blue-300' : ''}`}>
+                    Cloud API
                   </span>
                   <span className="text-xs text-muted-foreground text-center">
                     OpenAI, Kokoro, etc.
@@ -362,58 +374,79 @@ export function TTSSettings() {
               </div>
 
               {/* External Provider Settings */}
-              {watchProvider === 'external' && (
+              {(watchProvider === 'local' || watchProvider === 'cloud') && (
                 <>
-                  <FormField
-                    control={form.control}
-                    name="endpoint"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>TTS Server URL</FormLabel>
-                        <FormControl>
-                          <Input
-                            placeholder="https://api.openai.com"
-                            className="bg-background"
-                            {...field}
-                            onChange={(e) => {
-                              field.onChange(e)
-                              // Auto-save will handle debounced save
-                            }}
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          Base URL of your TTS service (e.g., https://x.x.x.x:Port)
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  {watchProvider === 'cloud' && (
+                    <FormField
+                      control={form.control}
+                      name="endpoint"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>TTS Server URL</FormLabel>
+                          <FormControl>
+                            <Input
+                              placeholder="https://api.openai.com"
+                              className="bg-background"
+                              {...field}
+                              onChange={(e) => {
+                                field.onChange(e)
+                                // Auto-save will handle debounced save
+                              }}
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            Base URL of your TTS service (e.g., https://x.x.x.x:Port)
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
 
-                  <FormField
-                    control={form.control}
-                    name="apiKey"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>API Key</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="password"
-                            placeholder="sk-..."
-                            className="bg-background"
-                            {...field}
-                            onChange={(e) => {
-                              field.onChange(e)
-                              // Auto-save will handle debounced save
-                            }}
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          API key for the TTS service
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  {watchProvider === 'cloud' && (
+                    <FormField
+                      control={form.control}
+                      name="apiKey"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>API Key</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="password"
+                              placeholder="Enter a new key (never displayed after save)"
+                              className="bg-background"
+                              {...field}
+                              onChange={(e) => {
+                                field.onChange(e)
+                                // Auto-save will handle debounced save
+                              }}
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            Optional. Existing protected keys are represented by a reference and are never displayed.
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
+
+                  {watchProvider === 'cloud' && (
+                    <FormField
+                      control={form.control}
+                      name="apiKeyRef"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Protected API key reference</FormLabel>
+                          <FormControl>
+                            <Input placeholder="vault://text-to-speech" className="bg-background" {...field} />
+                          </FormControl>
+                          <FormDescription>Reference only; the secret value is resolved server-side.</FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
 
                   <FormField
                     control={form.control}
@@ -437,7 +470,7 @@ export function TTSSettings() {
                         <FormLabel>Voice</FormLabel>
                         <FormControl>
                           <Combobox
-                            value={field.value}
+                             value={field.value ?? ''}
                             onChange={field.onChange}
                             options={voiceOptions}
                             placeholder={hasKokoroVoices ? "Select a voice or type custom name (e.g., am_adam+am_echo)..." : "Select a voice..."}
@@ -466,7 +499,7 @@ export function TTSSettings() {
                         <FormLabel>Model</FormLabel>
                         <FormControl>
                           <Combobox
-                            value={field.value}
+                             value={field.value ?? ''}
                             onChange={field.onChange}
                             options={availableModels.map((model: string) => ({
                               value: model,
@@ -485,9 +518,9 @@ export function TTSSettings() {
                            'Configure TTS to discover models'}
                         </FormDescription>
                         <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                       </FormItem>
+                       )}
+                   />
 
                   <div className="flex flex-row items-center justify-between rounded-lg border border-border p-4">
                     <div className="space-y-0.5">
@@ -501,7 +534,7 @@ export function TTSSettings() {
                       variant="outline"
                       size="sm"
                       onClick={handleRefreshDiscovery}
-                      disabled={!watchEnabled || !watchApiKey || isRefreshingDiscovery}
+                       disabled={!watchEnabled || watchProvider !== 'cloud' || (!watchApiKey && !watchApiKeyRef) || isRefreshingDiscovery}
                     >
                       {isRefreshingDiscovery ? (
                         <>
@@ -520,7 +553,7 @@ export function TTSSettings() {
               )}
 
               {/* Builtin Provider Settings */}
-              {watchProvider === 'builtin' && (
+              {watchProvider === 'browser' && (
                 <>
                   <FormField
                     control={form.control}
@@ -536,7 +569,7 @@ export function TTSSettings() {
                         <FormLabel>Browser Voice</FormLabel>
                         <FormControl>
                           <Combobox
-                            value={field.value}
+                             value={field.value ?? ''}
                             onChange={field.onChange}
                             options={voiceOptions}
                             placeholder={isCheckingBuiltin ? "Loading voices..." : "Select a voice..."}
@@ -568,7 +601,7 @@ export function TTSSettings() {
                     <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 p-4">
                       <div className="text-sm text-yellow-800 dark:text-yellow-200">
                         <strong>Browser Not Supported</strong>: Your browser doesn't support Web Speech API. 
-                        Please use Chrome, Safari, Firefox, or Edge, or switch to an external API provider.
+                         Please use Chrome, Safari, Firefox, or Edge, or switch to a cloud provider.
                       </div>
                     </div>
                   )}
@@ -614,7 +647,7 @@ export function TTSSettings() {
                     <div className="flex justify-between">
                       <FormLabel>Speed</FormLabel>
                       <span className="text-sm text-muted-foreground">
-                        {field.value.toFixed(2)}x
+                         {(field.value ?? 1).toFixed(2)}x
                       </span>
                     </div>
                     <FormControl>
@@ -622,7 +655,7 @@ export function TTSSettings() {
                         min={0.25}
                         max={4.0}
                         step={0.25}
-                        value={[field.value]}
+                         value={[field.value ?? 1]}
                         onValueChange={(values) => field.onChange(values[0])}
                         className="w-full"
                       />
@@ -647,7 +680,7 @@ export function TTSSettings() {
                       {ttsError}
                     </p>
                   )}
-                  {watchProvider === 'builtin' && !hasWebSpeechSupport && (
+                  {watchProvider === 'browser' && !hasWebSpeechSupport && (
                     <p className="text-sm text-destructive flex items-center gap-1">
                       <XCircle className="h-4 w-4" />
                       Web Speech API is not available

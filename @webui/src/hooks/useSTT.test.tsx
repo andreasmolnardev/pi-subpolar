@@ -43,11 +43,11 @@ vi.mock('@/api/stt', () => ({
   sttApi: mocks.sttApi,
 }))
 
-const externalSTTPreferences = {
+const cloudSTTPreferences = {
   preferences: {
     stt: {
       enabled: true,
-      provider: 'external' as const,
+      provider: 'cloud' as const,
       endpoint: 'https://api.openai.com',
       apiKey: 'test-key',
       model: 'whisper-1',
@@ -56,7 +56,7 @@ const externalSTTPreferences = {
   },
 }
 
-describe('useSTT external provider lifecycle', () => {
+describe('useSTT cloud provider lifecycle', () => {
   let mockRecorder: MockRecorder
 
   beforeEach(() => {
@@ -76,7 +76,7 @@ describe('useSTT external provider lifecycle', () => {
 
     mocks.AudioRecorder.mockImplementation(() => mockRecorder)
     mocks.AudioRecorder.isSupported.mockReturnValue(true)
-    mocks.useSettings.mockReturnValue(externalSTTPreferences)
+    mocks.useSettings.mockReturnValue(cloudSTTPreferences)
     mocks.getWebSpeechRecognizer.mockReturnValue({
       start: vi.fn(),
       stop: vi.fn(),
@@ -267,11 +267,11 @@ describe('useSTT external provider lifecycle', () => {
   })
 })
 
-const builtinSTTPreferences = {
+const browserSTTPreferences = {
   preferences: {
     stt: {
       enabled: true,
-      provider: 'builtin' as const,
+      provider: 'browser' as const,
       endpoint: '',
       apiKey: '',
       model: '',
@@ -280,7 +280,7 @@ const builtinSTTPreferences = {
   },
 }
 
-describe('useSTT builtin provider lifecycle', () => {
+describe('useSTT browser provider lifecycle', () => {
   let mockRecognizer: {
     start: ReturnType<typeof vi.fn>
     stop: ReturnType<typeof vi.fn>
@@ -337,12 +337,12 @@ describe('useSTT builtin provider lifecycle', () => {
       }),
     }
 
-    mocks.useSettings.mockReturnValue(builtinSTTPreferences)
+    mocks.useSettings.mockReturnValue(browserSTTPreferences)
     mocks.getWebSpeechRecognizer.mockReturnValue(mockRecognizer)
     mocks.isWebRecognitionSupported.mockReturnValue(true)
   })
 
-  it('starts recognition with correct options for builtin provider', async () => {
+  it('starts recognition with correct options for browser provider', async () => {
     const { result } = renderHook(() => useSTT())
 
     await act(async () => {

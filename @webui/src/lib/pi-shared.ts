@@ -2,7 +2,7 @@ export const GENERAL_CHAT_PROJECT_ID = 0
 
 export const DEFAULT_TTS_CONFIG = {
   enabled: false,
-  provider: 'external',
+  provider: 'local',
   autoPlay: false,
   endpoint: 'https://api.openai.com',
   apiKey: '',
@@ -17,7 +17,7 @@ export const DEFAULT_TTS_CONFIG = {
 
 export const DEFAULT_STT_CONFIG = {
   enabled: false,
-  provider: 'builtin',
+  provider: 'local',
   endpoint: 'https://api.openai.com',
   apiKey: '',
   model: '',

@@ -117,6 +117,28 @@ describe('WAV extension selection logic', () => {
     expect(url).toContain('userId=custom-user')
   })
 
+  it('propagates the active session ID without using userId as ownership context', async () => {
+    window.history.pushState({}, '', '/projects/1/sessions/session%2Fvoice')
+    const blob = new Blob([], { type: 'audio/wav' })
+    mockFetch.mockResolvedValueOnce(createMockResponse(true, { text: 'test' }))
+
+    await sttApi.transcribe(blob, 'arbitrary-user')
+
+    expect(Object.fromEntries(mockFetch.mock.calls[0][1]?.headers as Headers)).toEqual({
+      'x-session-id': 'session/voice',
+    })
+  })
+
+  it('omits session context when there is no active session', async () => {
+    window.history.pushState({}, '', '/settings')
+    const blob = new Blob([], { type: 'audio/wav' })
+    mockFetch.mockResolvedValueOnce(createMockResponse(true, { text: 'test' }))
+
+    await sttApi.transcribe(blob, 'arbitrary-user')
+
+    expect(Object.fromEntries(mockFetch.mock.calls[0][1]?.headers as Headers)).toEqual({})
+  })
+
   it('should send FormData with audio file', async () => {
     const blob = new Blob(['audio data'], { type: 'audio/wav' })
     mockFetch.mockResolvedValueOnce(createMockResponse(true, { text: 'transcribed text' }))

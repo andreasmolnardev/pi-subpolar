@@ -6,34 +6,52 @@ import { useSettings } from '@/hooks/useSettings'
 import { useSTT } from '@/hooks/useSTT'
 import { isWebRecognitionSupported, getAvailableLanguages } from '@/lib/webSpeechRecognizer'
 import { sttApi } from '@/api/stt'
-import { Mic, Loader2, XCircle, CheckCircle2, RefreshCw, Eye, EyeOff, MicOff } from 'lucide-react'
+import { Mic, Loader2, XCircle, CheckCircle2, RefreshCw, MicOff } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
 import { Combobox } from '@/components/ui/combobox'
 import { DEFAULT_STT_CONFIG } from '@/api/types/settings'
+import type { VoiceProvider } from '@/api/voice'
+
+const STT_PROVIDERS = ['local', 'browser', 'cloud'] as const
 
 const sttFormSchema = z.object({
   enabled: z.boolean(),
-  provider: z.enum(['external', 'builtin']),
+  provider: z.enum(STT_PROVIDERS),
   endpoint: z.string(),
   apiKey: z.string(),
+  apiKeyRef: z.string(),
   model: z.string(),
   language: z.string(),
 }).superRefine((data, ctx) => {
   if (!data.enabled) return
 
-  if (data.provider === 'external') {
+  if (data.provider === 'cloud') {
     if (!data.endpoint || data.endpoint.trim().length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['endpoint'],
-        message: 'Endpoint is required for external provider',
+        message: 'Endpoint is required for cloud provider',
       })
     }
   }
 })
 
 type STTFormValues = z.infer<typeof sttFormSchema>
+
+function isVoiceProvider(value: unknown): value is VoiceProvider {
+  return STT_PROVIDERS.includes(value as VoiceProvider)
+}
+
+const DEFAULT_STT_FORM_VALUES: STTFormValues = {
+  enabled: DEFAULT_STT_CONFIG.enabled,
+  provider: 'local',
+  endpoint: DEFAULT_STT_CONFIG.endpoint,
+  apiKey: '',
+  apiKeyRef: '',
+  model: DEFAULT_STT_CONFIG.model || 'whisper-1',
+  language: DEFAULT_STT_CONFIG.language,
+}
 
 export function STTSettings() {
   const { preferences, updateSettings } = useSettings()
@@ -43,7 +61,6 @@ export function STTSettings() {
   const [isTesting, setIsTesting] = useState(false)
   const [testTranscript, setTestTranscript] = useState('')
   const [testResult, setTestResult] = useState<'idle' | 'success' | 'failed'>('idle')
-  const [showApiKey, setShowApiKey] = useState(false)
   const [availableModels, setAvailableModels] = useState<string[]>(['whisper-1'])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
 
@@ -51,10 +68,7 @@ export function STTSettings() {
 
   const form = useForm<STTFormValues>({
     resolver: zodResolver(sttFormSchema),
-    defaultValues: {
-      ...DEFAULT_STT_CONFIG,
-      model: DEFAULT_STT_CONFIG.model || 'whisper-1',
-    },
+    defaultValues: DEFAULT_STT_FORM_VALUES,
   })
 
   const { reset, formState: { isDirty, isValid }, getValues, setValue } = form
@@ -66,6 +80,7 @@ export function STTSettings() {
   const watchLanguage = form.watch('language')
   const watchEndpoint = form.watch('endpoint')
   const watchApiKey = form.watch('apiKey')
+  const watchApiKeyRef = form.watch('apiKeyRef')
   const watchModel = form.watch('model')
 
   const fetchModels = async (forceRefresh = false) => {
@@ -87,7 +102,7 @@ export function STTSettings() {
   }
 
   useEffect(() => {
-    if (watchProvider === 'external' && watchEndpoint) {
+    if (watchProvider === 'cloud' && watchEndpoint) {
       const timer = setTimeout(() => {
         fetchModels()
       }, 500)
@@ -145,9 +160,10 @@ export function STTSettings() {
       const sttPrefs = preferences.stt as typeof preferences.stt & { model?: string; availableModels?: string[] }
       reset({
         enabled: sttPrefs.enabled ?? DEFAULT_STT_CONFIG.enabled,
-        provider: sttPrefs.provider ?? DEFAULT_STT_CONFIG.provider,
+        provider: isVoiceProvider(sttPrefs.provider) ? sttPrefs.provider : DEFAULT_STT_FORM_VALUES.provider,
         endpoint: sttPrefs.endpoint ?? DEFAULT_STT_CONFIG.endpoint,
-        apiKey: sttPrefs.apiKey ?? DEFAULT_STT_CONFIG.apiKey,
+        apiKey: '',
+        apiKeyRef: sttPrefs.apiKeyRef ?? '',
         model: sttPrefs.model ?? 'whisper-1',
         language: sttPrefs.language ?? DEFAULT_STT_CONFIG.language,
       })
@@ -170,11 +186,11 @@ export function STTSettings() {
     }, 800)
 
     return () => clearTimeout(timer)
-  }, [watchEnabled, watchProvider, watchLanguage, watchEndpoint, watchApiKey, watchModel, isDirty, isValid, getValues, updateSettings])
+  }, [watchEnabled, watchProvider, watchLanguage, watchEndpoint, watchApiKey, watchApiKeyRef, watchModel, isDirty, isValid, getValues, updateSettings])
 
-  const canTestBuiltin = watchEnabled && watchProvider === 'builtin' && isWebSpeechAvailable
-  const canTestExternal = watchEnabled && watchProvider === 'external' && watchEndpoint
-  const canTest = canTestBuiltin || canTestExternal
+  const canTestBrowser = watchEnabled && watchProvider === 'browser' && isWebSpeechAvailable
+  const canTestBackend = watchEnabled && (watchProvider === 'local' || Boolean(watchEndpoint))
+  const canTest = canTestBrowser || canTestBackend
 
   return (
     <div className="bg-card border border-border rounded-lg p-6">
@@ -231,20 +247,21 @@ export function STTSettings() {
                     <FormLabel>Provider</FormLabel>
                     <FormControl>
                       <Combobox
-                        value={field.value}
+                        value={field.value ?? ''}
                         onChange={field.onChange}
                         options={[
-                          ...(isWebSpeechAvailable ? [{ value: 'builtin', label: 'Built-in Browser' }] : []),
-                          { value: 'external', label: 'External API (OpenAI Whisper)' },
+                          { value: 'local', label: 'Local backend' },
+                          ...(isWebSpeechAvailable ? [{ value: 'browser', label: 'Built-in Browser' }] : []),
+                          { value: 'cloud', label: 'Cloud API (OpenAI Whisper)' },
                         ]}
                         placeholder="Select provider..."
                         allowCustomValue={false}
                       />
                     </FormControl>
                     <FormDescription>
-                      {watchProvider === 'builtin' 
-                        ? "Uses browser's built-in speech recognition (free, requires Chrome/Safari/Edge)"
-                        : "Uses OpenAI Whisper API or compatible endpoint (requires API key)"
+                       {watchProvider === 'browser'
+                         ? "Uses browser's built-in speech recognition (free, requires Chrome/Safari/Edge)"
+                         : watchProvider === 'local' ? 'Uses an explicitly configured local backend' : "Uses a compatible cloud API (credentials stay server-side)"
                       }
                     </FormDescription>
                     <FormMessage />
@@ -252,7 +269,7 @@ export function STTSettings() {
                 )}
               />
 
-              {watchProvider === 'external' && (
+              {watchProvider === 'cloud' && (
                 <>
                   <FormField
                     control={form.control}
@@ -285,23 +302,36 @@ export function STTSettings() {
                         <FormControl>
                           <div className="relative">
                             <input
-                              type={showApiKey ? 'text' : 'password'}
-                              placeholder="sk-..."
+                              type="password"
+                              placeholder="Enter a new key (never displayed after save)"
                               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 pr-10 text-[16px] md:text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                               {...field}
                             />
-                            <button
-                              type="button"
-                              onClick={() => setShowApiKey(!showApiKey)}
-                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                            >
-                              {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                            </button>
                           </div>
                         </FormControl>
                         <FormDescription>
-                          Your API key for the speech-to-text service (optional for some servers)
+                           Optional. Existing protected keys are represented by a reference and are never displayed.
                         </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="apiKeyRef"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Protected API key reference</FormLabel>
+                        <FormControl>
+                          <input
+                            type="text"
+                            placeholder="vault://speech-to-text"
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-[16px] md:text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormDescription>Reference only; the secret value is resolved server-side.</FormDescription>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -326,7 +356,7 @@ export function STTSettings() {
                         </div>
                         <FormControl>
                           <Combobox
-                            value={field.value}
+                            value={field.value ?? ''}
                             onChange={field.onChange}
                             options={availableModels.map(model => ({
                               value: model,
@@ -347,7 +377,7 @@ export function STTSettings() {
                 </>
               )}
 
-              {watchProvider === 'builtin' && (
+              {watchProvider === 'browser' && (
                 <>
                   <FormField
                     control={form.control}
@@ -357,7 +387,7 @@ export function STTSettings() {
                         <FormLabel>Language</FormLabel>
                         <FormControl>
                           <Combobox
-                            value={field.value}
+                            value={field.value ?? ''}
                             onChange={field.onChange}
                             options={availableLanguages.map(lang => ({
                               value: lang,
@@ -391,7 +421,7 @@ export function STTSettings() {
                 <div className="space-y-0.5 flex-1 mr-4">
                   <div className="text-base font-medium">Test STT</div>
                   <p className="text-sm text-muted-foreground">
-                    {watchProvider === 'external' 
+                    {watchProvider === 'cloud'
                       ? 'Record audio, then click Stop to transcribe'
                       : 'Verify your speech recognition is working'
                     }

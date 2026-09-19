@@ -104,6 +104,8 @@ async function fetchWithTimeout(
 
   const controller = new AbortController()
   const timeoutId = timeout > 0 ? setTimeout(() => controller.abort(), timeout) : null
+  const onAbort = () => controller.abort()
+  fetchOptions.signal?.addEventListener('abort', onAbort, { once: true })
 
   try {
     const response = await fetch(urlObj.toString(), {
@@ -113,6 +115,7 @@ async function fetchWithTimeout(
     })
 
     if (timeoutId) clearTimeout(timeoutId)
+    fetchOptions.signal?.removeEventListener('abort', onAbort)
 
     if (!response.ok) {
       await handleResponse(response)
@@ -121,6 +124,7 @@ async function fetchWithTimeout(
     return response
   } catch (error) {
     if (timeoutId) clearTimeout(timeoutId)
+    fetchOptions.signal?.removeEventListener('abort', onAbort)
     if (error instanceof Error && error.name === 'AbortError') {
       throw new FetchError('Request timeout', 408, 'TIMEOUT')
     }

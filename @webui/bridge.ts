@@ -119,6 +119,7 @@ import {
 } from './server/request-security.ts'
 import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse } from './server/network-policy.ts'
 import { redactSensitive, redactSensitiveText } from './server/security-redaction.ts'
+import { handleVoiceRoute, localVoiceBackends, type VoiceBackends, redactVoiceSettings, VoiceAuthorizationError } from './server/voice/index.ts'
 import { permissionAskedProperties } from './server/approval-event.ts'
 import { escapeFilter } from './server/pocketbase.ts'
 import { createEventCursor, ensureEventCursorSchema } from './server/event-cursor.ts'
@@ -196,6 +197,27 @@ let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccou
 let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
 const migratedUsers = new Set<string>()
 const requestRateLimiter = new InProcessRateLimiter()
+const voiceBackends: VoiceBackends = localVoiceBackends({
+  sttExecutable: process.env.SUBPOLAR_VOICE_STT_EXECUTABLE,
+  ttsExecutable: process.env.SUBPOLAR_VOICE_TTS_EXECUTABLE,
+  sttModels: process.env.SUBPOLAR_VOICE_STT_MODELS?.split(',').map((value) => value.trim()).filter(Boolean),
+  ttsModels: process.env.SUBPOLAR_VOICE_TTS_MODELS?.split(',').map((value) => value.trim()).filter(Boolean),
+  ttsVoices: process.env.SUBPOLAR_VOICE_TTS_VOICES?.split(',').map((value) => value.trim()).filter(Boolean),
+})
+
+async function voiceAuthorization(request: Request, user: PocketBaseUser | null, credential: GatewayCredentialAuth | null, internal: boolean) {
+  const url = new URL(request.url)
+  const sessionId = url.searchParams.get('sessionId') ?? request.headers.get('x-session-id')
+  if (!sessionId?.trim()) throw new VoiceAuthorizationError()
+  const client = await applicationDatabase()
+  const session = await createProjectSessionRepository(client).getSessionById(sessionId)
+  if (!session || !session.userId || (!internal && !credential && (!user || user.id !== session.userId)) || (credential && credential.ownerId !== session.userId)) throw new VoiceAuthorizationError()
+  const agents = await listAgents(client, session.userId)
+  const agent = agents.find((item) => item.id === session.profile || item.name === session.profile) ?? agents.find((item) => item.name === 'master')
+  if (!agent || agent.enabled === false) throw new VoiceAuthorizationError()
+  if (credential) assertGatewayAccess(credential, 'call', { projectId: session.projectId, agentName: agent.name, sessionId: session.id })
+  return { userId: session.userId, sessionId: session.id, ...(session.projectId ? { projectId: session.projectId } : {}), agentName: agent.name, authorize: () => undefined }
+}
 
 async function applicationDatabase() {
   if (!applicationDatabasePromise) {
@@ -1761,6 +1783,18 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     if (!authenticatedUser) return json({ message: 'Unauthorized' }, 401)
   }
 
+  if (path[0] === 'api' && (path[1] === 'stt' || path[1] === 'tts')) {
+    let voiceContext
+    try {
+      voiceContext = await voiceAuthorization(request, authenticatedUser, gatewayCredential, internalRequest)
+    } catch (error) {
+      if (error instanceof GatewayAuthError) return json({ error: { code: error.code, message: 'Voice access is not permitted' } }, 403)
+      return json({ error: 'Voice access is not permitted', code: 'FORBIDDEN' }, 403)
+    }
+    const voiceResponse = await handleVoiceRoute(request, voiceBackends, voiceContext)
+    if (voiceResponse) return voiceResponse
+  }
+
   if (path[0] === 'api' && path[1] === 'auth') {
     if (path[2] === 'session' && request.method === 'GET') {
       authenticatedUser = await authenticateRequest(request)
@@ -2723,18 +2757,29 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     if (!authenticatedUser) return json({ message: 'Unauthorized' }, 401)
     try {
       const record = await getUserPreferences(await applicationDatabase(), authenticatedUser.id)
-      return json({ preferences: { ...DEFAULT_SETTINGS, ...(record?.preferences ?? {}) }, updatedAt: record?.updated_at ?? Date.now() })
+      const preferences = { ...DEFAULT_SETTINGS, ...(record?.preferences ?? {}) }
+      if (preferences.tts) preferences.tts = { enabled: Boolean((preferences.tts as Record<string, unknown>).enabled), ...redactVoiceSettings(preferences.tts) }
+      if (preferences.stt) preferences.stt = { enabled: Boolean((preferences.stt as Record<string, unknown>).enabled), ...redactVoiceSettings(preferences.stt) }
+      return json({ preferences, updatedAt: record?.updated_at ?? Date.now() })
     } catch (error) { console.warn(`Settings read failed: ${redactedDiagnostic(error)}`); return json({ message: 'Settings store unavailable' }, 503) }
   }
   if (path[1] === 'settings' && path.length === 2 && request.method === 'PATCH') {
     if (!authenticatedUser) return json({ message: 'Unauthorized' }, 401)
     const input = await body(request)
-    const preferences = object(input.preferences)
-    try {
-      const client = await applicationDatabase()
-      const existing = await getUserPreferences(client, authenticatedUser.id)
-      const saved = await saveUserPreferences(client, authenticatedUser.id, { ...DEFAULT_SETTINGS, ...(existing?.preferences ?? {}), ...preferences })
-      return json({ preferences: saved.preferences ?? {}, updatedAt: saved.updated_at ?? Date.now() })
+       const preferences = object(input.preferences)
+       if (preferences.tts && typeof preferences.tts === 'object') preferences.tts = { ...redactVoiceSettings(preferences.tts), apiKeyRef: typeof (preferences.tts as Record<string, unknown>).apiKeyRef === 'string' ? (preferences.tts as Record<string, unknown>).apiKeyRef : undefined }
+       if (preferences.stt && typeof preferences.stt === 'object') preferences.stt = { ...redactVoiceSettings(preferences.stt), apiKeyRef: typeof (preferences.stt as Record<string, unknown>).apiKeyRef === 'string' ? (preferences.stt as Record<string, unknown>).apiKeyRef : undefined }
+       try {
+         const client = await applicationDatabase()
+         const existing = await getUserPreferences(client, authenticatedUser.id)
+         const existingPreferences = { ...(existing?.preferences ?? {}) }
+         if (existingPreferences.tts) existingPreferences.tts = redactVoiceSettings(existingPreferences.tts)
+         if (existingPreferences.stt) existingPreferences.stt = redactVoiceSettings(existingPreferences.stt)
+         const saved = await saveUserPreferences(client, authenticatedUser.id, { ...DEFAULT_SETTINGS, ...existingPreferences, ...preferences })
+       const safePreferences = { ...(saved.preferences ?? {}) }
+       if (safePreferences.tts) safePreferences.tts = { enabled: Boolean((safePreferences.tts as Record<string, unknown>).enabled), ...redactVoiceSettings(safePreferences.tts) }
+       if (safePreferences.stt) safePreferences.stt = { enabled: Boolean((safePreferences.stt as Record<string, unknown>).enabled), ...redactVoiceSettings(safePreferences.stt) }
+       return json({ preferences: safePreferences, updatedAt: saved.updated_at ?? Date.now() })
     } catch (error) { console.warn(`Settings update failed: ${redactedDiagnostic(error)}`); return json({ message: 'Settings store unavailable' }, 503) }
   }
   if (path[1] === 'settings' && path.length === 2 && request.method === 'DELETE') {

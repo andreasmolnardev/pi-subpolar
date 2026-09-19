@@ -1,10 +1,14 @@
 import { createContext } from 'react'
+import type { VoiceProvider } from '@/api/voice'
+
+export type { VoiceProvider } from '@/api/voice'
 
 export type TTSState = 'idle' | 'loading' | 'playing' | 'error'
 
 export interface TTSConfig {
   enabled: boolean
-  provider: 'external' | 'builtin'
+  provider: VoiceProvider
+  apiKeyRef?: string
   endpoint: string
   apiKey: string
   voice: string

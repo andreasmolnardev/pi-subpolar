@@ -1,9 +1,10 @@
 import { useState, useRef, useCallback, useEffect, type ReactNode } from 'react'
 import { useSettings } from '@/hooks/useSettings'
-import { API_BASE_URL } from '@/config'
+import { ttsApi } from '@/api/tts'
 import { TTSContext, type TTSState, type TTSConfig } from './tts-context'
 import { sanitizeForTTS } from '@/lib/utils'
 import { getWebSpeechSynthesizer, isWebSpeechSupported } from '@/lib/webSpeechSynthesizer'
+import { isVoiceProviderConfigured } from '@/api/voice'
 
 export { TTSContext, type TTSContextValue, type TTSState, type TTSConfig } from './tts-context'
 
@@ -47,14 +48,9 @@ export function TTSProvider({ children }: TTSProviderProps) {
   const webSpeechSynthRef = useRef<ReturnType<typeof getWebSpeechSynthesizer> | null>(null)
 
   const ttsConfig = preferences?.tts
-  const isBuiltin = ttsConfig?.provider === 'builtin'
+  const isBrowser = ttsConfig?.provider === 'browser'
   const isEnabled = (() => {
-    if (!ttsConfig?.enabled) return false
-    if (isBuiltin) {
-      return isWebSpeechSupported()
-    }
-    // External requires apiKey
-    return !!ttsConfig?.apiKey
+    return isVoiceProviderConfigured(ttsConfig?.provider ?? 'local', ttsConfig ?? { enabled: false }, isWebSpeechSupported())
   })()
 
   // Initialize Web Speech synthesizer on demand
@@ -74,7 +70,7 @@ export function TTSProvider({ children }: TTSProviderProps) {
     }
     
     // Stop Web Speech API
-    if (webSpeechSynthRef.current && isBuiltin) {
+    if (webSpeechSynthRef.current && isBrowser) {
       webSpeechSynthRef.current.stop()
       webSpeechSynthRef.current.clearCallbacks()
     }
@@ -90,7 +86,7 @@ export function TTSProvider({ children }: TTSProviderProps) {
     chunksRef.current = []
     chunkIndexRef.current = 0
     fetchingIndexRef.current = -1
-  }, [isBuiltin])
+  }, [isBrowser])
 
   const stop = useCallback(() => {
     stoppedRef.current = true
@@ -114,34 +110,8 @@ export function TTSProvider({ children }: TTSProviderProps) {
     if (stoppedRef.current) return null
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/tts/synthesize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-        signal,
-      })
-
       if (stoppedRef.current) return null
-
-      if (!response.ok) {
-        let errorMessage = 'TTS request failed'
-        try {
-          const errorData = await response.json()
-          errorMessage = errorData.error || errorData.details || errorMessage
-        } catch {
-          if (response.status === 401) errorMessage = 'Invalid API key'
-          else if (response.status === 429) errorMessage = 'Rate limit exceeded'
-          else if (response.status >= 500) errorMessage = 'Service unavailable'
-        }
-        throw new Error(errorMessage)
-      }
-
-      const contentType = response.headers.get('content-type')
-      if (!contentType?.includes('audio')) {
-        throw new Error('Invalid response from TTS service')
-      }
-
-      const blob = await response.blob()
+      const blob = await ttsApi.synthesize(text, 'default', signal)
       if (blob.size === 0) {
         throw new Error('Empty audio response')
       }
@@ -342,9 +312,9 @@ export function TTSProvider({ children }: TTSProviderProps) {
       return false
     }
 
-    const configIsBuiltin = config.provider === 'builtin'
+    const configIsBrowser = config.provider === 'browser'
 
-    if (configIsBuiltin) {
+    if (configIsBrowser) {
       if (!isWebSpeechSupported()) {
         setError('Web Speech API not supported in this browser')
         setState('error')
@@ -352,7 +322,7 @@ export function TTSProvider({ children }: TTSProviderProps) {
       }
       return speakBuiltinWithConfig(text, config, messageId)
     } else {
-      if (!config.apiKey) {
+      if (config.provider === 'cloud' && !config.apiKey && !config.apiKeyRef) {
         setError('API key not configured')
         setState('error')
         return false
@@ -386,7 +356,8 @@ export function TTSProvider({ children }: TTSProviderProps) {
 
     const config: TTSConfig = {
       enabled: ttsConfig.enabled ?? false,
-      provider: ttsConfig.provider ?? 'external',
+      provider: ttsConfig.provider ?? 'local',
+      apiKeyRef: ttsConfig.apiKeyRef,
       endpoint: ttsConfig.endpoint ?? '',
       apiKey: ttsConfig.apiKey ?? '',
       voice: ttsConfig.voice ?? '',
@@ -407,7 +378,8 @@ export function TTSProvider({ children }: TTSProviderProps) {
 
     const config: TTSConfig = {
       enabled: ttsConfig.enabled ?? false,
-      provider: ttsConfig.provider ?? 'external',
+      provider: ttsConfig.provider ?? 'local',
+      apiKeyRef: ttsConfig.apiKeyRef,
       endpoint: ttsConfig.endpoint ?? '',
       apiKey: ttsConfig.apiKey ?? '',
       voice: ttsConfig.voice ?? '',

@@ -8,7 +8,7 @@ Current branch: main
 Last completed commit: pending — memory capability checkpoint
 Last verified commit: working tree — memory checkpoint independently verified with notes
 Current blockers: full WebUI dependencies are unavailable; the local CLI is still a fixture executor rather than Pi-backed; no disposable E2E harness exists; scoped remote gateway credentials are not implemented
-Next recommended action: commit browser checkpoint, then implement local-first voice backend seam
+Next recommended action: commit voice checkpoint, then converge automations/inbox and integration/skills
 
 ## Architecture Decisions
 
@@ -190,6 +190,7 @@ Requirements:
 | impl-tasks-subagents | P4 durable Tasks/subagent/run/worktree metadata | main task/agent scope | COMPLETE - VERIFIED WITH NOTES | 20 focused tests, ownership/ceiling/approval/worktree checks |
 | impl-memory | P7 explicit scoped memory capability | main memory/tool scope | COMPLETE - VERIFIED WITH NOTES | 119 server + 63 package tests; live persistence service unverified |
 | impl-browser | P8 owned browser session/read tools foundation | main browser scope | COMPLETE - VERIFIED WITH NOTES | 32 focused tests; live browser engine unavailable |
+| impl-voice | P9 local-first STT/TTS backend seam | main voice scope | COMPLETE - VERIFIED WITH NOTES | 12 server + 32 UI voice tests; cloud/voice discovery page scope remains limited |
 | audit-general-capabilities | P7-P13 memory/browser/voice/automation audit | main read-only | IN PROGRESS | Dependency map and independent implementation slices |
 
 ## Completed Work
@@ -215,6 +216,8 @@ Requirements:
 - 61f32e1 committed and verified as the Tasks/subagent/worktree checkpoint.
 - Memory checkpoint independently verified: 5 focused memory tests, 119 server tests, 63 package tests, typechecks, atomic idempotency/ownership, persistence validation, redaction, and no-injection checks pass.
 - Browser checkpoint independently verified: 32 browser/network/gateway/server tests, bridge typecheck, bidirectional scope, byte limits, URL redaction, approval, and unavailable-runtime checks pass; live engine unavailable.
+- Voice checkpoint independently verified: 12 server + 32 UI voice tests, UI/bridge typechecks, isolated Vite build, discovery scope, limits/cancellation/redaction pass; cloud runtime remains optional/unwired.
+- 5283da9 committed and verified as the browser checkpoint.
 - 9ac0462 committed and verified as the memory checkpoint.
 - 1671cb3 committed and verified as the agent profile/context checkpoint.
 
@@ -254,6 +257,5 @@ Requirements:
 
 ## Next Actions
 
-1. Commit the verified browser checkpoint.
-2. Implement local-first voice backend seam.
-3. Continue durable automations/inbox and integration/skills convergence.
+1. Commit the verified voice checkpoint.
+2. Continue durable automations/inbox and integration/skills convergence.

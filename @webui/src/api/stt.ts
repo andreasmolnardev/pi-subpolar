@@ -1,20 +1,45 @@
 import { API_BASE_URL } from '@/config'
 import { fetchWrapper, FetchError } from './fetchWrapper'
+import type { VoiceProvider } from './voice'
+
+export function getActiveSessionId(): string | undefined {
+  if (typeof window === 'undefined') return undefined
+
+  const match = window.location.pathname.match(/\/sessions\/([^/]+)/)
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined
+}
+
+export function getVoiceRequestHeaders(headers: HeadersInit = {}): Headers {
+  const requestHeaders = new Headers(headers)
+  const sessionId = getActiveSessionId()
+  if (sessionId) requestHeaders.set('x-session-id', sessionId)
+  return requestHeaders
+}
 
 export interface STTModelsResponse {
   models: string[]
   cached: boolean
+  state?: 'available' | 'unconfigured'
+  available?: boolean
+  kind?: VoiceProvider
+  name?: string
+  detail?: string
 }
 
 export interface STTStatusResponse {
   enabled: boolean
   configured: boolean
-  provider: 'external' | 'builtin'
-  model: string
+  provider?: VoiceProvider
+  kind?: VoiceProvider
+  model?: string
+  available?: boolean
+  name?: string
+  detail?: string
 }
 
 export interface STTTranscribeResponse {
   text: string
+  partial?: string
 }
 
 export interface STTErrorResponse {
@@ -26,12 +51,14 @@ export const sttApi = {
   getModels: async (userId = 'default', forceRefresh = false): Promise<STTModelsResponse> => {
     return fetchWrapper(`${API_BASE_URL}/api/stt/models`, {
       params: { userId, ...(forceRefresh && { refresh: 'true' }) },
+      headers: getVoiceRequestHeaders(),
     })
   },
 
   getStatus: async (userId = 'default'): Promise<STTStatusResponse> => {
     return fetchWrapper(`${API_BASE_URL}/api/stt/status`, {
       params: { userId },
+      headers: getVoiceRequestHeaders(),
     })
   },
 
@@ -70,6 +97,7 @@ export const sttApi = {
       const response = await fetch(urlObj.toString(), {
         method: 'POST',
         body: formData,
+        headers: getVoiceRequestHeaders(),
         signal: controller.signal,
       })
 
