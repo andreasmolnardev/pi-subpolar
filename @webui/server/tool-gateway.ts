@@ -27,6 +27,7 @@ export interface ToolGatewayContext {
   permissionOverride?: PermissionOverride
   waitForApproval?: boolean
   onApproval?: (approval: Approval) => void | Promise<void>
+  capabilities?: readonly string[]
 }
 
 export interface ToolGatewayError {
@@ -201,6 +202,7 @@ export interface ExistingCallToolOptions {
   callId?: string
   waitForApproval?: boolean
   onApproval?: (approval: Approval) => void | Promise<void>
+  capabilities?: readonly string[]
 }
 
 /**
@@ -241,6 +243,7 @@ export function createToolGatewayExecutor<TClient>(
       callId: context.callId ?? crypto.randomUUID(),
       waitForApproval: context.waitForApproval,
       onApproval: context.onApproval,
+      capabilities: context.capabilities,
     },
   )
 }

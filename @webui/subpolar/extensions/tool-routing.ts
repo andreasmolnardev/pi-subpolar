@@ -23,6 +23,7 @@ type RoutingContext = {
   sessionId: string
   cwd: string
   permissionOverride?: 'ask' | 'none' | 'allow_all'
+  capabilities?: readonly string[]
   onApproval?: (approval: import('../../server/tools.ts').Approval) => void | Promise<void>
   listTools?: () => Promise<unknown>
   searchTools?: (query: string) => Promise<unknown>
@@ -77,6 +78,7 @@ async function gateway(context: RoutingContext, path: string, requestBody: Recor
         permissionOverride: context.permissionOverride,
         waitForApproval: false,
         onApproval: context.onApproval,
+        capabilities: context.capabilities,
       },
     )
     if (result.ok && result.result && typeof result.result === 'object' && Array.isArray((result.result as Record<string, unknown>).content)) return result.result as ExtensionResult

@@ -16,6 +16,7 @@ import { redactSensitive, redactSensitiveText } from './security-redaction.ts'
 import { createProjectSessionRepository, type SessionContext } from './project-store.ts'
 import { assertPathWithinWorkspace, configuredWorkspaceRoot } from './project-filesystem.ts'
 import { discardPendingApprovalInput, retainPendingApprovalInput, takePendingApprovalInput } from './approval-execution.ts'
+import type { ToolGatewayContext } from './tool-gateway.ts'
 
 export type ToolAdapter = 'internal' | 'http' | 'openapi' | 'mcp'
 export type ToolEffect = 'allow' | 'deny' | 'approval'
@@ -27,6 +28,7 @@ export type AgentApprovalMode = 'auto' | 'ask' | 'deny'
 
 export const TOOL_CONTEXT_MODES: readonly ToolContextMode[] = ['always', 'discoverable', 'on-demand', 'disabled']
 export const SKILL_CONTEXT_MODES: readonly SkillContextMode[] = ['always-loaded', 'discoverable', 'explicit-only', 'disabled']
+export const DECLARED_CAPABILITIES = ['subagent/run', 'read', 'write', 'bash'] as const
 
 export type AgentPolicySet = {
   builtin: Record<string, boolean>
@@ -114,8 +116,15 @@ const piToolIds: Record<string, string> = {
 }
 
 const mcpAdapter = createMcpAdapter()
+type SubagentToolRunner = (input: unknown, context: ToolGatewayContext) => Promise<unknown>
+let subagentToolRunner: SubagentToolRunner | undefined
+
+export function configureSubagentToolRunner(runner: SubagentToolRunner | undefined): void {
+  subagentToolRunner = runner
+}
 
 const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>> = [
+  { tool_id: 'subagent/run', namespace: 'builtin', description: 'Run an authorized isolated subagent task', adapter: 'internal', target: 'subagent', operation: 'run', input_schema: { type: 'object', properties: { targetAgent: { type: 'string', minLength: 1 }, prompt: { type: 'string', minLength: 1 }, capabilities: { type: 'array', items: { type: 'string' } }, coding: { type: 'boolean' } }, required: ['targetAgent', 'prompt'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'subagent/run' } },
   { tool_id: 'search-tool', namespace: 'builtin', description: 'Search tools available to the active agent', adapter: 'internal', target: 'tool-router', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
   { tool_id: 'read', namespace: 'builtin', description: 'Read files from the selected project', adapter: 'internal', target: 'pi', operation: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } }, required: ['path'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
   { tool_id: 'grep', namespace: 'builtin', description: 'Search file contents in the selected project', adapter: 'internal', target: 'pi', operation: 'grep', input_schema: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' }, glob: { type: 'string' }, ignoreCase: { type: 'boolean' }, literal: { type: 'boolean' }, context: { type: 'number' }, limit: { type: 'number' } }, required: ['pattern'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
@@ -450,7 +459,11 @@ export async function respondToApproval(client: PocketBase, userId: string, appr
 
 
 
-async function invokeInternalTool(tool: ToolDefinition, input: unknown, cwd: string, callId: string): Promise<unknown> {
+async function invokeInternalTool(tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext): Promise<unknown> {
+  if (tool.target === 'subagent' && tool.operation === 'run') {
+    if (!subagentToolRunner) throw new Error('Subagent execution host is unavailable')
+    return subagentToolRunner(input, { ...context, cwd, callId } as ToolGatewayContext)
+  }
   const definitions = {
     read: createReadToolDefinition(cwd),
     write: createWriteToolDefinition(cwd),
@@ -465,9 +478,9 @@ async function invokeInternalTool(tool: ToolDefinition, input: unknown, cwd: str
   return definition.execute(callId, input as never, undefined, undefined, undefined as never)
 }
 
-async function invokeExternalTool(tool: ToolDefinition, input: unknown, cwd: string, callId: string): Promise<unknown> {
+async function invokeExternalTool(tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext): Promise<unknown> {
   if (tool.adapter === 'internal') {
-    if (tool.target === 'pi') return invokeInternalTool(tool, input, cwd, callId)
+    if (tool.target === 'pi') return invokeInternalTool(tool, input, cwd, callId, context)
     return { routed: true, toolId: tool.tool_id, operation: tool.operation, input }
   }
   if (tool.adapter === 'mcp') {
@@ -535,8 +548,11 @@ async function invokeExternalTool(tool: ToolDefinition, input: unknown, cwd: str
   try { return JSON.parse(text) } catch { return text }
 }
 
-export async function callTool(client: PocketBase, userId: string, agentName: string, toolId: string, input: unknown, sessionId?: string, override?: PermissionOverride, options: { cwd?: string; callId?: string; waitForApproval?: boolean; onApproval?: (approval: Approval) => void | Promise<void> } = {}) {
+export async function callTool(client: PocketBase, userId: string, agentName: string, toolId: string, input: unknown, sessionId?: string, override?: PermissionOverride, options: { cwd?: string; callId?: string; waitForApproval?: boolean; onApproval?: (approval: Approval) => void | Promise<void>; capabilities?: readonly string[] } = {}) {
   const canonicalId = canonicalToolId(toolId)
+  if (options.capabilities?.some((capability) => !(DECLARED_CAPABILITIES as readonly string[]).includes(capability))) {
+    return { ok: false as const, toolId: canonicalId, error: { code: 'CAPABILITY_INVALID', message: 'Unknown execution capability' } }
+  }
   if (!sessionId?.trim()) {
     await writeAudit(client, { user_id: userId, tool_id: canonicalId, input, status: 'denied', error_code: 'SESSION_REQUIRED' })
     return { ok: false as const, toolId: canonicalId, error: { code: 'SESSION_REQUIRED', message: 'An owned session is required for tool execution' } }
@@ -592,6 +608,10 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
     }
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'approval_required', approval_id: approval.id })
     await options.onApproval?.(approval)
+    if (canonicalId === 'subagent/run' && subagentToolRunner) {
+      const task = await subagentToolRunner({ ...recordObject(input), approvalId: approval.id }, { userId, agentName, sessionId, cwd: options.cwd, callId: options.callId, permissionOverride: override, capabilities: options.capabilities })
+      return { ok: false as const, toolId: canonicalId, approvalRequired: true, approvalId: approval.id, message: approval.reason, task } as never
+    }
     // Approval is now resumable. Never hold a model or HTTP request open while
     // polling PocketBase; callers continue it through continueApprovedTool().
     return { ok: false as const, toolId: canonicalId, approvalRequired: true, approvalId: approval.id, message: approval.reason }
@@ -604,7 +624,7 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
   }
 
   try {
-    const result = await invokeExternalTool(tool, input, options.cwd ?? process.cwd(), options.callId ?? crypto.randomUUID())
+    const result = await invokeExternalTool(tool, input, options.cwd ?? process.cwd(), options.callId ?? crypto.randomUUID(), { userId, agentName, sessionId, permissionOverride: override, capabilities: options.capabilities })
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'success', result_summary: `Executed ${tool.adapter} tool` })
     return { ok: true as const, toolId: canonicalId, result }
   } catch (error) {
@@ -706,7 +726,16 @@ async function executeApprovedTool(
   }
   const cwd = session.directory ? assertPathWithinWorkspace(session.directory) : context.project?.path ?? configuredWorkspaceRoot()
   try {
-    const result = await invokeExternalTool(tool, input, cwd, callId)
+    const resumedInput = toolId === 'subagent/run' ? { ...recordObject(input), approvalId: approval.id } : input
+    const requestedCapabilities = recordObject(input).capabilities
+    const result = await invokeExternalTool(tool, resumedInput, cwd, callId, {
+      userId,
+      agentName: agent.name,
+      sessionId: session.id,
+      cwd,
+      permissionOverride: session.permissionOverride,
+      capabilities: Array.isArray(requestedCapabilities) ? requestedCapabilities.filter((value: unknown): value is string => typeof value === 'string') : undefined,
+    })
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: session.id, tool_id: toolId, input, status: 'success', result_summary: `Executed ${tool.adapter} tool` })
     return { ok: true as const, toolId, result }
   } catch (error) {

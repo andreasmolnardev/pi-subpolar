@@ -38,6 +38,7 @@ export {
   type Approval,
   type PermissionOverride,
   type ToolDefinition,
+  configureSubagentToolRunner,
 } from './tools'
 
 export {
@@ -110,3 +111,6 @@ export * from './git/contracts.ts'
 export * from './git/executor.ts'
 export * from './git/policy.ts'
 export * from './git/service.ts'
+export * from './task-control-plane.ts'
+export * from './subagent-control.ts'
+export * from './worktree-control.ts'

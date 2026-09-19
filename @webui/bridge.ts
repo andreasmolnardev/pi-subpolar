@@ -91,7 +91,16 @@ import {
   GatewayAuthError,
   type GatewayCredentialAuth,
   type GatewayPermission,
+  ensureTaskCollections,
+  TaskRepository,
+  TaskControlError,
+  type TaskState,
+  configureSubagentToolRunner,
+  SubagentController,
+  PocketBaseWorktreeStore,
+  WorktreeController,
 } from './server/index.ts'
+import { effectiveAgentConfiguration } from './server/tools.ts'
 import {
   NewSessionRouteError,
   resolveNewSessionRoute,
@@ -109,6 +118,7 @@ import {
 import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse } from './server/network-policy.ts'
 import { redactSensitive, redactSensitiveText } from './server/security-redaction.ts'
 import { permissionAskedProperties } from './server/approval-event.ts'
+import { escapeFilter } from './server/pocketbase.ts'
 import { createEventCursor, ensureEventCursorSchema } from './server/event-cursor.ts'
 import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/project-filesystem.ts'
 import { GitPathPolicy } from './server/git/policy.ts'
@@ -178,6 +188,8 @@ process.env.SUBPOLAR_INTERNAL_TOKEN = internalToken
 let applicationDatabasePromise: ReturnType<typeof getPocketBaseAdmin> | undefined
 let applicationCollectionsReady: Promise<void> | undefined
 let inProcessToolGateway: ToolGateway | undefined
+let subagentController: SubagentController | undefined
+let subagentWorktrees: WorktreeController | undefined
 let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccountService>> | undefined
 let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
 const migratedUsers = new Set<string>()
@@ -195,9 +207,10 @@ async function applicationDatabase() {
     applicationCollectionsReady = ensureApplicationCollections(client)
       .then(() => ensureProjectSessionCollections(client))
       .then(() => ensureToolRegistry(client))
-      .then(() => ensureProviderAccountCollections(client))
-      .then(() => ensureCustomProviderCollection(client))
-      .then(() => ensureProviderLoginFlowCollection(client))
+        .then(() => ensureProviderAccountCollections(client))
+        .then(() => ensureCustomProviderCollection(client))
+        .then(() => ensureProviderLoginFlowCollection(client))
+        .then(() => ensureTaskCollections(client))
       .catch((error) => {
         applicationCollectionsReady = undefined
         throw error
@@ -205,6 +218,57 @@ async function applicationDatabase() {
   }
   await applicationCollectionsReady
   if (!inProcessToolGateway) inProcessToolGateway = createToolGatewayFromCallTool(client, callTool)
+  if (!subagentController) {
+    const tasks = new TaskRepository(client)
+    subagentWorktrees = new WorktreeController(new PocketBaseWorktreeStore(client))
+    subagentController = new SubagentController(tasks, inProcessToolGateway, executeSubagentHost, 2, async (ownerId, parentAgent, targetAgent, projectId) => {
+      const agents = await listAgents(client, ownerId)
+      const parent = agents.find((agent) => agent.name === parentAgent || agent.id === parentAgent)
+      const target = agents.find((agent) => agent.name === targetAgent || agent.id === targetAgent)
+      if (!parent?.enabled || !target?.enabled || target.mode !== 'subagent') return false
+      const project = projectId ? await createProjectSessionRepository(client).getProject(ownerId, projectId) : null
+      if (projectId && !project) return false
+      if (project?.agentNames?.length && !project.agentNames.includes(target.name) && !project.agentNames.includes(target.id)) return false
+      const configured = effectiveAgentConfiguration(target, projectId)
+      return configured.policies.subagent === true
+    }, async (ownerId, approvalId, sessionId) => {
+      const approval = await client.collection('tool_approvals').getOne(approvalId).catch(() => null)
+      return Boolean(approval && approval.user_id === ownerId && approval.session_id === sessionId && approval.tool_id === 'subagent/run' && approval.status === 'approved')
+    })
+    configureSubagentToolRunner(async (rawInput, context) => {
+      const input = object(rawInput)
+      const targetAgent = typeof input.targetAgent === 'string' ? input.targetAgent.trim() : ''
+      const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : ''
+      if (!targetAgent || !prompt || !context.sessionId) throw new Error('targetAgent, prompt, and an owned session are required')
+      const session = await createProjectSessionRepository(client).getSessionById(context.sessionId)
+      if (!session || session.userId !== context.userId) throw new Error('Session is not owned by the caller')
+       const agents = await listAgents(client, context.userId)
+       const parent = agents.find((agent) => agent.name === context.agentName || agent.id === context.agentName)
+       const projectId = session.projectId ? String(session.projectId) : undefined
+       const configuredParent = parent ? effectiveAgentConfiguration(parent, projectId) : undefined
+       const declaredParentCapabilities = configuredParent
+         ? ['subagent/run', 'read', 'write', 'bash'].filter((capability) => capability === 'subagent/run' ? configuredParent.policies.subagent === true : configuredParent.policies.builtin[capability] === true)
+         : ['read']
+       const parentCapabilities = (context.capabilities?.length ? context.capabilities : declaredParentCapabilities) as never[]
+       const target = agents.find((agent) => agent.name === targetAgent || agent.id === targetAgent)
+       const configuredTarget = target ? effectiveAgentConfiguration(target, projectId) : undefined
+      const targetCapabilities = new Set(['subagent/run', 'read', 'write', 'bash'].filter((capability) => capability === 'subagent/run' ? configuredTarget?.policies.subagent === true : configuredTarget?.policies.builtin[capability] === true))
+      const requestedCapabilities = Array.isArray(input.capabilities) ? input.capabilities.filter((value): value is never => typeof value === 'string') : parentCapabilities
+      if (requestedCapabilities.some((capability) => !targetCapabilities.has(String(capability)))) throw new Error('Requested capabilities exceed the target agent ceiling')
+      return subagentController!.run({
+        ownerId: context.userId,
+        sessionId: context.sessionId,
+        parentAgent: context.agentName,
+        targetAgent,
+        prompt,
+        capabilities: requestedCapabilities,
+        projectId,
+        coding: input.coding !== false,
+        approvalId: typeof input.approvalId === 'string' ? input.approvalId : undefined,
+        cwd: context.cwd,
+      }, parentCapabilities)
+    })
+  }
   return client
 }
 
@@ -1065,6 +1129,13 @@ function json(value: unknown, status = 200): Response {
   })
 }
 
+class TaskRequestError extends Error {
+  constructor(readonly code: string, message: string, readonly status = 400) {
+    super(message)
+    this.name = 'TaskRequestError'
+  }
+}
+
 function gatewayErrorResponse(error: unknown): Response | null {
   if (!(error instanceof GatewayAuthError)) return null
   return json({ error: { code: error.code, message: error.message } }, error.code === 'GATEWAY_PERMISSION_DENIED' || error.code === 'GATEWAY_SCOPE_DENIED' ? 403 : 401)
@@ -1085,6 +1156,29 @@ function sessionMessageText(message: unknown): string {
   }).join('\n')
 }
 
+async function executeSubagentHost(input: { task: import('./server/task-control-plane.ts').TaskRecord; signal: AbortSignal; capabilities: readonly string[]; cwd?: string }): Promise<unknown> {
+  const taskInput = object(input.task.input)
+  const cwd = input.cwd ?? configuredWorkspaceRoot()
+  let worktree: Awaited<ReturnType<WorktreeController['create']>> | undefined
+  if (taskInput.coding !== false && input.task.project_id && subagentWorktrees) {
+    worktree = await subagentWorktrees.create({ ownerId: input.task.owner_id, projectId: input.task.project_id, repository: cwd, baseRef: 'HEAD', taskId: input.task.id })
+    await (await applicationDatabase()).collection('tasks').update(input.task.id, { worktree_id: worktree.id, base_ref: worktree.baseRef, updated_at: Date.now() })
+  }
+  const record: SessionRecord = { id: `subagent-${input.task.id}`, project: 'Subagent', title: input.task.title, createdAt: Date.now(), updatedAt: Date.now(), userId: input.task.owner_id, profile: input.task.subagent_id, directory: worktree?.path ?? cwd }
+  const project: Project = { name: 'Subagent', path: worktree?.path ?? cwd }
+  const session = new PiSdkSession(record, project, input.capabilities)
+  const abort = () => { void session.send({ type: 'abort' }) }
+  input.signal.addEventListener('abort', abort, { once: true })
+  try {
+    await session.send({ type: 'prompt', message: typeof taskInput.prompt === 'string' ? taskInput.prompt : input.task.title })
+    return { text: session.agentSession.getLastAssistantText(), sessionId: record.id, worktreeId: worktree?.id }
+  } finally {
+    input.signal.removeEventListener('abort', abort)
+    session.close()
+    if (worktree && subagentWorktrees) await subagentWorktrees.remove(worktree)
+  }
+}
+
 class PiSdkSession {
   private readonly listeners = new Set<(message: RpcMessage) => void>()
   private readonly ready: Promise<void>
@@ -1093,7 +1187,7 @@ class PiSdkSession {
   private session!: AgentSession
   private modelRuntime!: ProviderRuntime
 
-  constructor(readonly record: SessionRecord, readonly project: Project) {
+  constructor(readonly record: SessionRecord, readonly project: Project, private readonly capabilities?: readonly string[]) {
     this.runtimeAgentName = record.profile ?? 'master'
     this.runtimePermissionOverride = record.permissionOverride ?? 'ask'
     this.ready = this.initialize()
@@ -1127,7 +1221,8 @@ class PiSdkSession {
           agentName: runtime.agent.name,
           sessionId: this.record.id,
           cwd: sessionCwd,
-          permissionOverride: this.runtimePermissionOverride,
+           permissionOverride: this.runtimePermissionOverride,
+           capabilities: this.capabilities,
           onApproval: (approval) => {
             broadcastSse({
               type: 'permission.asked',
@@ -1815,6 +1910,92 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     } catch (error) {
       console.warn(`Agent store request failed: ${redactedDiagnostic(error)}`)
       return json({ message: 'Agent store unavailable' }, 503)
+    }
+  }
+
+  if (path[1] === 'tasks' && authenticatedUser) {
+    const tasks = new TaskRepository(await applicationDatabase())
+    try {
+      if (path.length === 2 && request.method === 'GET') {
+        const states = url.searchParams.getAll('state').filter((value): value is TaskState => ['draft', 'queued', 'running', 'waiting_for_input', 'waiting_for_approval', 'review_required', 'failed', 'completed', 'cancelled'].includes(value))
+        return json({ tasks: await tasks.listOwned(authenticatedUser.id, states) })
+      }
+      if (path.length === 2 && request.method === 'POST') {
+        const input = object(await body(request)); const title = typeof input.title === 'string' ? input.title.trim() : ''
+        if (!title) return json({ error: 'title is required' }, 400)
+        const state = input.state === 'draft' ? 'draft' : 'queued'
+        const client = await applicationDatabase()
+        const repository = createProjectSessionRepository(client)
+        const kind = input.kind === 'subagent_run' ? 'subagent_run' : 'task'
+        const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : ''
+        const requestedProjectId = typeof input.projectId === 'string' ? input.projectId.trim() : ''
+        const session = sessionId ? await repository.getSession(authenticatedUser.id, sessionId) : null
+        if (sessionId && !session) throw new TaskRequestError('SESSION_NOT_FOUND', 'Session not found', 404)
+        const projectId = requestedProjectId || session?.projectId || undefined
+        const project = projectId ? await repository.getProject(authenticatedUser.id, projectId) : null
+        if (projectId && !project) throw new TaskRequestError('PROJECT_NOT_FOUND', 'Project not found', 404)
+        if (session?.projectId && projectId !== session.projectId) throw new TaskRequestError('SESSION_PROJECT_MISMATCH', 'Session and project do not match')
+
+        const parentRunId = typeof input.parentRunId === 'string' ? input.parentRunId.trim() : ''
+        const parentRun = parentRunId ? await tasks.getOwned(authenticatedUser.id, parentRunId) : null
+        if (parentRunId && !parentRun) throw new TaskRequestError('PARENT_TASK_NOT_FOUND', 'Parent task not found', 404)
+        if (parentRun && !sessionId && !projectId) throw new TaskRequestError('PARENT_CONTEXT_REQUIRED', 'Parent task requires an owned session or project')
+        if (parentRun && ((sessionId && parentRun.session_id !== sessionId) || (projectId && parentRun.project_id !== projectId))) throw new TaskRequestError('PARENT_CONTEXT_MISMATCH', 'Parent task context does not match')
+
+        const agents = await listAgents(client, authenticatedUser.id)
+        const resolveAgent = (value: unknown, code: string) => {
+          if (typeof value !== 'string' || !value.trim()) return undefined
+          const agent = agents.find((candidate) => candidate.id === value.trim() || candidate.name === value.trim())
+          if (!agent) throw new TaskRequestError(code, 'Agent not found', 404)
+          if (!agent.enabled) throw new TaskRequestError('AGENT_DISABLED', 'Agent is disabled', 409)
+          return agent
+        }
+        const parentAgent = resolveAgent(input.agentId ?? session?.profile, 'PARENT_AGENT_NOT_FOUND')
+        const targetAgent = resolveAgent(input.subagentId, 'TARGET_AGENT_NOT_FOUND')
+        if (kind === 'subagent_run') {
+          if (!session) throw new TaskRequestError('SESSION_REQUIRED', 'An owned session is required')
+          if (!projectId) throw new TaskRequestError('PROJECT_REQUIRED', 'An owned project is required')
+          if (!parentAgent || !targetAgent) throw new TaskRequestError('AGENT_REQUIRED', 'Parent and target agents are required')
+          if (session.profile && parentAgent.name !== session.profile && parentAgent.id !== session.profile) throw new TaskRequestError('SESSION_AGENT_MISMATCH', 'Session and parent agent do not match')
+          if (targetAgent.mode !== 'subagent') throw new TaskRequestError('TARGET_AGENT_DENIED', 'Target agent is not a subagent', 403)
+          if (project?.agentNames?.length && !project.agentNames.includes(targetAgent.name) && !project.agentNames.includes(targetAgent.id)) throw new TaskRequestError('TARGET_AGENT_DENIED', 'Target agent is not enabled for this project', 403)
+          const configuredTarget = effectiveAgentConfiguration(targetAgent, projectId)
+          const requested = object(input.input).capabilities
+          const capabilities = Array.isArray(requested) ? requested.filter((value): value is string => typeof value === 'string') : []
+          const ceiling = new Set(['subagent/run', 'read', 'write', 'bash'].filter((capability) => capability === 'subagent/run' ? configuredTarget.policies.subagent : configuredTarget.policies.builtin[capability]))
+          if (capabilities.some((capability) => !ceiling.has(capability))) throw new TaskRequestError('CAPABILITY_ESCALATION', 'Requested capabilities exceed the target agent ceiling', 403)
+        }
+        return json({ task: await tasks.create({ owner_id: authenticatedUser.id, project_id: projectId, session_id: (session?.id ?? sessionId) || undefined, parent_run_id: parentRun?.id, agent_id: parentAgent?.id, subagent_id: targetAgent?.id, state, kind, title, input: input.input }) }, 201)
+      }
+      const taskId = decodeURIComponent(path[2] ?? '')
+      const ownedTask = await tasks.getOwned(authenticatedUser.id, taskId)
+      if (path.length >= 3 && !ownedTask) return json({ error: { code: 'TASK_NOT_FOUND', message: 'Task not found' } }, 404)
+      if (path.length === 3 && request.method === 'GET') {
+        return json({ task: ownedTask })
+      }
+      if (path.length === 4 && path[3] === 'activity' && request.method === 'GET') return json({ activity: await tasks.listActivity(authenticatedUser.id, taskId) })
+      if (path.length === 4 && path[3] === 'audit' && request.method === 'GET') return json({ audit: await tasks.listAudit(authenticatedUser.id, taskId) })
+      if (path.length === 4 && path[3] === 'worktree' && request.method === 'GET') {
+        const worktree = await (await applicationDatabase()).collection('task_worktrees').getFirstListItem(`owner_id = "${escapeFilter(authenticatedUser.id)}" && task_id = "${escapeFilter(taskId)}"`).catch(() => null)
+        return worktree ? json({ worktree }) : json({ error: { code: 'WORKTREE_NOT_FOUND', message: 'Worktree not found' } }, 404)
+      }
+      if (path.length === 4 && path[3] === 'cancel' && request.method === 'POST') {
+        if (subagentController) return json({ task: await subagentController.cancel(authenticatedUser.id, taskId) })
+        return json({ task: await tasks.transition(authenticatedUser.id, taskId, 'cancelled', { error_code: 'CANCELLED' }) })
+      }
+      if (path.length === 4 && path[3] === 'resume' && request.method === 'POST') {
+        if (!subagentController) return json({ error: { code: 'SUBAGENT_UNAVAILABLE', message: 'Subagent execution host is unavailable' } }, 503)
+        return json({ task: await subagentController.resume(authenticatedUser.id, taskId) })
+      }
+      if (path.length === 4 && path[3] === 'review' && request.method === 'POST') {
+        const input = object(await body(request)); if (input.decision !== 'approved' && input.decision !== 'rejected') return json({ error: 'decision must be approved or rejected' }, 400)
+        return json({ task: await tasks.review(authenticatedUser.id, taskId, input.decision, typeof input.note === 'string' ? input.note : undefined) })
+      }
+      return json({ error: 'Task route not found' }, 404)
+    } catch (error) {
+      if (error instanceof TaskRequestError) return json({ error: { code: error.code, message: error.message } }, error.status)
+      if (error instanceof TaskControlError) return json({ error: { code: error.code, message: error.message } }, error.code === 'TASK_NOT_FOUND' ? 404 : 409)
+      throw error
     }
   }
 

@@ -24,6 +24,15 @@ describe('bridge model delivery ordering', () => {
     expect(run).toContain('interruptMessageDelivery(claimedDelivery)')
   })
 
+  it('fails closed when subagent parent capabilities are omitted or empty', () => {
+    const runner = section('configureSubagentToolRunner(async (rawInput, context) => {', 'return subagentController!.run({')
+    expect(runner).toContain('context.capabilities?.length ? context.capabilities : declaredParentCapabilities')
+    expect(runner).toContain(": ['read']")
+    expect(runner).not.toContain("context.capabilities ?? ['subagent/run', 'read', 'write', 'bash']")
+    expect(runner).toContain('configuredParent.policies.subagent === true')
+    expect(runner).toContain('configuredParent.policies.builtin[capability] === true')
+  })
+
   it('keeps queue routes behind the owned session lookup and separates steer from follow-up', () => {
     const sessionRoutes = section("if (path[1] === 'sessions' && path.length >= 3)", "if (path[1] === 'extensions'")
     expect(sessionRoutes.indexOf('const ownedRecord =')).toBeLessThan(sessionRoutes.indexOf("path[3] === 'steer'"))
