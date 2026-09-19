@@ -108,9 +108,10 @@ describe('SessionList', () => {
     expect(screen.getByText('1 selected')).toBeTruthy()
   })
 
-  it('creates sessions in the explicit create directory', async () => {
+  it('delegates a new-session request without creating a session', async () => {
     const user = userEvent.setup()
     sessionsData.splice(0, sessionsData.length)
+    const onNewSession = vi.fn()
 
     render(
       <SessionList
@@ -118,13 +119,14 @@ describe('SessionList', () => {
         directories={['/w/a', '/w/b']}
         createDirectory="/w/b"
         onSelectSession={vi.fn()}
+        onNewSession={onNewSession}
       />,
     )
 
     await user.click(screen.getByText('No sessions yet'))
 
-    expect(createSessionState.directory).toBe('/w/b')
-    expect(createSessionMock).toHaveBeenCalledWith({ agent: undefined })
+    expect(onNewSession).toHaveBeenCalledTimes(1)
+    expect(createSessionMock).not.toHaveBeenCalled()
   })
 
   it('passes search query and limit option to useSessionsAcrossDirectories', async () => {

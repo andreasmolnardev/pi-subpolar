@@ -12,6 +12,7 @@ import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 import type { AgentSkillAccess } from '@subpolar/shared'
 import { Bot, Plus, Pencil, Trash2, ExternalLink } from 'lucide-react'
 import { showToast } from '@/lib/toast'
+import { newSessionPath } from '@/lib/new-session-route'
 
 interface Agent {
   id?: string
@@ -226,7 +227,7 @@ export function Agents() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => navigate(`/repos/0?agent=${encodeURIComponent(name)}`)}
+                          onClick={() => navigate(newSessionPath({ agentName: name }))}
                           className="gap-1"
                         >
                           <ExternalLink className="h-3.5 w-3.5" />

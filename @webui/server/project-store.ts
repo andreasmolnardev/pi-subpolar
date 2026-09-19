@@ -15,12 +15,14 @@ export type PermissionOverride = 'ask' | 'none' | 'allow_all'
 export type ProjectDefinition = {
   name: string
   path: string
+  agentNames?: string[]
 }
 
 /** A project record returned by PocketBase. */
 export type ProjectRecord = ProjectDefinition & {
   id: string
   userId: string
+  hasAgentOverride?: boolean
   createdAt: number
   updatedAt: number
 }
@@ -123,6 +125,7 @@ export const PROJECT_SESSION_SCHEMA = {
       { name: 'user_id', type: 'text', required: true },
       { name: 'name', type: 'text', required: true },
       { name: 'path', type: 'text', required: true },
+      { name: 'agent_names', type: 'json' },
       { name: 'created_at', type: 'number', required: true },
       { name: 'updated_at', type: 'number', required: true },
     ],
@@ -225,6 +228,9 @@ function numberField(value: unknown, field: string): number {
 
 function projectFromRecord(value: CollectionRecord): ProjectRecord {
   const path = assertPathWithinWorkspace(requiredString(value.path, 'project path'))
+  const agentNames = Array.isArray(value.agent_names)
+    ? value.agent_names.filter((name): name is string => typeof name === 'string' && name.trim() !== '')
+    : undefined
   return {
     id: requiredString(value.id, 'project id'),
     userId: requiredString(value.user_id, 'project user_id'),
@@ -232,6 +238,7 @@ function projectFromRecord(value: CollectionRecord): ProjectRecord {
     path,
     createdAt: numberField(value.created_at, 'project created_at'),
     updatedAt: numberField(value.updated_at, 'project updated_at'),
+    ...(agentNames && agentNames.length > 0 ? { agentNames, hasAgentOverride: true } : {}),
   }
 }
 
@@ -264,7 +271,8 @@ function normalizeProjectInput(input: CreateProjectInput): CreateProjectInput {
   if (!name) throw new Error('Project name is required')
   if (!path) throw new Error('Project path is required')
   if (name.toLocaleLowerCase() === GENERAL_CHAT_NAME.toLocaleLowerCase()) throw new Error('General Chat is reserved')
-  return { name, path: assertPathWithinWorkspace(path) }
+  const agentNames = input.agentNames?.filter((agentName) => typeof agentName === 'string' && agentName.trim() !== '').map((agentName) => agentName.trim())
+  return { name, path: assertPathWithinWorkspace(path), ...(agentNames?.length ? { agentNames: [...new Set(agentNames)] } : {}) }
 }
 
 function normalizePermission(value: PermissionOverride | undefined): PermissionOverride | undefined {
@@ -279,7 +287,7 @@ function timestamp(value: number | undefined, fallback: number): number {
 
 function projectData(userId: string, input: CreateProjectInput, now: number): Record<string, unknown> {
   const project = normalizeProjectInput(input)
-  return { user_id: userId, name: project.name, path: project.path, created_at: now, updated_at: now }
+  return { user_id: userId, name: project.name, path: project.path, agent_names: project.agentNames ?? [], created_at: now, updated_at: now }
 }
 
 function sessionData(userId: string, input: CreateSessionInput, now: number): Record<string, unknown> {
@@ -318,6 +326,9 @@ function updateData(input: UpdateProjectInput | UpdateSessionInput): Record<stri
     const path = typeof input.path === 'string' ? input.path.trim() : ''
     if (!path) throw new Error('Project path is required')
     data.path = assertPathWithinWorkspace(path)
+  }
+  if ('agentNames' in input && input.agentNames !== undefined) {
+    data.agent_names = input.agentNames.filter((agentName) => typeof agentName === 'string' && agentName.trim() !== '').map((agentName) => agentName.trim())
   }
   return data
 }

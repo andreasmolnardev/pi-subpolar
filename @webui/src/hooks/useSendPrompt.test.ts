@@ -10,8 +10,8 @@ const mockSendPromptAsync = vi.fn()
 const mockSetOptimisticActive = vi.fn()
 const mockClearStatus = vi.fn()
 
-vi.mock('../api/subpolar', async () => {
-  const actual = await vi.importActual('../api/subpolar')
+vi.mock('@/api/subpolar', async () => {
+  const actual = await vi.importActual('@/api/subpolar')
   return {
     ...actual,
     SubpolarClient: vi.fn().mockImplementation(() => ({
@@ -48,7 +48,7 @@ const mockSetQueuedPrompt = vi.fn()
 const mockClearQueuedPrompt = vi.fn()
 const mockFailQueuedPrompt = vi.fn()
 
-vi.mock('../stores/sendErrorStore', () => ({
+vi.mock('@/stores/sendErrorStore', () => ({
   useSendErrorStore: {
     getState: () => ({
       clearError: mockClearError,
@@ -92,18 +92,43 @@ describe('useSendPrompt', () => {
       }
     )
 
-  it('proceeds when no providers in cache', async () => {
+  it('uses the immediate path for a new-session first send', async () => {
     const { result } = renderHookWithProviders()
 
     await expect(
       result.current.mutateAsync({
-        sessionID: 'test-session',
-        prompt: 'Hello',
+        sessionID: 'new-session',
+        prompt: 'Hello from a new session',
+        messageID: 'optimistic_user_first-send',
         model: 'anthropic/claude-sonnet-4',
       })
-    ).resolves.toBeDefined()
+    ).resolves.toEqual(expect.objectContaining({ queued: false }))
 
-    expect(mockSendPrompt).toHaveBeenCalled()
+    expect(mockSendPrompt).toHaveBeenCalledWith('new-session', expect.objectContaining({
+      messageID: 'optimistic_user_first-send',
+    }))
+    expect(mockSendPromptAsync).not.toHaveBeenCalled()
+  })
+
+  it('removes a failed immediate first send and retries it through the immediate path', async () => {
+    mockSendPrompt.mockRejectedValueOnce(new Error('Provider unavailable'))
+    mockSendPrompt.mockResolvedValueOnce({ info: { id: 'test-response' }, parts: [] })
+    const { result } = renderHookWithProviders()
+    const variables = {
+      sessionID: 'new-session-retry',
+      prompt: 'Retry this first send',
+      messageID: 'optimistic_user_retry',
+    }
+
+    await expect(result.current.mutateAsync(variables)).rejects.toThrow('Provider unavailable')
+    expect(queryClient.getQueryData([
+      'subpolar', 'messages', 'http://localhost:5551', 'new-session-retry', '/test',
+    ])).toEqual([])
+
+    await expect(result.current.mutateAsync(variables)).resolves.toEqual(expect.objectContaining({ queued: false }))
+    expect(mockSendPrompt).toHaveBeenCalledTimes(2)
+    expect(mockSendPromptAsync).not.toHaveBeenCalled()
+    expect(mockSetQueuedPrompt).not.toHaveBeenCalled()
   })
 
   it('throws FetchError with MODEL_UNAVAILABLE when model not in providers', async () => {

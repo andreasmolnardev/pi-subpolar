@@ -7,6 +7,12 @@ type SessionListParams = NonNullable<paths['/session']['get']['parameters']['que
   roots?: boolean
 }
 type CreateSessionRequest = NonNullable<paths['/session']['post']['requestBody']>['content']['application/json']
+type NewSessionCreateRequest = Omit<CreateSessionRequest, 'permission'> & {
+  agent?: string
+  model?: string
+  thinking?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+  permission?: 'ask' | 'none' | 'allow_all'
+}
 type MessageListResponse = paths['/session/{sessionID}/message']['get']['responses']['200']['content']['application/json']
 type SendPromptRequest = NonNullable<paths['/session/{sessionID}/message']['post']['requestBody']>['content']['application/json']
 type SendPromptAsyncRequest = NonNullable<paths['/session/{sessionID}/prompt_async']['post']['requestBody']>['content']['application/json']
@@ -22,7 +28,12 @@ type SendPromptResponse = paths['/session/{sessionID}/message']['post']['respons
 type LspStatusResponse = paths['/lsp']['get']['responses']['200']['content']['application/json']
 type LspStatus = LspStatusResponse[number]
 
-type LegacySession = SessionListResponse[number]
+type LegacySession = SessionListResponse[number] & {
+  profile?: string
+  model?: string
+  permissionOverride?: 'ask' | 'none' | 'allow_all'
+  revert?: SessionResponse['revert']
+}
 
 type SessionPageParams = { limit?: number; order?: 'asc' | 'desc'; search?: string; cursor?: string }
 type SessionPage = { items: LegacySession[]; nextCursor?: string }
@@ -68,7 +79,7 @@ export class SubpolarClient {
     return this.baseURL.replace(/\/api\/opencode$/, '/api')
   }
 
-  private toLegacySession(session: { id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; archived?: boolean }) {
+  private toLegacySession(session: { id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; archived?: boolean; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all'; revert?: SessionResponse['revert'] }) {
     const created = session.createdAt ?? Date.now()
     const updated = session.updatedAt ?? created
     return {
@@ -79,6 +90,10 @@ export class SubpolarClient {
       version: 'pi',
       time: { created, updated },
       archived: session.archived ?? false,
+      ...(session.profile ? { profile: session.profile } : {}),
+      ...(session.model ? { model: session.model } : {}),
+      ...(session.permissionOverride ? { permissionOverride: session.permissionOverride } : {}),
+      ...(session.revert ? { revert: session.revert } : {}),
     } as LegacySession
   }
 
@@ -102,19 +117,19 @@ export class SubpolarClient {
     }
   }
 
-  async getSession(sessionID: string) {
-    const session = await fetchWrapper<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }>(`${this.nativeBaseURL}/sessions/${sessionID}`, { params: this.getParams() })
-    return this.toLegacySession(session) as SessionResponse
+  async getSession(sessionID: string): Promise<LegacySession> {
+    const session = await fetchWrapper<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all'; revert?: SessionResponse['revert'] }>(`${this.nativeBaseURL}/sessions/${sessionID}`, { params: this.getParams() })
+    return this.toLegacySession(session)
   }
 
-  async createSession(data: CreateSessionRequest) {
-    const response = await fetchWrapper<{ session: { id: string; runtime: string; runtimeSessionId: string | null } }>(`${this.nativeBaseURL}/sessions`, {
+  async createSession(data: NewSessionCreateRequest): Promise<LegacySession> {
+    const response = await fetchWrapper<{ session: { id: string; runtime: string; runtimeSessionId: string | null; title?: string; directory?: string; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all' } }>(`${this.nativeBaseURL}/sessions`, {
       method: 'POST',
       params: this.getParams(),
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...data, directory: this.directory, runtime: 'pi' }),
     })
-    return this.toLegacySession({ id: response.session.id, title: 'Untitled Session', directory: this.directory }) as SessionResponse
+    return this.toLegacySession({ ...response.session, title: response.session.title ?? 'Untitled Session', directory: response.session.directory ?? this.directory })
   }
 
   async deleteSession(sessionID: string) {
@@ -281,15 +296,15 @@ export class SubpolarClient {
   }
 
   async sendPrompt(sessionID: string, data: SendPromptRequest): Promise<SendPromptResponse> {
-    await this.createNativeMessageAndRun(sessionID, data)
-    return { parts: [] } as unknown as SendPromptResponse
+    const delivery = await this.createNativeMessageAndRun(sessionID, data)
+    return delivery as unknown as SendPromptResponse
   }
 
   async sendPromptAsync(sessionID: string, data: SendPromptAsyncRequest): Promise<void> {
     await this.createNativeMessageAndRun(sessionID, data)
   }
 
-  private async createNativeMessageAndRun(sessionID: string, data: SendPromptRequest | SendPromptAsyncRequest): Promise<void> {
+  private async createNativeMessageAndRun(sessionID: string, data: SendPromptRequest | SendPromptAsyncRequest): Promise<{ messageID: string; state: string }> {
     const requestedAt = Date.now()
     const prompt = typeof data === 'object' && data && 'parts' in data && Array.isArray(data.parts)
       ? data.parts.map((part) => 'text' in part && typeof part.text === 'string' ? part.text : '').join('\n')
@@ -299,7 +314,8 @@ export class SubpolarClient {
     const model = typeof data === 'object' && data && 'model' in data ? data.model : undefined
     const agent = typeof data === 'object' && data && 'agent' in data ? data.agent : undefined
     const permission = typeof data === 'object' && data && 'permission' in data ? data.permission : undefined
-    await fetchWrapper(`${this.nativeBaseURL}/sessions/${sessionID}/messages`, {
+    const messageID = typeof data === 'object' && data && 'messageID' in data ? data.messageID : undefined
+    const message = await fetchWrapper<{ messageID?: string; state?: string }>(`${this.nativeBaseURL}/sessions/${sessionID}/messages`, {
       method: 'POST',
       params: this.getParams(),
       headers: { 'Content-Type': 'application/json' },
@@ -307,6 +323,7 @@ export class SubpolarClient {
         role: 'user',
         content: prompt,
         createdAt: requestedAt,
+        ...(messageID ? { messageID } : {}),
         metadata: {
           ...(agent ? { agent } : {}),
           ...(model ? { model } : {}),
@@ -315,7 +332,9 @@ export class SubpolarClient {
       }),
       timeout: 0,
     })
-    await fetchWrapper(`${this.nativeBaseURL}/sessions/${sessionID}/runs`, {
+    const serverMessageID = message.messageID ?? (typeof data === 'object' && data && 'messageID' in data && typeof data.messageID === 'string' ? data.messageID : undefined)
+    const deliveryMessageID = serverMessageID ?? `native_${Date.now()}_${Math.random()}`
+    const delivery = await fetchWrapper<Record<string, unknown>>(`${this.nativeBaseURL}/sessions/${sessionID}/runs`, {
       method: 'POST',
       params: this.getParams(),
       headers: { 'Content-Type': 'application/json' },
@@ -324,10 +343,27 @@ export class SubpolarClient {
         agentId: agent ?? 'default',
         model,
         permissionOverride: permission,
+        messageID: deliveryMessageID,
         requestedAt,
       }),
       timeout: 0,
     })
+    const metadata = isRecord(delivery.delivery) ? delivery.delivery : delivery
+    const state = typeof metadata.state === 'string' ? metadata.state : 'completed'
+    if (state === 'interrupted' || state === 'unknown') {
+      const error = isRecord(metadata.error) ? metadata.error : {}
+      const message = typeof error.message === 'string'
+        ? error.message
+        : 'This delivery did not complete. It was not retried automatically. Resend the prompt to try again.'
+      throw new FetchError(
+        message,
+        409,
+        typeof error.code === 'string' ? error.code : `DELIVERY_${state.toUpperCase()}`,
+        undefined,
+        { delivery: metadata, recoverable: true },
+      )
+    }
+    return { messageID: typeof metadata.messageID === 'string' ? metadata.messageID : deliveryMessageID, state }
   }
 
   async summarizeSession(sessionID: string, providerID: string, modelID: string) {

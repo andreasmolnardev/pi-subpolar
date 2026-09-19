@@ -4,9 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getProject } from '@/api/projects'
 import { SessionList } from '@/components/session/SessionList'
 import { ProjectNotFoundDialog } from '@/components/project/ProjectNotFoundDialog'
-import { ChatInputBar } from '@/components/chat/ChatInputBar'
 import { Header } from '@/components/ui/header'
-import { useCreateSession } from '@/hooks/usePiHarness'
 import { useProjectActivity } from '@/hooks/useProjectActivity'
 import { useSSE } from '@/hooks/useSSE'
 import { SUBPOLAR_API_BASE_URL } from '@/config'
@@ -14,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Plus, Loader2 } from 'lucide-react'
 import { useSidebarAction } from '@/hooks/useSidebarAction'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
+import { newSessionPath } from '@/lib/new-session-route'
 
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>()
@@ -41,17 +40,13 @@ export function ProjectDetail() {
     [projectId],
   )
 
-  const createSessionMutation = useCreateSession(apiUrl, composerDirectory, (session) => {
-    navigate(sessionUrl(session.id))
+  const newSessionRoute = newSessionPath({
+    projectName: project?.name,
+    agentName: project?.agentNames?.[0] ?? 'master',
   })
 
-  const handleCreateSession = async (options?: {
-    agentSlug?: string
-    promptSlug?: string
-  }) => {
-    await createSessionMutation.mutateAsync({
-      agent: options?.agentSlug,
-    })
+  const handleCreateSession = () => {
+    navigate(newSessionRoute)
   }
 
   const handleSelectSession = (sessionId: string) => {
@@ -89,7 +84,7 @@ export function ProjectDetail() {
         <Header.Actions>
           <Button
             onClick={() => handleCreateSession()}
-            disabled={!apiUrl || createSessionMutation.isPending}
+            disabled={!apiUrl || projectLoading}
             size="sm"
             className="sm:hidden h-10 w-10 p-0 bg-blue-600 hover:bg-blue-700 text-white transition-all duration-200 hover:scale-105"
           >
@@ -105,12 +100,9 @@ export function ProjectDetail() {
             directories={[composerDirectory]}
             createDirectory={composerDirectory}
             onSelectSession={handleSelectSession}
+            onNewSession={handleCreateSession}
           />
         )}
-      </div>
-
-      <div className="px-4 pb-4 pt-2">
-        <ChatInputBar defaultProjectId={projectId.toString()} sendImmediately />
       </div>
 
     </div>

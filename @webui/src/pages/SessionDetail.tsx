@@ -3,7 +3,7 @@ import { useParams, useNavigate, Navigate, useLocation } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query";
 import { getProject, hasProjectId, listProjects } from "@/api/projects";
 import { MessageThread } from "@/components/message/MessageThread";
-import { ChatInputBar, type ChatInputBarHandle, type PendingSessionPrompt } from "@/components/chat/ChatInputBar";
+import { ChatInputBar, type ChatInputBarHandle } from "@/components/chat/ChatInputBar";
 import { ChevronDown, CornerUpLeft } from "lucide-react";
 import { Header } from "@/components/ui/header";
 import { SessionList } from "@/components/session/SessionList";
@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ContextUsageIndicator } from "@/components/session/ContextUsageIndicator";
-import { useSession, useAbortSession, useCreateSession, useSendPrompt } from "@/hooks/usePiHarness";
+import { useSession, useAbortSession, useSendPrompt } from "@/hooks/usePiHarness";
 import { useProjectActivity } from "@/hooks/useProjectActivity";
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { useSSE } from "@/hooks/useSSE";
@@ -50,6 +50,13 @@ import { SessionSendErrorBanner } from "@/components/session/SessionSendErrorBan
 import { SessionTodoDisplay } from "@/components/message/SessionTodoDisplay";
 import { useSidebarAction } from "@/hooks/useSidebarAction";
 import { SessionMoreButton } from "@/components/navigation/SessionMoreButton";
+import {
+  clearPendingSessionPrompt,
+  loadPendingSessionPrompt,
+  savePendingSessionPrompt,
+  type StoredPendingSessionPrompt,
+} from "@/lib/pending-session-prompt";
+import { newSessionPath } from "@/lib/new-session-route";
 
 const compareMessageIds = (id1: string, id2: string): number => {
   const num1 = parseInt(id1, 10)
@@ -62,8 +69,38 @@ const PENDING_ACTION_SYNC_INTERVAL_MS = 30000
 const PROMPT_OVERLAY_CLEARANCE_PX = 16
 
 type PendingPromptLocationState = {
-  pendingPrompt?: PendingSessionPrompt
+  pendingPrompt?: StoredPendingSessionPrompt
 }
+
+const createClientMessageID = () => `optimistic_user_${Date.now()}_${Math.random()}`;
+
+type DeliveryState = 'pending' | 'running' | 'completed' | 'interrupted' | 'unknown';
+
+const getDeliveryState = (value: unknown): DeliveryState | undefined => {
+  if (!value || typeof value !== 'object') return undefined;
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.state === 'string' && ['pending', 'running', 'completed', 'interrupted', 'unknown'].includes(record.state)) {
+    return record.state as DeliveryState;
+  }
+
+  return getDeliveryState(record.delivery) ?? getDeliveryState(record.response);
+};
+
+const getTerminalDeliveryState = (error: unknown): 'interrupted' | 'unknown' | undefined => {
+  const state = getDeliveryState(error) ?? (
+    error && typeof error === 'object'
+      ? getDeliveryState((error as { data?: unknown }).data)
+      : undefined
+  );
+  if (state === 'interrupted' || state === 'unknown') return state;
+
+  if (!error || typeof error !== 'object') return undefined;
+  const code = (error as { code?: unknown }).code;
+  if (code === 'DELIVERY_INTERRUPTED') return 'interrupted';
+  if (code === 'DELIVERY_UNKNOWN') return 'unknown';
+  return undefined;
+};
 
 export function SessionDetail() {
   const { id, sessionId } = useParams<{ id: string; sessionId: string }>();
@@ -74,6 +111,7 @@ export function SessionDetail() {
   const prependAnchorRef = useRef<{ height: number; top: number; count: number } | null>(null);
   const promptInputRef = useRef<ChatInputBarHandle>(null);
   const consumedPendingPromptRef = useRef<string | null>(null);
+  const [, setPendingPromptVersion] = useState(0);
   const [sessionsPopoverOpen, setSessionsPopoverOpen] = useState(false);
   const [minimizedQuestion, setMinimizedQuestion] = useState<QuestionRequest | null>(null);
 
@@ -171,7 +209,6 @@ export function SessionDetail() {
     onScrollStateChange: () => {}
   });
   const abortSession = useAbortSession(apiUrl, repoDirectory, sessionId);
-  const createSession = useCreateSession(apiUrl, repoDirectory);
   const sendPendingPrompt = useSendPrompt(apiUrl, repoDirectory);
   const { model, modelString } = useModelSelection(apiUrl, repoDirectory);
   const sessionAgent = useSessionAgent(apiUrl, sessionId, repoDirectory);
@@ -196,24 +233,87 @@ export function SessionDetail() {
   }, [lastAssistantMessage, session?.time?.compacting, sessionStatus.type, transcript.isConnected])
   const hasIncompleteMessages = lastAssistantMessage ? !('completed' in lastAssistantMessage.info.time && lastAssistantMessage.info.time.completed) : false;
   const isStreamingResponse = hasIncompleteMessages && isSessionActive;
-  const pendingPrompt = (location.state as PendingPromptLocationState | null)?.pendingPrompt;
+  const pendingPrompt = (location.state as PendingPromptLocationState | null)?.pendingPrompt
+    ?? (sessionId ? loadPendingSessionPrompt(sessionId) : undefined);
+  const inFlightPrompt = pendingPrompt?.status === 'in-flight' ? pendingPrompt : undefined;
+  const interruptedPrompt = pendingPrompt?.status === 'interrupted' || pendingPrompt?.status === 'unknown'
+    ? pendingPrompt
+    : undefined;
   const activePermission = getPermissionForSession(sessionId ?? '');
 
-  useEffect(() => {
-    if (!pendingPrompt || !sessionId || !isConnected || messagesLoading) return
+  const hasCompletedPromptResponse = useMemo(() => {
+    if (!inFlightPrompt || !messages) return false;
+    const promptIndex = messages.findIndex((message) => message.info.id === inFlightPrompt.messageID);
+    if (promptIndex < 0) return false;
 
-    const pendingPromptKey = `${sessionId}:${pendingPrompt.prompt}`
+    return messages.slice(promptIndex + 1).some((message) => (
+      message.info.role === 'assistant' &&
+      'completed' in message.info.time &&
+      Boolean(message.info.time.completed)
+    ));
+  }, [inFlightPrompt, messages]);
+
+  useEffect(() => {
+    if (!inFlightPrompt || !sessionId || sendPendingPrompt.isPending || !hasCompletedPromptResponse) return;
+
+    clearPendingSessionPrompt(sessionId);
+    setPendingPromptVersion((version) => version + 1);
+  }, [hasCompletedPromptResponse, inFlightPrompt, sendPendingPrompt.isPending, sessionId]);
+
+  const submitPendingPrompt = useCallback((prompt: StoredPendingSessionPrompt) => {
+    if (!sessionId) return;
+
+    const pendingPromptKey = `${sessionId}:${prompt.messageID}`
     if (consumedPendingPromptRef.current === pendingPromptKey) return
     consumedPendingPromptRef.current = pendingPromptKey
 
+    const inFlightPrompt = { ...prompt, status: 'in-flight' as const };
+    savePendingSessionPrompt(sessionId, inFlightPrompt);
+    setPendingPromptVersion((version) => version + 1);
+
     sendPendingPrompt.mutate({
       sessionID: sessionId,
-      prompt: pendingPrompt.prompt,
-      model: pendingPrompt.model,
-      agent: pendingPrompt.agent,
-      permission: pendingPrompt.permission,
-      queued: true,
+      prompt: prompt.prompt,
+      messageID: prompt.messageID,
+      model: prompt.model,
+      agent: prompt.agent,
+      permission: prompt.permission,
+    }, {
+      onSuccess: (data: unknown) => {
+        const state = getDeliveryState(data);
+        if (state === 'interrupted' || state === 'unknown') {
+          savePendingSessionPrompt(sessionId, { ...inFlightPrompt, status: state });
+          setPendingPromptVersion((version) => version + 1);
+          return;
+        }
+
+        if (state === 'pending' || state === 'running' || !state) {
+          savePendingSessionPrompt(sessionId, inFlightPrompt);
+          setPendingPromptVersion((version) => version + 1);
+          return;
+        }
+
+        clearPendingSessionPrompt(sessionId);
+        setPendingPromptVersion((version) => version + 1);
+      },
+      onError: (error: unknown) => {
+        const terminalState = getTerminalDeliveryState(error) ?? 'unknown';
+        savePendingSessionPrompt(sessionId, {
+          ...inFlightPrompt,
+          ...(terminalState ? { status: terminalState } : {}),
+        });
+        setPendingPromptVersion((version) => version + 1);
+      },
     })
+  }, [sendPendingPrompt, sessionId]);
+
+  useEffect(() => {
+    if (!pendingPrompt || pendingPrompt.status === 'in-flight' || pendingPrompt.status === 'interrupted' || pendingPrompt.status === 'unknown' || !sessionId || !isConnected || messagesLoading) return
+
+    const pendingPromptKey = `${sessionId}:${pendingPrompt.messageID}`
+    if (consumedPendingPromptRef.current === pendingPromptKey) return
+
+    submitPendingPrompt(pendingPrompt)
 
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
   }, [
@@ -223,9 +323,29 @@ export function SessionDetail() {
     messagesLoading,
     navigate,
     pendingPrompt,
-    sendPendingPrompt,
     sessionId,
+    submitPendingPrompt,
   ])
+
+  const handleRetryInterruptedPrompt = useCallback(() => {
+    if (!interruptedPrompt || !sessionId || !isConnected) return
+
+    const retryPrompt: StoredPendingSessionPrompt = {
+      ...interruptedPrompt,
+      messageID: createClientMessageID(),
+      status: 'interrupted',
+    }
+    savePendingSessionPrompt(sessionId, retryPrompt)
+    setPendingPromptVersion((version) => version + 1)
+    submitPendingPrompt(retryPrompt)
+  }, [interruptedPrompt, isConnected, sessionId, submitPendingPrompt])
+
+  const handleDiscardInterruptedPrompt = useCallback(() => {
+    if (!interruptedPrompt || !sessionId) return
+
+    clearPendingSessionPrompt(sessionId)
+    setPendingPromptVersion((version) => version + 1)
+  }, [interruptedPrompt, sessionId])
 
   const handleMinimizeQuestion = useCallback((question: QuestionRequest) => {
     setMinimizedQuestion(question)
@@ -263,16 +383,10 @@ export function SessionDetail() {
     retry: false,
   })
 
-  const handleNewSession = useCallback(async () => {
-    try {
-      const newSession = await createSession.mutateAsync({ agent: undefined });
-      if (newSession?.id) {
-        navigate(`/repos/${repoId}/sessions/${newSession.id}${sessionRouteSuffix}`);
-      }
-    } catch {
-      showToast.error('Failed to create new session');
-    }
-  }, [createSession, navigate, repoId, sessionRouteSuffix]);
+  const handleNewSession = useCallback(() => {
+    const agentName = sessionAgent.fromMessage || sessionAgent.fromSession ? sessionAgent.agent : repo?.agentNames?.[0] ?? 'master';
+    navigate(newSessionPath({ projectName: repo?.name, agentName }));
+  }, [navigate, repo?.agentNames, repo?.name, sessionAgent.agent, sessionAgent.fromMessage, sessionAgent.fromSession]);
 
   useSidebarAction('new-session', () => {
     handleNewSession();
@@ -321,7 +435,7 @@ export function SessionDetail() {
       const client = createSubpolarClient(apiUrl, repoDirectory);
       const forkedSession = await client.forkSession(sessionId);
       if (forkedSession?.id) {
-        navigate(`/repos/${repoId}/sessions/${forkedSession.id}${sessionRouteSuffix}`);
+        navigate(`/projects/${repoId}/sessions/${forkedSession.id}${sessionRouteSuffix}`);
         showToast.success('Session forked');
       }
     } catch (error) {
@@ -365,12 +479,12 @@ export function SessionDetail() {
   
 
   const handleChildSessionClick = useCallback((childSessionId: string) => {
-    navigate(`/repos/${repoId}/sessions/${childSessionId}${sessionRouteSuffix}`)
+    navigate(`/projects/${repoId}/sessions/${childSessionId}${sessionRouteSuffix}`)
   }, [navigate, repoId, sessionRouteSuffix]);
 
   const handleParentSessionClick = useCallback(() => {
     if (session?.parentID) {
-      navigate(`/repos/${repoId}/sessions/${session.parentID}${sessionRouteSuffix}`)
+      navigate(`/projects/${repoId}/sessions/${session.parentID}${sessionRouteSuffix}`)
     }
   }, [navigate, repoId, session?.parentID, sessionRouteSuffix]);
 
@@ -471,6 +585,10 @@ export function SessionDetail() {
                           navigate(`/projects/${repoId}/sessions/${selectedSessionID}${sessionRouteSuffix}`)
                           setSessionsPopoverOpen(false)
                         }}
+                        onNewSession={() => {
+                          handleNewSession()
+                          setSessionsPopoverOpen(false)
+                        }}
                       />
                     )}
                   </PopoverContent>
@@ -557,6 +675,46 @@ export function SessionDetail() {
                 />
               )}
               <SessionSendErrorBanner sessionId={sessionId} />
+              {inFlightPrompt && (
+                <div
+                  role="status"
+                  data-testid="in-flight-prompt-state"
+                  className="mb-2 rounded-xl border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-sm text-blue-900 dark:text-blue-100"
+                >
+                  Prompt delivery is in progress. It will not be sent again automatically.
+                </div>
+              )}
+              {interruptedPrompt && (
+                <div
+                  role="alert"
+                  data-testid="interrupted-prompt-state"
+                  className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+                >
+                  <span className="text-amber-900 dark:text-amber-100">
+                    {interruptedPrompt.status === 'unknown'
+                      ? 'Prompt delivery outcome is unknown. It was not retried automatically.'
+                      : 'Prompt delivery was interrupted. It was not retried automatically.'}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleRetryInterruptedPrompt}
+                      disabled={!isConnected || sendPendingPrompt.isPending}
+                    >
+                      Retry
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleDiscardInterruptedPrompt}
+                    >
+                      Discard
+                    </Button>
+                  </div>
+                </div>
+              )}
               <ChatInputBar
                 ref={promptInputRef}
                 directory={repoDirectory}

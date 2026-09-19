@@ -12,6 +12,7 @@ import { SessionDetail } from './pages/SessionDetail'
 import { History } from './pages/History'
 import { Agents } from './pages/Agents'
 import { AgentChat } from './pages/AgentChat'
+import { NewSession } from './pages/NewSession'
 import { SettingsDialog } from './components/settings/SettingsDialog'
 import { loginLoader, registerLoader, setupLoader } from './lib/auth-loaders'
 
@@ -162,6 +163,9 @@ const router = createBrowserRouter([
           { path: '/home', element: <Home /> },
           { path: '/agents', element: <Agents /> },
           { path: '/agents/:agentName', element: <AgentChat /> },
+          { path: '/new', element: <NewSession /> },
+          { path: '/new/:agentName', element: <NewSession /> },
+          { path: '/new/:projectName/:agentName', element: <NewSession /> },
           { path: '/projects', element: <Projects /> },
           { path: '/projects/:id', element: <ProjectDetail /> },
           { path: '/projects/:id/sessions/:sessionId', element: <SessionDetail /> },

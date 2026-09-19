@@ -1,15 +1,16 @@
 import { useMemo } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 import { Bot, Sparkles } from 'lucide-react'
 import { getProject } from '@/api/projects'
 import { settingsApi } from '@/api/settings'
-import { ChatInputBar } from '@/components/chat/ChatInputBar'
 import { Card, CardContent } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { useAgents } from '@/hooks/usePiHarness'
 import { useSidebarAction } from '@/hooks/useSidebarAction'
 import { SUBPOLAR_API_BASE_URL } from '@/config'
+import { newSessionPath } from '@/lib/new-session-route'
 
 interface ConfigAgent {
   description?: string
@@ -33,8 +34,11 @@ function formatName(name: string): string {
 export function AgentChat() {
   const { agentName: agentNameParam } = useParams<{ agentName: string }>()
   const agentName = agentNameParam ? decodeURIComponent(agentNameParam) : ''
+  const navigate = useNavigate()
 
-  useSidebarAction('new-session', () => {})
+  useSidebarAction('new-session', () => {
+    navigate(newSessionPath({ agentName }))
+  })
 
   const { data: generalChatProject } = useQuery({
     queryKey: ['project', GENERAL_CHAT_PROJECT_ID],
@@ -126,7 +130,9 @@ export function AgentChat() {
             )}
           </div>
 
-          <ChatInputBar defaultAgent={agentName} hideAgentSelect />
+           <Button size="lg" onClick={() => navigate(newSessionPath({ agentName }))}>
+             Start a chat with {formatName(agentName)}
+           </Button>
         </div>
       </div>
     </div>

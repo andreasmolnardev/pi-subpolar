@@ -168,11 +168,12 @@ export const useCreateSession = (
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: {
-      title?: string;
-      agent?: string;
-      model?: string;
-    }) => {
+      mutationFn: async (data: {
+        title?: string;
+        agent?: string;
+        model?: string;
+        permission?: 'ask' | 'none' | 'allow_all';
+      }) => {
       if (!client) throw new Error("No client available");
       return client.createSession(data);
     },
@@ -399,6 +400,7 @@ export const useSendPrompt = (apiUrl: string | null | undefined, directory?: str
       agent,
       permission,
       variant,
+      messageID,
       queued,
     }: {
       sessionID: string;
@@ -408,11 +410,12 @@ export const useSendPrompt = (apiUrl: string | null | undefined, directory?: str
       agent?: string;
       permission?: string;
       variant?: string;
+      messageID?: string;
       queued?: boolean;
     }) => {
       if (!client) throw new Error("No client available");
 
-      const optimisticUserID = `optimistic_user_${Date.now()}_${Math.random()}`;
+      const optimisticUserID = messageID ?? `optimistic_user_${Date.now()}_${Math.random()}`;
 
       const contentParts = parts || [{ type: "text" as const, content: prompt || "", name: "" }];
       const userMessageParts = createOptimisticUserMessageParts(
@@ -455,6 +458,7 @@ export const useSendPrompt = (apiUrl: string | null | undefined, directory?: str
                     : `file://${part.path}`,
                 },
         ) || [{ type: "text", text: prompt || "" }],
+        messageID: optimisticUserID,
       };
 
       if (model) {
@@ -513,7 +517,7 @@ export const useSendPrompt = (apiUrl: string | null | undefined, directory?: str
       return { optimisticUserID, response, queued: false };
     },
     onError: (error, variables) => {
-      const { sessionID, queued } = variables;
+      const { sessionID, messageID, queued } = variables;
       const queryKey = messagesQueryKey(apiUrl, sessionID, directory);
 
       if (queued) {
@@ -522,7 +526,10 @@ export const useSendPrompt = (apiUrl: string | null | undefined, directory?: str
 
       queryClient.setQueryData<MessageWithParts[]>(
         queryKey,
-        (old) => old?.filter((msgWithParts) => !msgWithParts.info.id.startsWith("optimistic_")),
+        (old) => old?.filter((msgWithParts) =>
+          messageID
+            ? msgWithParts.info.id !== messageID
+            : !msgWithParts.info.id.startsWith("optimistic_")),
       );
       
       const isNetworkError = error instanceof TypeError ||

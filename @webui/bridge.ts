@@ -58,6 +58,7 @@ import {
   ProjectPathConflictError,
   ensureProjectSessionCollections,
   createSessionContextResolver,
+  SessionContextError,
   createToolGatewayFromCallTool,
   loadAgentRuntime,
   type PermissionOverride,
@@ -82,6 +83,10 @@ import {
   CustomProviderValidationError,
 } from './server/index.ts'
 import {
+  NewSessionRouteError,
+  resolveNewSessionRoute,
+} from './server/new-session-route.ts'
+import {
   assertSafeBrowserMutation,
   isAllowedOrigin,
   InProcessRateLimiter,
@@ -102,8 +107,18 @@ import {
   type DiagnosticComponents,
   errorEnvelope,
 } from './server/contracts.ts'
+import {
+  MessageDeliveryConflictError,
+  messageDeliveryFromRow,
+  messageDeliveryResponse,
+  replayMessageDeliveryResponse,
+  reconcileRunningDeliveries,
+  reserveMessageDelivery,
+  withDeliveryMetadata,
+  type MessageDelivery,
+} from './server/message-delivery.ts'
 
-type Project = { name: string; path: string }
+type Project = { id?: string | number; name: string; path: string; agentNames?: readonly string[]; hasAgentOverride?: boolean }
 type SessionRecord = {
   id: string
   project: string
@@ -121,7 +136,6 @@ type RpcCommand = Record<string, unknown> & { type: string }
 type RpcMessage = Record<string, unknown> & { type?: string; id?: string }
 
 type SocketData = { sessionId: string; userId: string; record: SessionRecord; project: Project; unsubscribe?: () => void; history?: TranscriptMessage[]; leafId?: string | null; historyReady?: boolean; buffered?: RpcMessage[] }
-type PendingPrompt = { content: string; metadata?: Record<string, unknown> }
 type SseClient = { userId: string; enqueue: (chunk: Uint8Array) => void; close: () => void }
 type ProxyCredential = { id: string; prefix: string; hash: string; createdAt: number; lastUsedAt?: number }
 const root = resolve(import.meta.dir, '..')
@@ -345,9 +359,25 @@ database.exec(`
     user_id TEXT NOT NULL,
     migrated_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS message_deliveries (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    metadata TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    response TEXT,
+    PRIMARY KEY (owner_id, session_id, message_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_message_deliveries_pending
+    ON message_deliveries (owner_id, session_id, state, updated_at);
 `)
 try { database.exec('ALTER TABLE sessions ADD COLUMN user_id TEXT') } catch { /* already migrated */ }
 try { database.exec('ALTER TABLE sessions ADD COLUMN permission_override TEXT') } catch { /* already migrated */ }
+try { database.exec('ALTER TABLE message_deliveries ADD COLUMN response TEXT') } catch { /* already migrated */ }
+reconcileRunningDeliveries(database)
 const allowedRpcCommands = new Set([
   'prompt', 'steer', 'follow_up', 'abort', 'clear_queue', 'new_session', 'get_state',
   'set_model', 'cycle_model', 'get_available_models', 'set_thinking_level',
@@ -504,9 +534,52 @@ function isSessionRecord(value: unknown): value is SessionRecord {
 }
 
 let sessions = loadState()
-const pendingPrompts = new Map<string, PendingPrompt>()
 const sseClients = new Set<SseClient>()
 const encoder = new TextEncoder()
+
+function getMessageDelivery(ownerId: string, sessionId: string, messageId: string): MessageDelivery | null {
+  const row = database.query(
+    'SELECT owner_id, session_id, message_id, content, metadata, state, created_at, updated_at, response FROM message_deliveries WHERE owner_id = ? AND session_id = ? AND message_id = ?',
+  ).get(ownerId, sessionId, messageId) as Record<string, unknown> | null
+  return row ? messageDeliveryFromRow(row) : null
+}
+
+function getLatestMessageDelivery(ownerId: string, sessionId: string): MessageDelivery | null {
+  const row = database.query(
+    'SELECT owner_id, session_id, message_id, content, metadata, state, created_at, updated_at, response FROM message_deliveries WHERE owner_id = ? AND session_id = ? AND state = ? ORDER BY updated_at DESC LIMIT 1',
+  ).get(ownerId, sessionId, 'pending') as Record<string, unknown> | null
+  return row ? messageDeliveryFromRow(row) : null
+}
+
+function messageDeliveryId(input: unknown): string | undefined {
+  if (input === undefined) return undefined
+  if (typeof input !== 'string' || input.trim() === '' || input.length > 256) throw new Error('Invalid messageID')
+  return input.trim()
+}
+
+function claimMessageDelivery(delivery: MessageDelivery): MessageDelivery | null {
+  // A running delivery is intentionally not retried after a bridge restart: its
+  // execution outcome is ambiguous, so retrying it could execute the prompt twice.
+  const result = database.query(
+    'UPDATE message_deliveries SET state = ?, updated_at = ? WHERE owner_id = ? AND session_id = ? AND message_id = ? AND state = ?',
+  ).run('running', Date.now(), delivery.ownerId, delivery.sessionId, delivery.messageId, 'pending') as { changes?: number }
+  if (result.changes !== 1) return null
+  return getMessageDelivery(delivery.ownerId, delivery.sessionId, delivery.messageId)
+}
+
+function completeMessageDelivery(delivery: MessageDelivery, response: unknown): void {
+  let serializedResponse: string | null = null
+  try { serializedResponse = JSON.stringify(response) ?? null } catch { /* Replay falls back to delivery metadata. */ }
+  database.query(
+    'UPDATE message_deliveries SET state = ?, response = ?, updated_at = ? WHERE owner_id = ? AND session_id = ? AND message_id = ? AND state = ?',
+  ).run('completed', serializedResponse, Date.now(), delivery.ownerId, delivery.sessionId, delivery.messageId, 'running')
+}
+
+function interruptMessageDelivery(delivery: MessageDelivery): void {
+  database.query(
+    'UPDATE message_deliveries SET state = ?, updated_at = ? WHERE owner_id = ? AND session_id = ? AND message_id = ? AND state = ?',
+  ).run('interrupted', Date.now(), delivery.ownerId, delivery.sessionId, delivery.messageId, 'running')
+}
 
 function broadcastSse(value: unknown, userId?: string): void {
   const chunk = encoder.encode(`data: ${JSON.stringify(redactSensitive(value))}\n\n`)
@@ -549,7 +622,13 @@ function filterValue(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')
 }
 
-async function resolveToolSessionContext(client: Awaited<ReturnType<typeof applicationDatabase>>, userId: string, sessionId: string, requestedAgent?: string) {
+async function resolveToolSessionContext(
+  client: Awaited<ReturnType<typeof applicationDatabase>>,
+  userId: string,
+  sessionId: string,
+  requestedAgent?: string,
+  requestedPermission?: PermissionOverride,
+) {
   const repository = createProjectSessionRepository(client)
   const resolver = createSessionContextResolver({
     sessions: {
@@ -563,7 +642,7 @@ async function resolveToolSessionContext(client: Awaited<ReturnType<typeof appli
           createdAt: session.createdAt,
           updatedAt: session.updatedAt,
           ...(session.archived ? { archived: true } : {}),
-          ...(session.profile ? { profile: session.profile } : {}),
+          ...(requestedAgent === undefined && session.profile ? { profile: session.profile } : {}),
           ...(session.model ? { model: session.model } : {}),
           ...(session.directory ? { directory: session.directory } : {}),
           userId: session.userId,
@@ -572,8 +651,7 @@ async function resolveToolSessionContext(client: Awaited<ReturnType<typeof appli
       },
       getProject: async (name) => {
         if (name === 'General Chat') return { name, path: generalChatRoot }
-        const project = await repository.findProjectByName(userId, name)
-        return project ? { name: project.name, path: project.path } : null
+        return await repository.findProjectByName(userId, name)
       },
     },
     agents: {
@@ -582,8 +660,22 @@ async function resolveToolSessionContext(client: Awaited<ReturnType<typeof appli
         return record as { id: string; user_id: string; name: string; enabled?: boolean } | null
       },
     },
+    defaultAgentName: requestedAgent ?? 'master',
   })
-  return resolver.resolve({ identity: userId, userId, sessionId, agentName: requestedAgent })
+  // Resolve the session and project first. A request agent is only a validated
+  // selection within that durable context, never the source of its authority.
+  const context = await resolver.resolve({
+    identity: userId,
+    userId,
+    sessionId,
+    ...(requestedAgent === undefined ? {} : { agent: requestedAgent }),
+    ...(requestedPermission === undefined ? {} : { permission: requestedPermission }),
+  })
+  const project = context.project as Project
+  if (project.hasAgentOverride === true && !project.agentNames?.includes(context.agent.name)) {
+    throw new SessionContextError('SESSION_AGENT_MISMATCH', 'Agent is not available for this project')
+  }
+  return context
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -593,6 +685,24 @@ function object(value: unknown): Record<string, unknown> {
 function requestedPermissionOverride(value: unknown): PermissionOverride | null | undefined {
   if (value === undefined) return undefined
   return value === 'ask' || value === 'none' || value === 'allow_all' ? value : null
+}
+
+function requestedMetadataPermission(metadata: Record<string, unknown>): PermissionOverride | null | undefined {
+  const values = [metadata.permission, metadata.permissionOverride].filter((value) => value !== undefined)
+  if (values.length === 0) return undefined
+  const permissions = values.map(requestedPermissionOverride)
+  if (permissions.some((permission) => permission === null)) return null
+  const first = permissions[0]
+  return permissions.every((permission) => permission === first) ? first : null
+}
+
+function sessionContextFailure(error: unknown): Response | undefined {
+  if (!(error instanceof SessionContextError)) return undefined
+  const denied = error.code === 'PERMISSION_MISMATCH'
+    || error.code === 'SESSION_AGENT_MISMATCH'
+    || error.code === 'AGENT_NOT_OWNED'
+    || error.code === 'AGENT_DISABLED'
+  return json({ error: error.message, code: error.code }, denied ? 403 : 400)
 }
 
 function mapToolId(toolName: unknown): string {
@@ -728,6 +838,36 @@ function syncNativeSessions(): void {
   }
 }
 
+type DurableSession = {
+  id: string
+  project: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  archived?: boolean
+  profile?: string
+  model?: string
+  directory?: string
+  userId: string
+  permissionOverride?: PermissionOverride
+}
+
+function localSessionRecord(stored: DurableSession): SessionRecord {
+  return {
+    id: stored.id,
+    project: stored.project,
+    title: stored.title,
+    createdAt: stored.createdAt,
+    updatedAt: stored.updatedAt,
+    archived: stored.archived,
+    profile: stored.profile,
+    model: stored.model,
+    directory: stored.directory,
+    userId: stored.userId,
+    permissionOverride: stored.permissionOverride,
+  }
+}
+
 function projectFor(name: string | undefined): Project {
   if (!name || name === '0' || name.toLocaleLowerCase() === 'general chat') return generalChatProject()
   const value = projects().find((project) => project.name === name)
@@ -782,6 +922,7 @@ function projectResponse(project: Project, id: number, isGeneralChat = false) {
     createdAt: 0,
     updatedAt: 0,
     ...(isGeneralChat ? { isGeneralChat: true } : {}),
+    ...(project.agentNames?.length ? { agentNames: project.agentNames, hasAgentOverride: true } : {}),
   }
 }
 
@@ -790,7 +931,7 @@ async function ownedProjectResponses(userId: string, client: Awaited<ReturnType<
   const owned = await createProjectSessionRepository(client).listProjects(userId)
   return [
     projectResponse(generalChatProject(), 0, true),
-    ...owned.map((project, index) => projectResponse({ name: project.name, path: project.path }, index + 1)),
+    ...owned.map((project, index) => projectResponse({ name: project.name, path: project.path, agentNames: project.agentNames, hasAgentOverride: project.hasAgentOverride }, index + 1)),
   ]
 }
 
@@ -812,6 +953,52 @@ function parseModelSelection(model: string | undefined): { providerID: string; m
   const [providerID, ...rest] = model.split('/')
   const modelID = rest.join('/')
   return providerID && modelID ? { providerID, modelID } : undefined
+}
+
+type ModelSelection = { providerID: string; modelID: string; value: string }
+
+class ModelUnavailableError extends Error {
+  readonly code = 'MODEL_UNAVAILABLE'
+
+  constructor(selection: Pick<ModelSelection, 'providerID' | 'modelID'>) {
+    super(`Unknown or unavailable model: ${selection.providerID ? `${selection.providerID}/${selection.modelID}` : selection.modelID}`)
+    this.name = 'ModelUnavailableError'
+  }
+}
+
+function modelSelection(value: unknown): ModelSelection | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const parsed = typeof value === 'string'
+    ? parseModelSelection(value.trim())
+    : (() => {
+        const selected = object(value)
+        const providerID = typeof selected.providerID === 'string' ? selected.providerID.trim() : ''
+        const modelID = typeof selected.modelID === 'string' ? selected.modelID.trim() : ''
+        return providerID && modelID ? { providerID, modelID } : undefined
+      })()
+  if (!parsed) throw new ModelUnavailableError({ providerID: '', modelID: String(value) })
+  return { ...parsed, value: `${parsed.providerID}/${parsed.modelID}` }
+}
+
+async function validateModelSelection(userId: string, selection: ModelSelection | undefined): Promise<void> {
+  if (!selection) return
+  const runtime = await userProviderRuntime(userId)
+  if (!runtime.getModel(selection.providerID, selection.modelID)) throw new ModelUnavailableError(selection)
+}
+
+async function persistSessionModel(
+  client: Awaited<ReturnType<typeof applicationDatabase>>,
+  ownerId: string,
+  sessionId: string,
+  record: SessionRecord,
+  selection: ModelSelection,
+): Promise<void> {
+  const updated = await createProjectSessionRepository(client).updateSession(ownerId, sessionId, { model: selection.value })
+  if (!updated) throw new Error('Session was not found')
+  record.model = updated.model
+  const local = sessions.find((session) => session.id === sessionId && session.userId === ownerId)
+  if (local && local !== record) local.model = updated.model
+  await saveState()
 }
 
 async function transcriptHistory(sessionId: string, selection: SessionRecord) {
@@ -845,10 +1032,14 @@ function sessionMessageText(message: unknown): string {
 class PiSdkSession {
   private readonly listeners = new Set<(message: RpcMessage) => void>()
   private readonly ready: Promise<void>
+  private runtimeAgentName: string
+  private runtimePermissionOverride: PermissionOverride
   private session!: AgentSession
   private modelRuntime!: ProviderRuntime
 
   constructor(readonly record: SessionRecord, readonly project: Project) {
+    this.runtimeAgentName = record.profile ?? 'master'
+    this.runtimePermissionOverride = record.permissionOverride ?? 'ask'
     this.ready = this.initialize()
   }
 
@@ -858,7 +1049,12 @@ class PiSdkSession {
     if (!userId) throw new Error('Session has no authenticated owner')
     await ensureUserMetadata(userId)
     await ensureUserDefaults(client, userId)
-    const runtime = await loadAgentRuntime(client, userId, this.record.profile ?? 'master')
+    const context = await resolveToolSessionContext(client, userId, this.record.id)
+    this.runtimeAgentName = context.agentName
+    this.runtimePermissionOverride = context.permissionOverride
+    this.record.profile = context.agentName
+    if (context.session?.permissionOverride !== undefined) this.record.permissionOverride = context.session.permissionOverride
+    const runtime = await loadAgentRuntime(client, userId, context.agentName)
     const sessionManager = await this.openOrCreateSession()
     const sessionCwd = this.record.directory ?? this.project.path
     const resourceLoader = new DefaultResourceLoader({
@@ -875,7 +1071,7 @@ class PiSdkSession {
           agentName: runtime.agent.name,
           sessionId: this.record.id,
           cwd: sessionCwd,
-          permissionOverride: this.record.permissionOverride,
+          permissionOverride: this.runtimePermissionOverride,
           onApproval: (approval) => {
             broadcastSse({
               type: 'permission.asked',
@@ -976,6 +1172,8 @@ class PiSdkSession {
   get entries() { return this.session.sessionManager.getEntries() }
   get leafId() { return this.session.sessionManager.getLeafId() }
   get agentSession() { return this.session }
+  get agentName() { return this.runtimeAgentName }
+  get permissionOverride() { return this.runtimePermissionOverride }
 
   close(): void {
     this.session?.dispose()
@@ -1008,30 +1206,12 @@ async function ownedSessionRecord(client: Awaited<ReturnType<typeof applicationD
   const stored = await createProjectSessionRepository(client).getSession(userId, id)
   if (!stored) return null
   const local = sessions.find((session) => session.id === id && session.userId === userId)
+  const record = localSessionRecord(stored)
   if (local) {
-    Object.assign(local, {
-      userId: stored.userId,
-      project: stored.project,
-      title: stored.title,
-      createdAt: stored.createdAt,
-      updatedAt: stored.updatedAt,
-      ...(stored.directory ? { directory: stored.directory } : {}),
-    })
+    Object.assign(local, record)
     return local
   }
-  return {
-    id: stored.id,
-    project: stored.project,
-    title: stored.title,
-    createdAt: stored.createdAt,
-    updatedAt: stored.updatedAt,
-    userId: stored.userId,
-    ...(stored.archived ? { archived: true } : {}),
-    ...(stored.profile ? { profile: stored.profile } : {}),
-    ...(stored.model ? { model: stored.model } : {}),
-    ...(stored.directory ? { directory: stored.directory } : {}),
-    ...(stored.permissionOverride ? { permissionOverride: stored.permissionOverride } : {}),
-  }
+  return record
 }
 
 async function ownedSessionProject(client: Awaited<ReturnType<typeof applicationDatabase>>, userId: string, record: SessionRecord): Promise<Project | null> {
@@ -1048,7 +1228,14 @@ async function ownedSessionProject(client: Awaited<ReturnType<typeof application
   return { name: project.name, path: projectPath }
 }
 
-function rpcSession(id: string, userId: string, suppliedRecord?: SessionRecord, suppliedProject?: Project): PiSdkSession {
+function rpcSession(
+  id: string,
+  userId: string,
+  suppliedRecord?: SessionRecord,
+  suppliedProject?: Project,
+  requiredAgent?: string,
+  requiredPermission?: PermissionOverride,
+): PiSdkSession {
   if (!userId.trim()) throw new Error('Session owner is unavailable')
   const key = activeKey(userId, id)
   const existing = active.get(key)
@@ -1056,7 +1243,11 @@ function rpcSession(id: string, userId: string, suppliedRecord?: SessionRecord, 
     if (existing.record.userId !== userId || (suppliedProject && !isPathWithin(suppliedProject.path, existing.record.directory ?? existing.project.path))) {
       throw new Error('Session project mismatch')
     }
-    return existing
+    const agentMatches = requiredAgent === undefined || existing.agentName === requiredAgent
+    const permissionMatches = requiredPermission === undefined || existing.permissionOverride === requiredPermission
+    if (agentMatches && permissionMatches) return existing
+    existing.close()
+    active.delete(key)
   }
   const record = suppliedRecord ?? recordFor(id, userId)
   if (record.userId !== userId) throw new Error('Session owner mismatch')
@@ -1073,9 +1264,13 @@ async function sendRpc(id: string, command: RpcCommand, owner: SessionRecord): P
   if (!allowedRpcCommands.has(command.type)) throw new Error(`Unsupported RPC command: ${command.type}`)
   const userId = owner.userId
   if (!userId) throw new Error('Session owner is unavailable')
-  const project = await ownedSessionProject(await applicationDatabase(), userId, owner)
+  const client = await applicationDatabase()
+  const context = await resolveToolSessionContext(client, userId, id)
+  owner.profile = context.agentName
+  owner.permissionOverride = context.session?.permissionOverride
+  const project = await ownedSessionProject(client, userId, owner)
   if (!project) throw new Error('Session project is unavailable')
-  const session = rpcSession(id, userId, owner, project)
+  const session = rpcSession(id, userId, owner, project, context.agentName, context.permissionOverride)
   const result = await session.send(command) as RpcMessage
   const record = session.record
   record.updatedAt = Date.now()
@@ -1707,7 +1902,11 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     try {
       await repository.assertProjectPathAvailable(authenticatedUser!.id, directory)
       mkdirSync(directory, { recursive: true })
-      created = await repository.createProject(authenticatedUser!.id, { name, path: directory })
+      created = await repository.createProject(authenticatedUser!.id, {
+        name,
+        path: directory,
+        ...(Array.isArray(input.agentNames) ? { agentNames: input.agentNames.filter((agentName): agentName is string => typeof agentName === 'string') } : {}),
+      })
     } catch (error) {
       if (error instanceof ProjectPathConflictError) return json({ error: error.message, code: error.code }, 409)
       throw error
@@ -1732,7 +1931,11 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     try {
       await createProjectSessionRepository(client).assertProjectPathAvailable(authenticatedUser!.id, directory, current.id)
       mkdirSync(directory, { recursive: true })
-      updated = await createProjectSessionRepository(client).updateProject(authenticatedUser!.id, current.id, { name, path: directory })
+      updated = await createProjectSessionRepository(client).updateProject(authenticatedUser!.id, current.id, {
+        name,
+        path: directory,
+        ...(Array.isArray(input.agentNames) ? { agentNames: input.agentNames.filter((agentName): agentName is string => typeof agentName === 'string') } : {}),
+      })
     } catch (error) {
       if (error instanceof ProjectPathConflictError) return json({ error: error.message, code: error.code }, 409)
       throw error
@@ -1780,6 +1983,44 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
   if (request.method === 'GET' && path[1] === 'projects' && path[2] === 'general-chat') {
     const directory = generalChatProject().path
     return json({ repoId: 0, directory, relativePath: directory, files: {}, agents: [], automationsSkill: { path: '', exists: false, created: false } })
+  }
+  if (request.method === 'GET' && url.pathname === '/api/new-session/resolve') {
+    const client = await applicationDatabase()
+    const repository = createProjectSessionRepository(client)
+    const ownedProjects = await repository.listProjects(authenticatedUser!.id)
+    const projectCandidates = [
+      { id: 0, ...generalChatProject() },
+      ...ownedProjects.map((project, index) => ({
+        id: index + 1,
+        name: project.name,
+        path: project.path,
+        agentNames: project.agentNames,
+        hasAgentOverride: project.hasAgentOverride,
+      })),
+    ]
+    const agentCandidates = await listAgents(client, authenticatedUser!.id)
+    try {
+      const resolved = resolveNewSessionRoute({
+        projectName: url.searchParams.get('projectName') ?? undefined,
+        agentName: url.searchParams.get('agentName') ?? undefined,
+        projects: projectCandidates,
+        agents: agentCandidates,
+      })
+      const projectId = typeof resolved.project.id === 'number' ? resolved.project.id : 0
+      return json({
+        context: {
+          project: projectResponse(resolved.project, projectId, projectId === 0),
+          agent: { id: resolved.agent.id, name: resolved.agent.name, description: resolved.agent.description },
+          defaults: { permission: 'ask' },
+        },
+      })
+    } catch (error) {
+      if (error instanceof NewSessionRouteError) {
+        const status = error.code === 'NEW_SESSION_PROJECT_NOT_FOUND' || error.code === 'NEW_SESSION_AGENT_NOT_FOUND' ? 404 : 409
+        return json({ error: error.message, code: error.code }, status)
+      }
+      throw error
+    }
   }
   if (request.method === 'POST' && path[1] === 'projects' && path[2] === 'general-chat') {
     mkdirSync(generalChatProject().path, { recursive: true })
@@ -2151,19 +2392,7 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     const owned = await repository.listSessions(authenticatedUser!.id, { project, includeArchived: true })
     const records = owned.map((session) => {
       const local = sessions.find((item) => item.id === session.id && item.userId === authenticatedUser!.id)
-      const record: SessionRecord = {
-        id: session.id,
-        project: session.project,
-        title: session.title,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-        ...(session.archived ? { archived: true } : {}),
-        ...(session.profile ? { profile: session.profile } : {}),
-        ...(session.model ? { model: session.model } : {}),
-        ...(session.directory ? { directory: session.directory } : {}),
-        userId: session.userId,
-        ...(session.permissionOverride ? { permissionOverride: session.permissionOverride } : {}),
-      }
+      const record = localSessionRecord(session)
       if (local) Object.assign(local, record)
       return record
     }).filter((session) => {
@@ -2180,19 +2409,64 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     const client = await applicationDatabase()
     const repository = createProjectSessionRepository(client)
     const ownedProjects = await repository.listProjects(authenticatedUser!.id)
+    const agentCandidates = await listAgents(client, authenticatedUser!.id)
     const requestedProjectId = typeof input.project === 'number'
       ? input.project
       : typeof input.project === 'string' && /^\d+$/.test(input.project) ? Number(input.project) : undefined
     const requestedProjectName = typeof input.project === 'string' && !/^\d+$/.test(input.project) ? input.project : undefined
-    const selected = requestedProjectId !== undefined
-      ? requestedProjectId === 0 ? generalChatProject() : ownedProjects[requestedProjectId - 1] ? { name: ownedProjects[requestedProjectId - 1].name, path: ownedProjects[requestedProjectId - 1].path } : undefined
+    const selectedProject = requestedProjectId !== undefined
+      ? requestedProjectId === 0 ? generalChatProject() : ownedProjects[requestedProjectId - 1]
       : requestedProjectName
         ? requestedProjectName === 'General Chat' ? generalChatProject() : ownedProjects.find((item) => item.name === requestedProjectName)
         : typeof input.directory === 'string'
           ? ownedProjects.find((item) => resolve(item.path) === resolve(input.directory as string)) ?? generalChatProject()
           : generalChatProject()
-    if (!selected) return json({ error: 'Project not found' }, 404)
-    const project: Project = selected
+    if (!selectedProject) return json({ error: 'Project not found', code: 'NEW_SESSION_PROJECT_NOT_FOUND' }, 404)
+    const projectCandidates = [
+      { id: 0, ...generalChatProject() },
+      ...ownedProjects.map((item, index) => ({
+        id: index + 1,
+        name: item.name,
+        path: item.path,
+        agentNames: item.agentNames,
+        hasAgentOverride: item.hasAgentOverride,
+      })),
+    ]
+    const resolved = (() => {
+      try {
+        return resolveNewSessionRoute({
+          projectName: selectedProject.name,
+          agentName: typeof input.agent === 'string' ? input.agent : undefined,
+          projects: projectCandidates,
+          agents: agentCandidates,
+        })
+      } catch (error) {
+        if (error instanceof NewSessionRouteError) return error
+        throw error
+      }
+    })()
+    if (resolved instanceof NewSessionRouteError) {
+      const status = resolved.code === 'NEW_SESSION_PROJECT_NOT_FOUND' || resolved.code === 'NEW_SESSION_AGENT_NOT_FOUND' ? 404 : 409
+      return json({ error: resolved.message, code: resolved.code }, status)
+    }
+    const project: Project = resolved.project
+    const thinking = input.thinking === undefined ? undefined
+      : input.thinking === 'off' || input.thinking === 'minimal' || input.thinking === 'low' || input.thinking === 'medium' || input.thinking === 'high' || input.thinking === 'xhigh'
+        ? input.thinking
+        : null
+    if (thinking === null) return json({ error: 'Invalid thinking level', code: 'NEW_SESSION_INVALID_THINKING' }, 400)
+    const requestedPermission = input.permission === undefined ? 'ask'
+      : input.permission === 'ask' || input.permission === 'none' || input.permission === 'allow_all' ? input.permission : null
+    if (requestedPermission === null) return json({ error: 'Invalid permission override', code: 'NEW_SESSION_INVALID_PERMISSION' }, 400)
+    const requestedModel = typeof input.model === 'string' && input.model.trim() ? input.model.trim() : undefined
+    const model = requestedModel && thinking && !requestedModel.endsWith(`:${thinking}`) ? `${requestedModel}:${thinking}` : requestedModel
+    const selectedModel = modelSelection(model)
+    try {
+      await validateModelSelection(authenticatedUser!.id, selectedModel)
+    } catch (error) {
+      if (error instanceof ModelUnavailableError) return json({ error: error.message, code: error.code }, 409)
+      throw error
+    }
     const now = Date.now()
     const id = crypto.randomUUID()
     const directory = project.name === 'General Chat' ? sessionWorkspace(id) : project.path
@@ -2201,13 +2475,14 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     const stored = await createProjectSessionRepository(client).createSession(authenticatedUser!.id, {
       id,
       project: project.name,
+      ...(typeof project.id === 'string' ? { projectId: project.id } : {}),
       title: typeof input.title === 'string' && input.title.trim() ? input.title.trim() : 'Untitled session',
       createdAt: now,
       updatedAt: now,
       directory,
-      profile: typeof input.agent === 'string' && input.agent.trim() ? input.agent : undefined,
-      model: typeof input.model === 'string' && input.model.trim() ? input.model : undefined,
-      permissionOverride: input.permission === 'ask' || input.permission === 'none' || input.permission === 'allow_all' ? input.permission : undefined,
+      profile: resolved.agent.name,
+      ...(selectedModel ? { model: selectedModel.value } : {}),
+      permissionOverride: requestedPermission,
     })
     const record: SessionRecord = {
       id: stored.id,
@@ -2223,7 +2498,7 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     }
     sessions.push(record)
     await saveState()
-    rpcSession(record.id, record.userId!, record, project)
+    rpcSession(record.id, record.userId!, record, project, record.profile ?? 'master', record.permissionOverride ?? 'ask')
     return json({ session: storedSessionResponse(record, ownedProjects) }, 201)
   }
 
@@ -2288,32 +2563,72 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
         const input = await body(request)
         const metadata = object(input.metadata)
         const record = ownedRecord
-        const agent = typeof metadata.agent === 'string' && metadata.agent.trim() ? metadata.agent : 'master'
-        const model = object(metadata.model)
-        record.profile = agent
-        if (typeof model.providerID === 'string' && typeof model.modelID === 'string') {
-          record.model = `${model.providerID}/${model.modelID}`
+        const content = typeof input.content === 'string' ? input.content : ''
+        const ownerId = record.userId
+        if (!ownerId) return json({ error: 'Session owner is unavailable' }, 400)
+        const requestedAgent = typeof metadata.agent === 'string' && metadata.agent.trim() ? metadata.agent.trim() : undefined
+        const requestedPermission = requestedMetadataPermission(metadata)
+        if (requestedPermission === null) return json({ error: 'Invalid permission override' }, 400)
+        let context
+        try {
+          context = await resolveToolSessionContext(ownershipClient, ownerId, id, requestedAgent, requestedPermission)
+        } catch (error) {
+          const failure = sessionContextFailure(error)
+          if (failure) return failure
+          throw error
         }
+        const requestedMessageID = messageDeliveryId(input.messageID)
+        const messageID = requestedMessageID ?? crypto.randomUUID()
+        let reservation: ReturnType<typeof reserveMessageDelivery>
+        try {
+          reservation = reserveMessageDelivery(database, ownerId, id, messageID, content, metadata)
+        } catch (error) {
+          if (error instanceof MessageDeliveryConflictError) return json({ error: error.message, code: error.code }, 409)
+          throw error
+        }
+        if (!reservation.created) return json(replayMessageDeliveryResponse(reservation.delivery), 200)
+        const updated = await createProjectSessionRepository(ownershipClient).updateSession(ownerId, id, {
+          profile: context.agentName,
+          ...(requestedPermission === undefined ? {} : { permissionOverride: context.permissionOverride }),
+        })
+        if (!updated) throw new Error('Session was not found')
+        record.profile = context.agentName
+        record.permissionOverride = updated.permissionOverride
         await saveState()
-        await createProjectSessionRepository(await applicationDatabase()).updateSession(authenticatedUser!.id, id, {
-          profile: record.profile,
-          model: record.model,
-        }).catch(() => undefined)
-        pendingPrompts.set(id, { content: typeof input.content === 'string' ? input.content : '', metadata })
-        return json({ ok: true }, 201)
+        return json(messageDeliveryResponse(reservation.delivery), 201)
       }
       if (path.length === 4 && path[3] === 'runs' && request.method === 'POST') {
-        const prompt = pendingPrompts.get(id)
-        pendingPrompts.delete(id)
-        if (!prompt?.content.trim()) return json({ error: 'Prompt content is required' }, 400)
-        const metadata = prompt.metadata ?? {}
-        const model = object(metadata.model)
-        if (typeof model.providerID === 'string' && typeof model.modelID === 'string') {
-          await sendRpc(id, { type: 'set_model', provider: model.providerID, modelId: model.modelID }, ownedRecord)
+        const input = await body(request)
+        const ownerId = ownedRecord.userId ?? authenticatedUser!.id
+        const requestedMessageID = messageDeliveryId(input.messageID)
+        const delivery = requestedMessageID
+          ? getMessageDelivery(ownerId, id, requestedMessageID)
+          : getLatestMessageDelivery(ownerId, id)
+        if (!delivery) return json({ error: 'Message delivery not found', code: 'MESSAGE_DELIVERY_NOT_FOUND' }, 409)
+        if (!delivery.content.trim()) return json({ error: 'Prompt content is required' }, 400)
+        if (delivery.state !== 'pending') return json(replayMessageDeliveryResponse(delivery), 200)
+        const claimedDelivery = claimMessageDelivery(delivery)
+        if (!claimedDelivery) {
+          const current = getMessageDelivery(ownerId, id, delivery.messageId)
+          return current ? json(messageDeliveryResponse(current), 200) : json({ error: 'Message delivery not found', code: 'MESSAGE_DELIVERY_NOT_FOUND' }, 409)
         }
-        // The session runtime was selected from PocketBase when the Pi session
-        // was created; filesystem `/profile` commands are intentionally gone.
-        return json(await sendRpc(id, { type: 'prompt', message: prompt.content }, ownedRecord))
+        try {
+          const metadata = JSON.parse(claimedDelivery.metadata) as Record<string, unknown>
+          const selectedModel = modelSelection(metadata.model)
+          if (selectedModel) {
+            await sendRpc(id, { type: 'set_model', provider: selectedModel.providerID, modelId: selectedModel.modelID }, ownedRecord)
+            await persistSessionModel(ownershipClient, ownerId, id, ownedRecord, selectedModel)
+          }
+          // The session runtime was selected from PocketBase when the Pi session
+          // was created; filesystem `/profile` commands are intentionally gone.
+          const response = await sendRpc(id, { type: 'prompt', message: claimedDelivery.content }, ownedRecord)
+          completeMessageDelivery(claimedDelivery, response)
+          return json(withDeliveryMetadata(response, messageDeliveryResponse({ ...claimedDelivery, state: 'completed' })))
+        } catch (error) {
+          interruptMessageDelivery(claimedDelivery)
+          console.warn(`Message delivery interrupted: ${redactedDiagnostic(error)}`)
+          return json(messageDeliveryResponse({ ...claimedDelivery, state: 'interrupted' }), 200)
+        }
       }
       if (path.length === 4 && path[3] === 'state' && request.method === 'GET') return json(rpcData(await sendRpc(id, { type: 'get_state' }, ownedRecord)))
       if (path.length === 4 && path[3] === 'stats' && request.method === 'GET') return json(rpcData(await sendRpc(id, { type: 'get_session_stats' }, ownedRecord)))
@@ -2360,20 +2675,43 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
 
   if (path[1] === 'extensions' && (path[2] === 'profiles' || path[2] === 'agent-profiles') && path[3] === 'activate' && request.method === 'POST') {
     const input = await body(request)
-    if (typeof input.sessionId !== 'string' || typeof input.profile !== 'string') return json({ error: 'sessionId and profile are required' }, 400)
-    const session = await ownedSessionRecord(await applicationDatabase(), authenticatedUser!.id, input.sessionId)
+    if (typeof input.sessionId !== 'string' || typeof input.profile !== 'string' || !input.profile.trim()) return json({ error: 'sessionId and profile are required' }, 400)
+    const client = await applicationDatabase()
+    const session = await ownedSessionRecord(client, authenticatedUser!.id, input.sessionId)
     if (!session) return json({ error: 'Session not found' }, 404)
-    return json(await sendRpc(input.sessionId, { type: 'prompt', message: `/profile ${input.profile}` }, session))
+    const requestedPermission = requestedMetadataPermission(input)
+    if (requestedPermission === null) return json({ error: 'Invalid permission override' }, 400)
+    let context
+    try {
+      context = await resolveToolSessionContext(client, authenticatedUser!.id, input.sessionId, input.profile.trim(), requestedPermission)
+    } catch (error) {
+      const failure = sessionContextFailure(error)
+      if (failure) return failure
+      throw error
+    }
+    const updated = await createProjectSessionRepository(client).updateSession(authenticatedUser!.id, input.sessionId, {
+      profile: context.agentName,
+      ...(requestedPermission === undefined ? {} : { permissionOverride: context.permissionOverride }),
+    })
+    if (!updated) return json({ error: 'Session not found' }, 404)
+    session.profile = context.agentName
+    session.permissionOverride = updated.permissionOverride
+    await saveState()
+    return json(await sendRpc(input.sessionId, { type: 'prompt', message: `/profile ${context.agentName}` }, session))
   }
 
   if (path[1] === 'extensions' && (path[2] === 'tools' || path[2] === 'list-tools') && request.method === 'GET') {
     if (!authenticatedUser) return json({ message: 'Unauthorized' }, 401)
     try {
-      const tools = await listToolsForAgent(await applicationDatabase(), authenticatedUser.id, 'master')
+      const client = await applicationDatabase()
       const sessionId = url.searchParams.get('sessionId')
-       const session = sessionId ? await ownedSessionRecord(await applicationDatabase(), authenticatedUser.id, sessionId) : null
-       if (sessionId && !session) return json({ message: 'Session not found' }, 404)
-        return json({ tools, ...(sessionId && session ? { commands: await sendRpc(sessionId, { type: 'get_commands' }, session) } : {}) })
+      const session = sessionId ? await ownedSessionRecord(client, authenticatedUser.id, sessionId) : null
+      if (sessionId && !session) return json({ message: 'Session not found' }, 404)
+      const agentName = sessionId && session
+        ? (await resolveToolSessionContext(client, authenticatedUser.id, sessionId)).agentName
+        : 'master'
+      const tools = await listToolsForAgent(client, authenticatedUser.id, agentName)
+      return json({ tools, ...(sessionId && session ? { commands: await sendRpc(sessionId, { type: 'get_commands' }, session) } : {}) })
     } catch (error) { console.warn(`Tool registry request failed: ${redactedDiagnostic(error)}`); return json({ message: 'Tool registry unavailable' }, 503) }
   }
 
@@ -2537,6 +2875,11 @@ const _server = Bun.serve<SocketData>({
         const record = await ownedSessionRecord(client, user.id, sessionId)
         const project = record ? await ownedSessionProject(client, user.id, record) : null
         if (!record || !project) return json({ error: 'Session not found' }, 404)
+        try {
+          await resolveToolSessionContext(client, user.id, sessionId)
+        } catch {
+          return json({ error: 'Session agent is unavailable' }, 400)
+        }
         if (server.upgrade(request, { data: { sessionId, userId: user.id, record, project } })) return undefined
         return json({ error: 'WebSocket upgrade failed' }, 400)
     }
@@ -2545,7 +2888,14 @@ const _server = Bun.serve<SocketData>({
   websocket: {
     open(socket) {
       try {
-        const session = rpcSession(socket.data.sessionId, socket.data.userId, socket.data.record, socket.data.project)
+        const session = rpcSession(
+          socket.data.sessionId,
+          socket.data.userId,
+          socket.data.record,
+          socket.data.project,
+          socket.data.record.profile ?? 'master',
+          socket.data.record.permissionOverride ?? 'ask',
+        )
         socket.data.buffered = []
         // Subscribe before reading entries. Events generated during the read are replayed
         // after the authoritative snapshot, so a reconnect cannot lose a turn.
@@ -2564,7 +2914,14 @@ const _server = Bun.serve<SocketData>({
       socket.data.unsubscribe?.()
     },
     message(socket, raw) {
-      void handleSocketMessage(socket, raw, rpcSession(socket.data.sessionId, socket.data.userId, socket.data.record, socket.data.project))
+      void handleSocketMessage(socket, raw, rpcSession(
+        socket.data.sessionId,
+        socket.data.userId,
+        socket.data.record,
+        socket.data.project,
+        socket.data.record.profile ?? 'master',
+        socket.data.record.permissionOverride ?? 'ask',
+      ))
     },
   },
 })

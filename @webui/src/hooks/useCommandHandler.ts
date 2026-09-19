@@ -1,18 +1,54 @@
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { createSubpolarClient } from '@/api/subpolar'
-import { useCreateSession } from '@/hooks/usePiHarness'
 import { useModelSelection } from '@/hooks/useModelSelection'
 import { showToast } from '@/lib/toast'
 import type { components } from '@/api/opencode-types'
 import { useSessionStatus } from '@/stores/sessionStatusStore'
+import { newSessionPath } from '@/lib/new-session-route'
 
 type CommandType = components['schemas']['Command']
+
+function parseNewSessionArguments(args: string): string[] {
+  const segments: string[] = []
+  let segment = ''
+  let quote: string | undefined
+  let hasSegment = false
+
+  const addSegment = () => {
+    if (!hasSegment) return
+    if (!segment.trim()) throw new Error('Session route names cannot be empty')
+    segments.push(segment)
+    segment = ''
+    hasSegment = false
+  }
+
+  for (const character of args.trim()) {
+    if (quote) {
+      if (character === quote) quote = undefined
+      else segment += character
+      hasSegment = true
+    } else if (character === '"' || character === "'") {
+      quote = character
+      hasSegment = true
+    } else if (/\s/.test(character)) {
+      addSegment()
+    } else {
+      segment += character
+      hasSegment = true
+    }
+  }
+
+  if (quote) throw new Error('Unclosed quote in new-session arguments')
+  addSegment()
+  return segments
+}
 
 interface CommandHandlerProps {
   apiUrl: string
   sessionID: string
   directory?: string
+  projectName?: string
   onShowSessionsDialog?: () => void
   onShowModelsDialog?: () => void
   onShowHelpDialog?: () => void
@@ -25,6 +61,7 @@ export function useCommandHandler({
   apiUrl,
   sessionID,
   directory,
+  projectName,
   onShowSessionsDialog,
   onShowModelsDialog,
   onShowHelpDialog,
@@ -33,7 +70,6 @@ export function useCommandHandler({
   currentAgent
 }: CommandHandlerProps) {
   const navigate = useNavigate()
-  const createSession = useCreateSession(apiUrl, directory)
   const { model, modelString } = useModelSelection(apiUrl, directory)
   const setSessionStatus = useSessionStatus((state) => state.setStatus)
   const [loading, setLoading] = useState(false)
@@ -73,24 +109,18 @@ export function useCommandHandler({
           
         case 'new':
         case 'clear': {
-          try {
-            const newSession = await createSession.mutateAsync({
-              agent: undefined
-            })
-            if (newSession?.id) {
-              const currentPath = window.location.pathname
-              const repoMatch = currentPath.match(/\/repos\/(\d+)\/sessions\//)
-              if (repoMatch) {
-                const repoId = repoMatch[1]
-                const newPath = `/repos/${repoId}/sessions/${newSession.id}`
-                navigate(newPath)
-              } else {
-                navigate(`/session/${newSession.id}`)
-              }
-            }
-          } catch (error) {
-            showToast.error(`Failed to create new session: ${error instanceof Error ? error.message : 'Unknown error'}`)
-          }
+          const segments = parseNewSessionArguments(args)
+          if (segments.length > 2) throw new Error('Expected an optional agent or project and agent')
+
+          const inheritedProject = projectName?.trim() || undefined
+          const inheritedAgent = currentAgent?.trim() || undefined
+          const route = segments.length === 2
+            ? { projectName: segments[0], agentName: segments[1] }
+            : segments.length === 1
+              ? { projectName: inheritedProject, agentName: segments[0] }
+              : { projectName: inheritedAgent ? inheritedProject : undefined, agentName: inheritedAgent }
+
+          navigate(newSessionPath(route))
           break
         }
           
@@ -156,7 +186,7 @@ export function useCommandHandler({
     } finally {
       setLoading(false)
     }
-  }, [sessionID, apiUrl, directory, onShowSessionsDialog, onShowModelsDialog, onShowHelpDialog, onToggleDetails, onExportSession, createSession, navigate, model, modelString, currentAgent, setSessionStatus])
+  }, [sessionID, apiUrl, directory, projectName, onShowSessionsDialog, onShowModelsDialog, onShowHelpDialog, onToggleDetails, onExportSession, navigate, model, modelString, currentAgent, setSessionStatus])
 
   return {
     executeCommand,

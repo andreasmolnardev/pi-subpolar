@@ -1,5 +1,5 @@
 import { useCallback, useState, useMemo, useEffect } from "react";
-import { useSessionsAcrossDirectories, useDeleteSession, useCreateSession } from "@/hooks/usePiHarness";
+import { useSessionsAcrossDirectories, useDeleteSession } from "@/hooks/usePiHarness";
 import { updateStoredSession } from "@/api/sessions";
 import type { DeleteSessionTarget } from "@/hooks/usePiHarness";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
@@ -17,16 +17,17 @@ interface SessionListProps {
   directoryLabels?: Record<string, string>;
   activeSessionID?: string;
   onSelectSession: (sessionID: string, directory?: string) => void;
+  onNewSession?: () => void;
 }
 
 export const SessionList = ({
   apiUrl,
   directory,
   directories,
-  createDirectory,
   directoryLabels,
   activeSessionID,
   onSelectSession,
+  onNewSession,
 }: SessionListProps) => {
   const directoriesKey = useMemo(() => {
     const source = directories && directories.length > 0 ? directories : directory ? [directory] : [];
@@ -37,7 +38,6 @@ export const SessionList = ({
   }, [directoriesKey]);
   const directorySet = useMemo(() => new Set(directoriesList), [directoriesList]);
   const primaryDirectory = directoriesList[0];
-  const sessionCreateDirectory = createDirectory ?? primaryDirectory;
   const getSessionSelectionKey = useCallback((session: { id: string; directory?: string }) =>
     `${session.directory ?? primaryDirectory ?? ''}:${session.id}`,
   [primaryDirectory]);
@@ -50,9 +50,6 @@ export const SessionList = ({
     const key = getSessionSelectionKey(session);
     setArchivedSessionKeys((current) => new Set(current).add(key));
   }, [getSessionSelectionKey]);
-  const createSession = useCreateSession(apiUrl, sessionCreateDirectory, (newSession) => {
-    onSelectSession(newSession.id);
-  });
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<DeleteSessionTarget | DeleteSessionTarget[] | null>(null);
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
@@ -117,7 +114,9 @@ export const SessionList = ({
         <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 pt-4 pb-4 min-h-0 [mask-image:linear-gradient(to_bottom,transparent,black_16px,black)]">
           <Card
             className="p-6 cursor-pointer hover:bg-accent hover:border-border transition-all border-dashed"
-            onClick={() => createSession.mutate({ agent: undefined })}
+            onClick={() => {
+              onNewSession?.()
+            }}
           >
             <div className="flex flex-col items-center justify-center gap-2 text-center">
               <p className="font-medium">No sessions yet</p>

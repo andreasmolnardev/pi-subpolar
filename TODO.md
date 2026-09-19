@@ -5,10 +5,10 @@
 Current phase: Phase 0A / Phase 0 foundation
 Current milestone: Milestone A - Dependable Subpolar
 Current branch: main
-Last completed commit: bfe4ee5 — feat(core): add shared foundation and security contracts
-Last verified commit: bfe4ee5 — bounded checkpoint verified with notes
+Last completed commit: pending — Phase 1 WebUI routing and delivery checkpoint
+Last verified commit: working tree — Phase 1 independently verified with notes
 Current blockers: full WebUI dependencies are unavailable; the local CLI is still a fixture executor rather than Pi-backed; no disposable E2E harness exists; scoped remote gateway credentials are not implemented
-Next recommended action: wire a real Pi executor into the shared run seam, then build disposable WebUI/PocketBase E2E coverage
+Next recommended action: commit Phase 1 checkpoint, then implement durable queue/steering and cursor replay
 
 ## Architecture Decisions
 
@@ -49,7 +49,7 @@ Verification:
 
 Commits:
 - bfe4ee5 — feat(core): add shared foundation and security contracts (bounded checkpoint)
-- pending — feat(core): add run seam and PocketBase adapter foundation
+- f2c19bc — feat(core): add run seam and PocketBase adapter foundation
 
 Remaining problems:
 - Current bridge still owns Pi lifecycle and process-global state.
@@ -88,7 +88,7 @@ Commits:
 
 ### Phase 1-3 - WebUI, Personalization, Git, and Review
 
-Status: NOT STARTED (existing functionality is partial and unverified)
+Status: IN PROGRESS (canonical routing and first-send checkpoint verified; broader P1 remains)
 
 Requirements:
 - [ ] P1-001 Reliable runtime/session states, cursor replay, lifecycle, routing, queue, attachments, commands, handoff, suggestions.
@@ -96,8 +96,8 @@ Requirements:
 - [ ] P3-001 Repository/worktree service, Changes surface, checkpoints, anchored conversation branching.
 
 Implementation tasks:
-- [ ] Fix canonical `/new` routes and immediate first-send semantics.
-- [ ] Implement durable delivery/idempotency and queue controls.
+- [x] Fix canonical `/new` routes and immediate first-send semantics (focused route/delivery verification).
+- [x] Implement durable first-send delivery/idempotency and interrupted retry/discard state; queue/steering remains open.
 - [ ] Connect project workspace and repository service to routed UI.
 - [ ] Add Changes/review/checkpoint flows.
 
@@ -170,6 +170,11 @@ Requirements:
 | impl-contracts | P0 versioned capability/health/error contract | main server-contract scope | COMPLETE - VERIFIED WITH NOTES | v1 contract/health tests; full dependency suite unavailable |
 | impl-run-seam | P0A shared run/executor contract and core service | main package scope | COMPLETE - VERIFIED WITH NOTES | 54 aggregate package tests; Pi executor wiring remains open |
 | impl-pocketbase-adapter | P0A PocketBase adapter contract/parity fixture | main new-package scope | COMPLETE - VERIFIED WITH NOTES | Owner-scoped adapter/parity tests; WebUI wiring remains open |
+| impl-new-routes | P1 canonical new-session route resolution | main WebUI routing scope | COMPLETE - VERIFIED WITH NOTES | Focused route/type/build verification |
+| impl-first-send | P1 immediate first-send composer flow | main WebUI composer scope | COMPLETE - VERIFIED WITH NOTES | Immediate send, permission/profile/model persistence |
+| fix-delivery-bridge | P1 delivery replay/profile/idempotency corrections | main bridge scope | COMPLETE - VERIFIED WITH NOTES | 81+ server tests, ownership/idempotency/replay checks |
+| fix-delivery-ux | P1 interrupted handoff retry UX | main SessionDetail scope | COMPLETE - VERIFIED WITH NOTES | Retry/discard/in-flight tests |
+| fix-session-agent-tests | P1 persisted session-agent test/runtime boundary | main session-agent scope | COMPLETE - VERIFIED WITH NOTES | 18 focused hook tests |
 
 ## Completed Work
 
@@ -179,12 +184,14 @@ Requirements:
 - Verified bounded checkpoint after independent review: 37 focused server/transcript tests, 36 package tests, 8 Bun-native server tests, 2 frontend security tests, and successful Bun bridge/package builds.
 - Checkpoint committed as bfe4ee5 and independently verified with notes.
 - Run/adapter checkpoint independently verified: 54 package tests, all entrypoint builds, recovery/ownership/atomicity/redaction probes pass; WebUI production build remains blocked by existing settings-component type errors.
+- f2c19bc committed and verified as the run/adapter checkpoint.
+- Phase 1 focused checkpoint independently verified: 87 Vitest tests, 81 Bun server tests, bridge/app typechecks, and direct Vite build passed; full build remains blocked by unrelated settings errors.
 
 ## Known Bugs
 
 - WebUI still has legacy process-global session metadata and Pi lifecycle outside the new package run seam; durable cross-process run recovery is not implemented.
 - WebUI production build has existing TypeScript failures in `IntegrationsSettings.tsx`, `STTSettings.tsx`, and `TTSSettings.tsx`.
-- Canonical `/new` routes, durable queues, first-send semantics, and session pagination are incomplete.
+- Durable queue/steering, cursor replay, attachments, suggestions, and session pagination remain incomplete.
 - Git API/UI and several hooks/tests are orphaned.
 - No disposable WebUI/PocketBase E2E harness exists.
 - `subpolar-cli` currently runs only the explicitly documented local echo fixture; it is not yet a Pi-backed complete headless runtime.
@@ -215,8 +222,8 @@ Requirements:
 
 ## Next Actions
 
-1. Commit this run/adapter checkpoint and record its SHA.
-2. Implement a real Pi-backed executor adapter and compose it in standalone `subpolar-cli` without WebUI/PocketBase.
-3. Wire the WebUI bridge to the shared core/adapter boundaries incrementally, preserving compatibility routes.
-4. Implement scoped remote gateway credentials and server-side `subpolar-tools add` authorization.
-5. Build the disposable PocketBase/WebUI E2E harness, then continue durable run/queue/event recovery and canonical WebUI session lifecycle.
+1. Commit the verified Phase 1 routing/delivery checkpoint.
+2. Implement durable queue/steering controls and cursor replay.
+3. Implement a real Pi-backed executor adapter and compose it in standalone `subpolar-cli` without WebUI/PocketBase.
+4. Wire the WebUI bridge to the shared core/adapter boundaries incrementally, preserving compatibility routes.
+5. Build the disposable PocketBase/WebUI E2E harness and implement scoped remote gateway credentials.

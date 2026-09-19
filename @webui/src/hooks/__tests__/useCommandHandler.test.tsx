@@ -5,6 +5,7 @@ import { useCommandHandler } from '../useCommandHandler'
 const mocks = vi.hoisted(() => ({
   sendCommand: vi.fn(),
   summarizeSession: vi.fn(),
+  navigate: vi.fn(),
   setStatus: vi.fn(),
 }))
 
@@ -24,12 +25,6 @@ vi.mock('@/lib/toast', () => ({
   },
 }))
 
-vi.mock('@/hooks/usePiHarness', () => ({
-  useCreateSession: vi.fn(() => ({
-    mutateAsync: vi.fn(),
-  })),
-}))
-
 vi.mock('@/hooks/useModelSelection', () => ({
   useModelSelection: vi.fn(() => ({
     model: { providerID: 'test-provider', modelID: 'test-model' },
@@ -38,7 +33,7 @@ vi.mock('@/hooks/useModelSelection', () => ({
 }))
 
 vi.mock('react-router-dom', () => ({
-  useNavigate: vi.fn(() => vi.fn()),
+  useNavigate: vi.fn(() => mocks.navigate),
 }))
 
 vi.mock('@/stores/sessionStatusStore', () => ({
@@ -115,5 +110,54 @@ describe('useCommandHandler', () => {
 
     expect(mocks.sendCommand).not.toHaveBeenCalled()
     expect(onShowSessionsDialog).toHaveBeenCalled()
+  })
+
+  it('new command navigates to the canonical route with encoded context', async () => {
+    const { result } = renderHook(() => useCommandHandler({
+      ...baseProps,
+      projectName: 'My Project',
+      currentAgent: 'agent/one',
+    }))
+
+    await result.current.executeCommand({ name: 'new' as const }, '')
+
+    expect(mocks.navigate).toHaveBeenCalledWith('/new/My%20Project/agent%2Fone')
+    expect(mocks.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it('new command uses the general route without session context', async () => {
+    const { result } = renderHook(() => useCommandHandler({
+      ...baseProps,
+      currentAgent: undefined,
+    }))
+
+    await result.current.executeCommand({ name: 'new' as const }, '')
+
+    expect(mocks.navigate).toHaveBeenCalledWith('/new')
+  })
+
+  it('new command maps a single agent argument to the canonical route', async () => {
+    const { result } = renderHook(() => useCommandHandler(baseProps))
+
+    await result.current.executeCommand({ name: 'new' as const }, 'agent/one')
+
+    expect(mocks.navigate).toHaveBeenCalledWith('/new/agent%2Fone')
+  })
+
+  it('new command maps explicit agent and project arguments to canonical routes', async () => {
+    const { result } = renderHook(() => useCommandHandler(baseProps))
+
+    await result.current.executeCommand({ name: 'new' as const }, '"My Project" agent/one')
+
+    expect(mocks.navigate).toHaveBeenCalledWith('/new/My%20Project/agent%2Fone')
+  })
+
+  it('rejects invalid new-session arguments without navigating', async () => {
+    const { result } = renderHook(() => useCommandHandler(baseProps))
+
+    await result.current.executeCommand({ name: 'new' as const }, 'project agent extra')
+
+    expect(mocks.navigate).not.toHaveBeenCalled()
+    expect(mocks.sendCommand).not.toHaveBeenCalled()
   })
 })

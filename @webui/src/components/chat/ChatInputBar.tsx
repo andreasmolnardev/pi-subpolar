@@ -23,6 +23,8 @@ import { useSettings } from "@/hooks/useSettings";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { MentionSuggestions, type MentionItem } from "@/components/message/MentionSuggestions";
+import { savePendingSessionPrompt } from "@/lib/pending-session-prompt";
+import { shouldBlockSessionCreation } from "@/lib/session-submit";
 
 export interface ChatInputBarHandle {
   setPromptValue: (value: string) => void;
@@ -32,12 +34,15 @@ export interface ChatInputBarHandle {
 
 export interface PendingSessionPrompt {
   prompt: string;
+  messageID: string;
   model?: string;
   agent?: string;
   permission?: string;
 }
 
 const LARGE_PASTE_THRESHOLD = 500;
+
+const createClientMessageID = () => `optimistic_user_${Date.now()}_${Math.random()}`;
 
 const PERMISSION_OPTIONS = [
   { value: "default", label: "Default Permissions" },
@@ -98,6 +103,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const [selectedMentions, setSelectedMentions] = useState<MentionContextItem[]>([]);
   const [pastedText, setPastedText] = useState<string | null>(null);
+  const creatingSessionRef = useRef(false);
 
   const apiUrl = SUBPOLAR_API_BASE_URL;
 
@@ -226,9 +232,9 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const selectedAgentForRequest = selectedAgent === "__default__" || (!hideAgentSelect && !visibleAgents.some((agent) => agent.name === selectedAgent))
     ? undefined
     : selectedAgent;
-  const selectedPermissionForRequest = selectedPermission === "default" && !selectedAgentForRequest
-    ? "ask"
-    : selectedPermission;
+  const selectedPermissionForRequest = selectedPermission === "none" || selectedPermission === "allow_all"
+    ? selectedPermission
+    : "ask";
 
   const createSession = useCreateSession(apiUrl, selectedDirectory);
   const sendPrompt = useSendPrompt(apiUrl, selectedDirectory);
@@ -367,6 +373,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     }
 
     if (sendPrompt.isPending) return;
+    if (shouldBlockSessionCreation(createSession.isPending, creatingSessionRef.current)) return;
 
     const typedPrompt = textareaRef.current?.value.trim() ?? "";
     const rawPrompt = [typedPrompt, pastedText?.trim()].filter(Boolean).join("\n\n");
@@ -376,41 +383,55 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       return;
     }
 
-    const prompt = await buildPromptWithMentionContext(rawPrompt, selectedDirectory, selectedMentions);
-    if (!prompt) return;
-
-    if (sessionID) {
-      textareaRef.current!.value = "";
-      textareaRef.current!.style.height = "auto";
-      setPastedText(null);
-      setHasPromptContent(false);
-      setSelectedMentions([]);
-      onPromptChange?.(false);
-      sendPrompt.mutate(
-        {
-          sessionID,
-          prompt,
-          model: selectedModel === "__auto__" ? undefined : selectedModel,
-          agent: selectedAgentForRequest,
-          permission: selectedPermissionForRequest,
-        },
-        {
-          onSuccess: () => {
-            onScrollToBottom?.();
-            onSend?.();
-          },
-        },
-      );
-      return;
-    }
+    const creatingNewSession = !sessionID;
+    if (creatingNewSession) creatingSessionRef.current = true;
 
     try {
+      const prompt = await buildPromptWithMentionContext(rawPrompt, selectedDirectory, selectedMentions);
+      if (!prompt) return;
+
+      if (sessionID) {
+        textareaRef.current!.value = "";
+        textareaRef.current!.style.height = "auto";
+        setPastedText(null);
+        setHasPromptContent(false);
+        setSelectedMentions([]);
+        onPromptChange?.(false);
+        sendPrompt.mutate(
+          {
+            sessionID,
+            prompt,
+            messageID: createClientMessageID(),
+            model: selectedModel === "__auto__" ? undefined : selectedModel,
+            agent: selectedAgentForRequest,
+            permission: selectedPermissionForRequest,
+          },
+          {
+            onSuccess: () => {
+              onScrollToBottom?.();
+              onSend?.();
+            },
+          },
+        );
+        return;
+      }
+
       const session = await createSession.mutateAsync({
         agent: selectedAgentForRequest,
         model: selectedModel === "__auto__" ? undefined : selectedModel,
+        permission: selectedPermissionForRequest,
       });
 
       if (sendImmediately) {
+        const messageID = createClientMessageID();
+        const pendingPrompt = {
+          prompt,
+          messageID,
+          model: selectedModel === "__auto__" ? undefined : selectedModel,
+          agent: selectedAgentForRequest,
+          permission: selectedPermissionForRequest,
+        } satisfies PendingSessionPrompt;
+        savePendingSessionPrompt(session.id, pendingPrompt);
         setActiveSessionId(session.id);
         textareaRef.current!.value = "";
         textareaRef.current!.style.height = "auto";
@@ -420,12 +441,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
         onPromptChange?.(false);
         navigate(`/projects/${targetProjectId}/sessions/${session.id}`, {
           state: {
-            pendingPrompt: {
-              prompt,
-              model: selectedModel === "__auto__" ? undefined : selectedModel,
-              agent: selectedAgentForRequest,
-              permission: selectedPermissionForRequest,
-            } satisfies PendingSessionPrompt,
+            pendingPrompt,
           },
         });
         onSend?.();
@@ -433,6 +449,15 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       }
 
       setActiveSessionId(session.id);
+      const messageID = createClientMessageID();
+      const pendingPrompt = {
+        prompt,
+        messageID,
+        model: selectedModel === "__auto__" ? undefined : selectedModel,
+        agent: selectedAgentForRequest,
+        permission: selectedPermissionForRequest,
+      } satisfies PendingSessionPrompt;
+      savePendingSessionPrompt(session.id, pendingPrompt);
       textareaRef.current!.value = "";
       textareaRef.current!.style.height = "auto";
       setPastedText(null);
@@ -441,18 +466,15 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       onPromptChange?.(false);
       navigate(`/projects/${targetProjectId}/sessions/${session.id}`, {
         state: {
-          pendingPrompt: {
-            prompt,
-            model: selectedModel === "__auto__" ? undefined : selectedModel,
-            agent: selectedAgentForRequest,
-            permission: selectedPermissionForRequest,
-          } satisfies PendingSessionPrompt,
+          pendingPrompt,
         },
       });
 
       onSend?.();
     } catch {
       showToast.error("Failed to create session");
+    } finally {
+      if (creatingNewSession) creatingSessionRef.current = false;
     }
   }, [
     abortSession,

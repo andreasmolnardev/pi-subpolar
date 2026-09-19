@@ -1,8 +1,15 @@
 import { renderHook, waitFor } from '@testing-library/react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useSessionAgent, resolveDefaultSessionAgent } from './useSessionAgent'
-import { useMessages, useConfig, useAgents } from './usePiHarness'
-import { useSessionAgentStore } from '../stores/sessionAgentStore'
+import type { useMessages, useConfig, useAgents, useSession } from '@/hooks/usePiHarness'
+import { useSessionAgentStore } from '@/stores/sessionAgentStore'
+
+const harnessMocks = vi.hoisted(() => ({
+  useMessages: vi.fn(),
+  useSession: vi.fn(() => ({ data: undefined })),
+  useConfig: vi.fn(),
+  useAgents: vi.fn(),
+}))
 
 const sessionAgentStoreMock = vi.hoisted(() => {
   const state = {
@@ -26,11 +33,7 @@ const sessionAgentStoreMock = vi.hoisted(() => {
   return { state, store }
 })
 
-vi.mock('./usePiHarness', () => ({
-  useMessages: vi.fn(),
-  useConfig: vi.fn(),
-  useAgents: vi.fn(),
-}))
+vi.mock('@/hooks/usePiHarness', () => harnessMocks)
 
 vi.mock('@/stores/sessionAgentStore', () => ({
   useSessionAgentStore: sessionAgentStoreMock.store,
@@ -38,6 +41,11 @@ vi.mock('@/stores/sessionAgentStore', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
+  harnessMocks.useMessages.mockReset()
+  harnessMocks.useSession.mockReset()
+  harnessMocks.useSession.mockReturnValue({ data: undefined })
+  harnessMocks.useConfig.mockReset()
+  harnessMocks.useAgents.mockReset()
   sessionAgentStoreMock.store.setState({ agents: {} })
 })
 
@@ -114,14 +122,14 @@ describe('useSessionAgent', () => {
   })
 
   it('returns config default agent for empty loaded messages with stale store build', async () => {
-    vi.mocked(useMessages).mockReturnValue({
+    harnessMocks.useMessages.mockReturnValue({
       data: [],
       isLoading: false,
     } as unknown as ReturnType<typeof useMessages>)
-    vi.mocked(useConfig).mockReturnValue({
+    harnessMocks.useConfig.mockReturnValue({
       data: { default_agent: 'code' },
     } as ReturnType<typeof useConfig>)
-    vi.mocked(useAgents).mockReturnValue({
+    harnessMocks.useAgents.mockReturnValue({
       data: [
         { name: 'code', mode: 'primary' },
         { name: 'assistant', mode: 'primary' },
@@ -138,6 +146,63 @@ describe('useSessionAgent', () => {
     })
   })
 
+  it('uses the persisted session profile before project or config defaults when empty', async () => {
+    harnessMocks.useMessages.mockReturnValue({
+      data: [],
+      isLoading: false,
+      isFetching: false,
+    } as unknown as ReturnType<typeof useMessages>)
+    harnessMocks.useSession.mockReturnValue({
+      data: { profile: 'assistant', model: 'provider/model', permissionOverride: 'none' },
+    } as unknown as ReturnType<typeof useSession>)
+    harnessMocks.useConfig.mockReturnValue({
+      data: { default_agent: 'master' },
+    } as ReturnType<typeof useConfig>)
+    harnessMocks.useAgents.mockReturnValue({
+      data: [
+        { name: 'master', mode: 'primary' },
+        { name: 'assistant', mode: 'primary' },
+      ],
+      isSuccess: true,
+    } as ReturnType<typeof useAgents>)
+
+    const { result } = renderHook(() => useSessionAgent('http://localhost:5551', 'session-1', '/assistant'))
+
+    await waitFor(() => {
+      expect(result.current.agent).toBe('assistant')
+      expect(result.current.model).toEqual({ providerID: 'provider', modelID: 'model' })
+      expect(result.current.permission).toBe('none')
+      expect(result.current.fromSession).toBe(true)
+    })
+  })
+
+  it('uses persisted model and permission for an empty session without a profile', async () => {
+    harnessMocks.useMessages.mockReturnValue({
+      data: [],
+      isLoading: false,
+      isFetching: false,
+    } as unknown as ReturnType<typeof useMessages>)
+    harnessMocks.useSession.mockReturnValue({
+      data: { model: 'provider/model', permissionOverride: 'allow_all' },
+    } as unknown as ReturnType<typeof useSession>)
+    harnessMocks.useConfig.mockReturnValue({
+      data: { default_agent: 'code' },
+    } as ReturnType<typeof useConfig>)
+    harnessMocks.useAgents.mockReturnValue({
+      data: [{ name: 'code', mode: 'primary' }],
+      isSuccess: true,
+    } as ReturnType<typeof useAgents>)
+
+    const { result } = renderHook(() => useSessionAgent('http://localhost:5551', 'session-1', '/assistant'))
+
+    await waitFor(() => {
+      expect(result.current.agent).toBe('code')
+      expect(result.current.model).toEqual({ providerID: 'provider', modelID: 'model' })
+      expect(result.current.permission).toBe('allow_all')
+      expect(result.current.fromSession).toBe(true)
+    })
+  })
+
   it('returns message-derived agent when latest user message has agent', async () => {
     const messagesData = [
       {
@@ -150,14 +215,14 @@ describe('useSessionAgent', () => {
         },
       },
     ]
-    vi.mocked(useMessages).mockReturnValue({
+    harnessMocks.useMessages.mockReturnValue({
       data: messagesData,
       isLoading: false,
     } as ReturnType<typeof useMessages>)
-    vi.mocked(useConfig).mockReturnValue({
+    harnessMocks.useConfig.mockReturnValue({
       data: { default_agent: 'code' },
     } as ReturnType<typeof useConfig>)
-    vi.mocked(useAgents).mockReturnValue({
+    harnessMocks.useAgents.mockReturnValue({
       data: [
         { name: 'code', mode: 'primary' },
         { name: 'assistant', mode: 'primary' },
@@ -178,7 +243,7 @@ describe('useSessionAgent', () => {
   })
 
   it('returns latest message model and permission with default agent when no agent was stored', async () => {
-    vi.mocked(useMessages).mockReturnValue({
+    harnessMocks.useMessages.mockReturnValue({
       data: [
         {
           info: {
@@ -190,10 +255,10 @@ describe('useSessionAgent', () => {
       ],
       isLoading: false,
     } as ReturnType<typeof useMessages>)
-    vi.mocked(useConfig).mockReturnValue({
+    harnessMocks.useConfig.mockReturnValue({
       data: { default_agent: 'code' },
     } as ReturnType<typeof useConfig>)
-    vi.mocked(useAgents).mockReturnValue({
+    harnessMocks.useAgents.mockReturnValue({
       data: [
         { name: 'code', mode: 'primary' },
         { name: 'assistant', mode: 'primary' },
@@ -213,7 +278,7 @@ describe('useSessionAgent', () => {
   })
 
   it('does not restore model from cached messages while refetching', async () => {
-    vi.mocked(useMessages).mockReturnValue({
+    harnessMocks.useMessages.mockReturnValue({
       data: [
         {
           info: {
@@ -227,10 +292,10 @@ describe('useSessionAgent', () => {
       isLoading: false,
       isFetching: true,
     } as ReturnType<typeof useMessages>)
-    vi.mocked(useConfig).mockReturnValue({
+    harnessMocks.useConfig.mockReturnValue({
       data: { default_agent: 'code' },
     } as ReturnType<typeof useConfig>)
-    vi.mocked(useAgents).mockReturnValue({
+    harnessMocks.useAgents.mockReturnValue({
       data: [{ name: 'code', mode: 'primary' }],
       isSuccess: true,
     } as ReturnType<typeof useAgents>)
@@ -247,14 +312,14 @@ describe('useSessionAgent', () => {
   })
 
   it('does not persist default agent fallback to store', async () => {
-    vi.mocked(useMessages).mockReturnValue({
+    harnessMocks.useMessages.mockReturnValue({
       data: [],
       isLoading: false,
     } as unknown as ReturnType<typeof useMessages>)
-    vi.mocked(useConfig).mockReturnValue({
+    harnessMocks.useConfig.mockReturnValue({
       data: { default_agent: 'code' },
     } as ReturnType<typeof useConfig>)
-    vi.mocked(useAgents).mockReturnValue({
+    harnessMocks.useAgents.mockReturnValue({
       data: [{ name: 'code', mode: 'primary' }],
       isSuccess: true,
     } as ReturnType<typeof useAgents>)
@@ -271,14 +336,14 @@ describe('useSessionAgent', () => {
 
   it('ignores stale stored agent when unavailable in loaded primary agents', async () => {
     useSessionAgentStore.setState({ agents: { 'session-1': 'build' } })
-    vi.mocked(useMessages).mockReturnValue({
+    harnessMocks.useMessages.mockReturnValue({
       data: [],
       isLoading: false,
     } as unknown as ReturnType<typeof useMessages>)
-    vi.mocked(useConfig).mockReturnValue({
+    harnessMocks.useConfig.mockReturnValue({
       data: { default_agent: 'code' },
     } as ReturnType<typeof useConfig>)
-    vi.mocked(useAgents).mockReturnValue({
+    harnessMocks.useAgents.mockReturnValue({
       data: [
         { name: 'code', mode: 'primary' },
         { name: 'architect', mode: 'primary' },
@@ -296,7 +361,7 @@ describe('useSessionAgent', () => {
   })
 
   it('uses latest message agent only when it is available in loaded primary agents', async () => {
-    vi.mocked(useMessages).mockReturnValue({
+    harnessMocks.useMessages.mockReturnValue({
       data: [
         {
           info: {
@@ -307,10 +372,10 @@ describe('useSessionAgent', () => {
       ],
       isLoading: false,
     } as ReturnType<typeof useMessages>)
-    vi.mocked(useConfig).mockReturnValue({
+    harnessMocks.useConfig.mockReturnValue({
       data: { default_agent: 'architect' },
     } as ReturnType<typeof useConfig>)
-    vi.mocked(useAgents).mockReturnValue({
+    harnessMocks.useAgents.mockReturnValue({
       data: [
         { name: 'code', mode: 'primary' },
         { name: 'architect', mode: 'primary' },

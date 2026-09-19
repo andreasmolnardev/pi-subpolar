@@ -7,8 +7,6 @@ import { Header } from '@/components/ui/header'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Plus } from 'lucide-react'
-import { SUBPOLAR_API_BASE_URL } from '@/config'
-import { useCreateSession } from '@/hooks/usePiHarness'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 import { formatDistanceToNow } from 'date-fns'
 
@@ -34,13 +32,6 @@ export function History() {
     return [generalChat, ...(projects ?? [])].filter((project): project is NonNullable<typeof project> => Boolean(project?.fullPath))
   }, [generalChat, projects])
 
-  const directories = useMemo(() => {
-    return Array.from(new Set([
-      ...historyProjects.map(project => project.fullPath),
-      ...(storedSessions ?? []).map(session => session.directory).filter((directory): directory is string => Boolean(directory)),
-    ]))
-  }, [historyProjects, storedSessions])
-
   const projectIdsByDirectory = useMemo(() => {
     return new Map([
       ...historyProjects.map(project => [project.fullPath, project.id] as const),
@@ -50,21 +41,10 @@ export function History() {
     ])
   }, [historyProjects, storedSessions])
 
-  const apiUrl = SUBPOLAR_API_BASE_URL
-  const primaryDirectory = generalChat?.fullPath ?? directories[0]
-
   const handleSelectSession = useCallback((sessionId: string, directory: string | null, storedProjectId: number | null) => {
     const projectId = storedProjectId ?? (directory ? projectIdsByDirectory.get(directory) : GENERAL_CHAT_PROJECT_ID)
     navigate(`/projects/${projectId ?? GENERAL_CHAT_PROJECT_ID}/sessions/${sessionId}`)
   }, [navigate, projectIdsByDirectory])
-
-  const createSession = useCreateSession(apiUrl, primaryDirectory, (newSession) => {
-    navigate(`/projects/${GENERAL_CHAT_PROJECT_ID}/sessions/${newSession.id}`)
-  })
-
-  const handleCreateSession = async () => {
-    await createSession.mutateAsync({ agent: undefined })
-  }
 
   if (projectsLoading || generalChatLoading || sessionsLoading) {
     return (
@@ -80,8 +60,7 @@ export function History() {
         <Header.Title>Session History</Header.Title>
         <Header.Actions>
           <Button
-            onClick={handleCreateSession}
-            disabled={!apiUrl || !primaryDirectory || createSession.isPending}
+            onClick={() => navigate('/new')}
             size="sm"
             className="bg-blue-600 hover:bg-blue-700 text-white transition-all duration-200 hover:scale-105"
           >

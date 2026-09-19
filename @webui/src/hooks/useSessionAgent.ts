@@ -1,5 +1,5 @@
 import { useMemo, useRef, useEffect } from 'react'
-import { useMessages, useConfig, useAgents } from './usePiHarness'
+import { useMessages, useConfig, useAgents, useSession } from '@/hooks/usePiHarness'
 import { useSessionAgentStore } from '@/stores/sessionAgentStore'
 import type { components } from '@/api/opencode-types'
 
@@ -56,6 +56,14 @@ interface SessionAgentResult {
   permission: string | undefined
   variant: string | undefined
   fromMessage: boolean
+  fromSession: boolean
+}
+
+function sessionModel(value: string | undefined): { providerID: string; modelID: string } | undefined {
+  if (!value) return undefined
+  const [providerID, ...modelParts] = value.split('/')
+  const modelID = modelParts.join('/')
+  return providerID && modelID ? { providerID, modelID } : undefined
 }
 
 export function useSessionAgent(
@@ -64,11 +72,12 @@ export function useSessionAgent(
   directory?: string
 ) {
   const { data: messages, isLoading: messagesLoading, isFetching: messagesFetching } = useMessages(apiUrl, sessionID, directory)
+  const { data: session } = useSession(apiUrl, sessionID, directory)
   const { data: config } = useConfig(apiUrl, directory)
   const { data: agents, isSuccess: agentsLoaded } = useAgents(apiUrl, directory)
   const storedAgent = useSessionAgentStore((s) => s.agents[sessionID ?? ''] ?? null)
   const setAgent = useSessionAgentStore((s) => s.setAgent)
-  const prevRef = useRef<SessionAgentResult>({ agent: 'build', model: undefined, permission: undefined, variant: undefined, fromMessage: false })
+  const prevRef = useRef<SessionAgentResult>({ agent: 'build', model: undefined, permission: undefined, variant: undefined, fromMessage: false, fromSession: false })
 
   const defaultAgent = useMemo(
     () => resolveDefaultSessionAgent(config?.default_agent, agents, agentsLoaded),
@@ -77,11 +86,20 @@ export function useSessionAgent(
 
   const result = useMemo(() => {
     if (messagesLoading || messagesFetching) {
-      return { agent: defaultAgent, model: undefined, permission: undefined, variant: undefined, fromMessage: false }
+      return { agent: defaultAgent, model: undefined, permission: undefined, variant: undefined, fromMessage: false, fromSession: false }
     }
 
+    const persistedAgent = resolveAvailableAgentName(session?.profile, agents, agentsLoaded)
+    const storedAgentName = resolveAvailableAgentName(storedAgent ?? undefined, agents, agentsLoaded)
+    const persistedModel = sessionModel(session?.model)
+    const persistedPermission = session?.permissionOverride
+
     if (!messages || messages.length === 0) {
-      return { agent: defaultAgent, model: undefined, permission: undefined, variant: undefined, fromMessage: false }
+      const agent = persistedAgent ?? storedAgentName ?? defaultAgent
+      if (persistedAgent || persistedModel || persistedPermission) {
+        return { agent, model: persistedModel, permission: persistedPermission, variant: undefined, fromMessage: false, fromSession: true }
+      }
+      return { agent, model: undefined, permission: undefined, variant: undefined, fromMessage: false, fromSession: false }
     }
 
     let latestAgent: string | undefined
@@ -108,57 +126,60 @@ export function useSessionAgent(
 
     const resolvedLatestAgent = resolveAvailableAgentName(latestAgent, agents, agentsLoaded)
     if (resolvedLatestAgent || latestModel || latestPermission || latestVariant) {
-      const agent = resolvedLatestAgent ?? defaultAgent
+      const agent = resolvedLatestAgent ?? persistedAgent ?? storedAgentName ?? defaultAgent
+      const model = latestModel ?? persistedModel
+      const permission = latestPermission ?? persistedPermission
       const prev = prevRef.current
       if (
         prev.agent === agent &&
         prev.variant === latestVariant &&
-        prev.permission === latestPermission &&
-        prev.model?.providerID === (latestModel as { providerID?: string } | undefined)?.providerID &&
-        prev.model?.modelID === (latestModel as { modelID?: string } | undefined)?.modelID
+        prev.permission === permission &&
+        prev.model?.providerID === model?.providerID &&
+        prev.model?.modelID === model?.modelID
       ) {
-        return { ...prev, fromMessage: true }
+        return { ...prev, fromMessage: true, fromSession: false }
       }
 
       const next: SessionAgentResult = {
         agent,
-        model: latestModel,
-        permission: latestPermission,
+        model,
+        permission,
         variant: latestVariant,
         fromMessage: true,
+        fromSession: false,
       }
       prevRef.current = next
       return next
     }
 
-    const resolvedStoredAgent = resolveAvailableAgentName(storedAgent, agents, agentsLoaded)
-    if (resolvedStoredAgent) {
+    if (persistedAgent || persistedModel || persistedPermission) {
+      const agent = persistedAgent ?? storedAgentName ?? defaultAgent
       const prev = prevRef.current
       if (
-        prev.agent === resolvedStoredAgent &&
-        prev.variant === latestVariant &&
-        prev.permission === latestPermission &&
-        prev.model?.providerID === (latestModel as { providerID?: string } | undefined)?.providerID &&
-        prev.model?.modelID === (latestModel as { modelID?: string } | undefined)?.modelID
+        prev.agent === agent &&
+        prev.variant === undefined &&
+        prev.permission === persistedPermission &&
+        prev.model?.providerID === persistedModel?.providerID &&
+        prev.model?.modelID === persistedModel?.modelID
       ) {
-        return { ...prev, fromMessage: false }
+        return { ...prev, fromMessage: false, fromSession: true }
       }
 
-      const next: SessionAgentResult = { agent: resolvedStoredAgent, model: latestModel, permission: latestPermission, variant: latestVariant, fromMessage: false }
+      const next: SessionAgentResult = { agent, model: persistedModel, permission: persistedPermission, variant: undefined, fromMessage: false, fromSession: true }
       prevRef.current = next
       return next
     }
 
-    return { agent: defaultAgent, model: undefined, permission: undefined, variant: undefined, fromMessage: false }
-  }, [messages, messagesLoading, messagesFetching, storedAgent, defaultAgent, agents, agentsLoaded])
+    return { agent: storedAgentName ?? defaultAgent, model: undefined, permission: undefined, variant: undefined, fromMessage: false, fromSession: false }
+  }, [messages, messagesLoading, messagesFetching, storedAgent, session?.profile, session?.model, session?.permissionOverride, defaultAgent, agents, agentsLoaded])
 
   useEffect(() => {
-    if (result.agent && sessionID && result.fromMessage) {
+    if (result.agent && sessionID && (result.fromMessage || result.fromSession)) {
       setAgent(sessionID, result.agent)
     }
-  }, [result.agent, result.fromMessage, sessionID, setAgent])
+  }, [result.agent, result.fromMessage, result.fromSession, sessionID, setAgent])
 
-  return { agent: result.agent, model: result.model, permission: result.permission, variant: result.variant }
+  return { agent: result.agent, model: result.model, permission: result.permission, variant: result.variant, fromMessage: result.fromMessage, fromSession: result.fromSession }
 }
 
 export function getSessionAgentFromMessages(

@@ -24,6 +24,32 @@ describe('SubpolarClient', () => {
     )
   })
 
+  it('sends the selected permission when creating the first session', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      session: {
+        id: 'ses_1',
+        runtime: 'pi',
+        runtimeSessionId: null,
+        profile: 'assistant',
+        permissionOverride: 'ask',
+      },
+    }), { status: 201 }))
+
+    await new SubpolarClient('/api/opencode', '/repo').createSession({
+      agent: 'assistant',
+      model: 'openai/gpt-4.1',
+      permission: 'ask',
+    })
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      agent: 'assistant',
+      model: 'openai/gpt-4.1',
+      permission: 'ask',
+      runtime: 'pi',
+      directory: '/repo',
+    })
+  })
+
   it('deletes workspaces with directory routing', async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
 
@@ -225,6 +251,100 @@ describe('SubpolarClient', () => {
       agentId: 'build',
       model: { providerID: 'openai', modelID: 'gpt-4.1' },
     })
+  })
+
+  it('sends immediate prompts through the same native endpoints with the client message ID', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
+
+    await expect(
+      new SubpolarClient('/api/opencode', '/repo').sendPrompt('ses_1', {
+        parts: [{ type: 'text', text: 'Immediate hello' }],
+        messageID: 'optimistic_user_immediate',
+      }),
+    ).resolves.toEqual({ messageID: 'optimistic_user_immediate', state: 'completed' })
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      messageID: 'optimistic_user_immediate',
+      content: 'Immediate hello',
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'http://localhost/api/sessions/ses_1/runs?directory=%2Frepo',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('rejects an interrupted delivery instead of clearing the first-send handoff', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ messageID: 'optimistic_user_stale', state: 'pending' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: false,
+        messageID: 'optimistic_user_stale',
+        state: 'interrupted',
+        error: {
+          code: 'DELIVERY_INTERRUPTED',
+          message: 'This delivery was interrupted before its outcome was known. It was not retried automatically. Resend the prompt to try again.',
+          recoverable: true,
+        },
+      }), { status: 200 }))
+
+    await expect(new SubpolarClient('/api/opencode', '/repo').sendPromptAsync('ses_1', {
+      parts: [{ type: 'text', text: 'Do not lose this prompt' }],
+      messageID: 'optimistic_user_stale',
+    })).rejects.toMatchObject({ code: 'DELIVERY_INTERRUPTED', statusCode: 409 })
+  })
+
+  it('accepts a running delivery as in-flight', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ messageID: 'message_running', state: 'pending' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        messageID: 'message_running',
+        state: 'running',
+      }), { status: 200 }))
+
+    await expect(new SubpolarClient('/api/opencode', '/repo').sendPromptAsync('ses_1', {
+      parts: [{ type: 'text', text: 'Keep this in flight' }],
+      messageID: 'message_running',
+    })).resolves.toBeUndefined()
+  })
+
+  it('rejects an unknown delivery as recoverable uncertainty', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ messageID: 'message_unknown', state: 'pending' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: false,
+        messageID: 'message_unknown',
+        state: 'unknown',
+        error: {
+          code: 'DELIVERY_UNKNOWN',
+          message: 'The delivery outcome is unknown.',
+          recoverable: true,
+        },
+      }), { status: 200 }))
+
+    await expect(new SubpolarClient('/api/opencode', '/repo').sendPromptAsync('ses_1', {
+      parts: [{ type: 'text', text: 'Handle the unknown outcome' }],
+      messageID: 'message_unknown',
+    })).rejects.toMatchObject({ code: 'DELIVERY_UNKNOWN', statusCode: 409 })
+  })
+
+  it('accepts completed delivery metadata without hiding the native RPC response', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ messageID: 'message_1', state: 'pending' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'response',
+        id: 'rpc_1',
+        success: true,
+        data: { value: 1 },
+        delivery: { ok: true, messageID: 'message_1', state: 'completed' },
+      }), { status: 200 }))
+
+    await expect(new SubpolarClient('/api/opencode', '/repo').sendPromptAsync('ses_1', {
+      parts: [{ type: 'text', text: 'Compatibility check' }],
+    })).resolves.toBeUndefined()
   })
 
   it('reconstructs split reasoning blocks around tool calls', async () => {

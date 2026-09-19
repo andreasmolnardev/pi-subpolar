@@ -48,6 +48,49 @@ function session(overrides: Partial<SessionRecord> = {}): SessionRecord {
 }
 
 describe('SessionContextResolver', () => {
+  it.each(['ask', 'none', 'allow_all'] as const)('accepts %s as a validated request permission', async (permission) => {
+    const context = await resolver().resolve({ identity: 'user_1', project: 'subpolar', permission })
+
+    expect(context.permission).toEqual({ override: permission, requestedOverride: permission, source: 'request' })
+    expect(context.permissionOverride).toBe(permission)
+  })
+
+  it('carries an explicitly requested permission into the next durable resolution', async () => {
+    const stored = session()
+    const contextResolver = resolver({
+      sessions: {
+        getSession: (id) => id === stored.id ? stored : undefined,
+        getProject: (name) => name === project.name ? project : undefined,
+      },
+    })
+
+    const first = await contextResolver.resolve({ identity: 'user_1', sessionId: stored.id, permission: 'none' })
+    expect(first.permission.source).toBe('request')
+    stored.permissionOverride = first.permissionOverride
+
+    const next = await contextResolver.resolve({ identity: 'user_1', sessionId: stored.id })
+    expect(next.permission).toEqual({ override: 'none', sessionOverride: 'none', source: 'session' })
+  })
+
+  it('rejects every permission change once a session policy is persisted', async () => {
+    const permissions = ['ask', 'none', 'allow_all'] as const
+    for (const storedPermission of permissions) {
+      const stored = session({ permissionOverride: storedPermission })
+      const contextResolver = resolver({
+        sessions: {
+          getSession: (id) => id === stored.id ? stored : undefined,
+          getProject: (name) => name === project.name ? project : undefined,
+        },
+      })
+
+      for (const requestedPermission of permissions) {
+        if (requestedPermission === storedPermission) continue
+        await expect(contextResolver.resolve({ identity: 'user_1', sessionId: stored.id, permission: requestedPermission }))
+          .rejects.toMatchObject({ code: 'PERMISSION_MISMATCH' })
+      }
+    }
+  })
+
   it('derives the canonical context for a new session from trusted identity and project', async () => {
     const context = await resolver().resolve({
       identity: { id: 'user_1' },
