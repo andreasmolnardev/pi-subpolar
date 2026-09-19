@@ -8,7 +8,7 @@ Current branch: main
 Last completed commit: pending — cursor replay and scoped gateway credentials checkpoint
 Last verified commit: working tree — cursor/gateway checkpoint independently verified with notes
 Current blockers: full WebUI dependencies are unavailable; the local CLI is still a fixture executor rather than Pi-backed; no disposable E2E harness exists; scoped remote gateway credentials are not implemented
-Next recommended action: commit the authoritative agent profile/context checkpoint, then implement the bounded Git repository/worktree read service
+Next recommended action: commit bounded Git read service, then implement durable tasks/subagent worktrees
 
 ## Architecture Decisions
 
@@ -184,7 +184,9 @@ Requirements:
 | impl-appearance | P2 themes and productivity foundation | main appearance/navigation scope | COMPLETE - VERIFIED WITH NOTES | Theme/reduced-motion/command palette tests; full dependency suite limited |
 | audit-next-roadmap | Re-audit remaining P1/P2/P4-P13 gaps | main read-only | IN PROGRESS | Prioritized next implementation batch |
 | impl-agent-context | P5/P6 authoritative profiles and capability context modes | main agent/tools scope | COMPLETE - VERIFIED WITH NOTES | 9 focused server tests; full build limited by unrelated settings errors |
-| design-git-service | P3 repository/worktree service design audit | main read-only | IN PROGRESS | Contracts, dependencies, bounded implementation proposal |
+| design-git-service | P3 repository/worktree service design audit | main read-only | COMPLETE | Contracts, dependencies, bounded implementation proposal |
+| impl-git-read | P3 read-only Git repository/worktree service | main git server scope | COMPLETE - VERIFIED WITH NOTES | Safe executor, path policy, status/branches/diff/worktrees routes and tests |
+| verify-git-read | Independent Git security verification | main read-only | COMPLETE - FINDINGS CORRECTED | Ownership/path/argv/output/parser findings corrected |
 
 ## Completed Work
 
@@ -203,6 +205,8 @@ Requirements:
 - Attachment/appearance checkpoint verified: 6 focused tests, bridge build, and diff checks pass; live upload/vision/website and full WebUI typecheck remain environment-limited.
 - df1fd00 committed and verified as the attachment/appearance checkpoint.
 - Agent profile/context checkpoint verified: 9 focused server tests and bridge typecheck pass; full WebUI build remains blocked by unrelated settings errors.
+- Git read checkpoint verified: focused Git tests and 101 native server tests pass; bridge/WebUI typechecks and bridge build pass; mutations intentionally excluded.
+- 1671cb3 committed and verified as the agent profile/context checkpoint.
 
 ## Known Bugs
 
@@ -240,6 +244,6 @@ Requirements:
 
 ## Next Actions
 
-1. Commit the authoritative agent profile/context checkpoint.
-2. Implement the bounded Git repository/worktree read service from the design audit.
-3. Continue tasks/subagents, memory, browser, voice, and automations in dependency order.
+1. Commit the bounded Git read checkpoint.
+2. Implement durable Task records, `subagent/run`, and isolated worktree lifecycle.
+3. Continue memory, browser, voice, and automations in dependency order.

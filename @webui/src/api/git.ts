@@ -2,6 +2,31 @@ import { useQuery } from '@tanstack/react-query'
 import { fetchWrapper, FetchError } from './fetchWrapper'
 import { API_BASE_URL } from '@/config'
 import type { GitStatusResponse, FileDiffResponse, GitCommit, CommitDetails } from '@/types/git'
+import type { RepositoryRead, RepositoryStatusRead, RepositoryBranchRead, RepositoryDiffRead, RepositoryWorktreeRead } from '@/types/git'
+
+export async function fetchRepository(projectId: string): Promise<{ repository: RepositoryRead; requestId: string }> {
+  return fetchWrapper(`${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/repository`)
+}
+
+export async function fetchRepositoryStatus(projectId: string): Promise<{ repository: RepositoryRead; status: RepositoryStatusRead; requestId: string }> {
+  return fetchWrapper(`${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/repository/status`)
+}
+
+export async function fetchRepositoryBranches(projectId: string): Promise<{ repository: RepositoryRead; branches: RepositoryBranchRead[]; requestId: string }> {
+  return fetchWrapper(`${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/repository/branches`)
+}
+
+export async function fetchRepositoryDiff(projectId: string, options: { path?: string; ref?: string; staged?: boolean } = {}): Promise<{ repository: RepositoryRead; diff: RepositoryDiffRead; requestId: string }> {
+  const params = new URLSearchParams()
+  if (options.path) params.set('path', options.path)
+  if (options.ref) params.set('ref', options.ref)
+  if (options.staged) params.set('staged', 'true')
+  return fetchWrapper(`${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/repository/diff?${params}`)
+}
+
+export async function fetchRepositoryWorktrees(projectId: string): Promise<{ repository: RepositoryRead; worktrees: RepositoryWorktreeRead[]; requestId: string }> {
+  return fetchWrapper(`${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/repository/worktrees`)
+}
 
 export async function fetchGitStatus(repoId: number): Promise<GitStatusResponse> {
   return fetchWrapper(`${API_BASE_URL}/api/repos/${repoId}/git/status`)

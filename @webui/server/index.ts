@@ -105,3 +105,8 @@ export * from './provider-login-flow-store.ts'
 export * from './provider-runtime.ts'
 export * from './custom-providers.ts'
 export * from './gateway-credentials.ts'
+
+export * from './git/contracts.ts'
+export * from './git/executor.ts'
+export * from './git/policy.ts'
+export * from './git/service.ts'

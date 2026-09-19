@@ -111,6 +111,9 @@ import { redactSensitive, redactSensitiveText } from './server/security-redactio
 import { permissionAskedProperties } from './server/approval-event.ts'
 import { createEventCursor, ensureEventCursorSchema } from './server/event-cursor.ts'
 import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/project-filesystem.ts'
+import { GitPathPolicy } from './server/git/policy.ts'
+import { GitReadService } from './server/git/service.ts'
+import { GitServiceError } from './server/git/contracts.ts'
 import {
   createCapabilitiesPayload,
   createHealthPayload,
@@ -2002,6 +2005,27 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
   if (request.method === 'GET' && url.pathname === '/api/projects') {
     const client = await applicationDatabase()
     return json({ projects: await ownedProjectResponses(authenticatedUser!.id, client) })
+  }
+  if (path[1] === 'projects' && path.length >= 4 && path[3] === 'repository' && request.method === 'GET') {
+    const projectId = decodeURIComponent(path[2] ?? '')
+    try {
+      const client = await applicationDatabase()
+      const projectRepository = createProjectSessionRepository(client)
+      const service = new GitReadService(new GitPathPolicy((owner, id) => projectRepository.getProject(owner, id)))
+      const action = path[4]
+      const result = action === undefined ? await service.discover(authenticatedUser!.id, projectId, request.signal)
+        : action === 'status' && path.length === 5 ? await service.status(authenticatedUser!.id, projectId, request.signal)
+          : action === 'branches' && path.length === 5 ? await service.branches(authenticatedUser!.id, projectId, request.signal)
+            : action === 'worktrees' && path.length === 5 ? await service.worktrees(authenticatedUser!.id, projectId, request.signal)
+              : action === 'diff' && path.length === 5 ? await service.diff(authenticatedUser!.id, projectId, { path: url.searchParams.get('path') ?? undefined, ref: url.searchParams.get('ref') ?? undefined, staged: url.searchParams.get('staged') === 'true' }, request.signal)
+                : null
+      if (!result) return json({ error: { code: 'NOT_FOUND', message: 'Repository route not found' }, requestId: correlationId }, 404)
+      return json({ ...result, requestId: correlationId })
+    } catch (error) {
+      if (error instanceof GitServiceError) return json({ error: { code: error.code, message: error.message }, requestId: correlationId }, error.status)
+      console.warn(`Git read request failed: ${redactedDiagnostic(error)}`)
+      return json({ error: { code: 'GIT_UNAVAILABLE', message: 'Git repository information is unavailable' }, requestId: correlationId }, 503)
+    }
   }
   if (request.method === 'GET' && path[1] === 'projects' && path.length === 3) {
     const client = await applicationDatabase()
