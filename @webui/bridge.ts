@@ -81,6 +81,16 @@ import {
   ensureCustomProviderCollection,
   customProviderDiscoveryUrl,
   CustomProviderValidationError,
+  assertGatewayAccess,
+  authenticateGatewayCredential,
+  createGatewayCredential,
+  listGatewayCredentials,
+  publicGatewayCredential,
+  revokeGatewayCredential,
+  rotateGatewayCredential,
+  GatewayAuthError,
+  type GatewayCredentialAuth,
+  type GatewayPermission,
 } from './server/index.ts'
 import {
   NewSessionRouteError,
@@ -99,6 +109,7 @@ import {
 import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse } from './server/network-policy.ts'
 import { redactSensitive, redactSensitiveText } from './server/security-redaction.ts'
 import { permissionAskedProperties } from './server/approval-event.ts'
+import { createEventCursor, ensureEventCursorSchema } from './server/event-cursor.ts'
 import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/project-filesystem.ts'
 import {
   createCapabilitiesPayload,
@@ -399,6 +410,7 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS idx_message_queue_ready
     ON message_queue (owner_id, session_id, state, position, created_at);
 `)
+ensureEventCursorSchema(database)
 try { database.exec('ALTER TABLE sessions ADD COLUMN user_id TEXT') } catch { /* already migrated */ }
 try { database.exec('ALTER TABLE sessions ADD COLUMN permission_override TEXT') } catch { /* already migrated */ }
 try { database.exec('ALTER TABLE message_deliveries ADD COLUMN response TEXT') } catch { /* already migrated */ }
@@ -561,6 +573,7 @@ function isSessionRecord(value: unknown): value is SessionRecord {
 let sessions = loadState()
 const sseClients = new Set<SseClient>()
 const encoder = new TextEncoder()
+const eventCursor = createEventCursor(database)
 
 function getMessageDelivery(ownerId: string, sessionId: string, messageId: string): MessageDelivery | null {
   const row = database.query(
@@ -612,9 +625,14 @@ function queueClientId(input: unknown): string {
 }
 
 function broadcastSse(value: unknown, userId?: string): void {
-  const chunk = encoder.encode(`data: ${JSON.stringify(redactSensitive(value))}\n\n`)
+  if (!userId) return
+  const safeValue = redactSensitive(value)
+  const properties = object(safeValue).properties
+  const sessionId = typeof object(properties).sessionID === 'string' ? object(properties).sessionID as string : null
+  const event = eventCursor.append(userId, sessionId, safeValue)
+  const chunk = encoder.encode(`id: ${event.id}\ndata: ${JSON.stringify(event.payload)}\n\n`)
   for (const client of sseClients) {
-    if (!userId || client.userId !== userId) continue
+    if (client.userId !== userId) continue
     try { client.enqueue(chunk) } catch { client.close(); sseClients.delete(client) }
   }
 }
@@ -1042,6 +1060,11 @@ function json(value: unknown, status = 200): Response {
     status,
     headers: { 'content-type': 'application/json; charset=utf-8' },
   })
+}
+
+function gatewayErrorResponse(error: unknown): Response | null {
+  if (!(error instanceof GatewayAuthError)) return null
+  return json({ error: { code: error.code, message: error.message } }, error.code === 'GATEWAY_PERMISSION_DENIED' || error.code === 'GATEWAY_SCOPE_DENIED' ? 403 : 401)
 }
 
 async function body(request: Request): Promise<Record<string, unknown>> {
@@ -1619,8 +1642,21 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     || (path[1] === 'v1' && (path[2] === 'capabilities' || path[2] === 'health'))
   )
   const internalRequest = request.headers.get('authorization') === `Bearer ${internalToken}`
+  let gatewayCredential: GatewayCredentialAuth | null = null
+  const authorization = request.headers.get('authorization') ?? ''
+  if (authorization.startsWith('Bearer subpolar_gw_')) {
+    try {
+      gatewayCredential = await authenticateGatewayCredential(await applicationDatabase(), authorization.slice('Bearer '.length))
+    } catch (error) {
+      if (error instanceof GatewayAuthError) {
+        const status = error.code === 'GATEWAY_TOKEN_REQUIRED' || error.code === 'GATEWAY_TOKEN_INVALID' ? 401 : 403
+        return json({ error: { code: error.code, message: error.message } }, status)
+      }
+      return json({ error: { code: 'GATEWAY_AUTH_UNAVAILABLE', message: 'Gateway authentication unavailable' } }, 503)
+    }
+  }
   let authenticatedUser: PocketBaseUser | null = null
-  if (path[0] === 'api' && !publicApi && !internalRequest) {
+  if (path[0] === 'api' && !publicApi && !internalRequest && !gatewayCredential) {
     authenticatedUser = await authenticateRequest(request)
     if (!authenticatedUser) return json({ message: 'Unauthorized' }, 401)
   }
@@ -1684,6 +1720,30 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
       try { return json(await authConfig()) } catch (error) { console.warn(`Auth information unavailable: ${redactedDiagnostic(error)}`); return json({ message: 'PocketBase is unavailable' }, 503) }
     }
     if (path[2] === 'me' && request.method === 'GET') return json({ user: await authenticateRequest(request) })
+  }
+
+  if (path[1] === 'gateway' && path[2] === 'credentials') {
+    if (!authenticatedUser) return json({ error: { code: 'GATEWAY_OWNER_REQUIRED', message: 'An authenticated owner is required' } }, 401)
+    const client = await applicationDatabase()
+    if (path.length === 3 && request.method === 'GET') return json({ credentials: (await listGatewayCredentials(client, authenticatedUser.id)).map(publicGatewayCredential) })
+    if (path.length === 3 && request.method === 'POST') {
+      const input = await body(request)
+      const permissions = Array.isArray(input.permissions) ? input.permissions.filter((value): value is GatewayPermission => typeof value === 'string') : []
+      const scope = input.scope && typeof input.scope === 'object' && !Array.isArray(input.scope) ? input.scope as Record<string, unknown> : undefined
+      const created = await createGatewayCredential(client, {
+        ownerId: authenticatedUser.id,
+        principal: typeof input.principal === 'string' ? input.principal : '',
+        permissions,
+        scope: { projectIds: Array.isArray(scope?.projectIds) ? scope.projectIds.filter((value): value is string => typeof value === 'string') : [], agentNames: Array.isArray(scope?.agentNames) ? scope.agentNames.filter((value): value is string => typeof value === 'string') : [], sessionIds: Array.isArray(scope?.sessionIds) ? scope.sessionIds.filter((value): value is string => typeof value === 'string') : [] },
+        ...(typeof input.expiresAt === 'number' ? { expiresAt: input.expiresAt } : {}),
+      })
+      return json({ credential: publicGatewayCredential(created.credential), secret: created.secret }, 201)
+    }
+    if (path.length === 5 && path[4] === 'rotate' && request.method === 'POST') {
+      const rotated = await rotateGatewayCredential(client, authenticatedUser.id, decodeURIComponent(path[3] ?? ''))
+      return rotated ? json({ credential: publicGatewayCredential(rotated.credential), secret: rotated.secret }, 201) : json({ error: { code: 'GATEWAY_CREDENTIAL_NOT_FOUND', message: 'Gateway credential not found' } }, 404)
+    }
+    if (path.length === 4 && request.method === 'DELETE') return json({ ok: await revokeGatewayCredential(client, authenticatedUser.id, decodeURIComponent(path[3] ?? '')) })
   }
 
   if (path[1] === 'agents' && authenticatedUser) {
@@ -2099,6 +2159,14 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     return json(Object.fromEntries(owned.map((session) => [session.id, { type: active.get(activeKey(authenticatedUser!.id, session.id))?.record.userId === authenticatedUser!.id ? 'busy' : 'idle' }])))
   }
   if (request.method === 'GET' && url.pathname === '/api/sse/stream') {
+    if (gatewayCredential) {
+      const denied = (() => { try { assertGatewayAccess(gatewayCredential!, 'events', { ...(url.searchParams.get('sessionId') ? { sessionId: url.searchParams.get('sessionId')! } : {}) }); return null } catch (error) { return gatewayErrorResponse(error) } })()
+      if (denied) return denied
+    }
+    const eventUserId = authenticatedUser?.id ?? gatewayCredential?.ownerId
+    if (!eventUserId) return json({ error: { code: 'GATEWAY_OWNER_REQUIRED', message: 'An authenticated owner is required' } }, 401)
+    const after = url.searchParams.get('after') ?? request.headers.get('last-event-id')
+    const replay = eventCursor.replay(eventUserId, after)
     let heartbeat: ReturnType<typeof setInterval> | undefined
     let client: SseClient | undefined
     let closed = false
@@ -2112,15 +2180,21 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
           try { controller.close() } catch { /* the consumer may already have cancelled the stream */ }
         }
         client = {
-          userId: authenticatedUser!.id,
+          userId: eventUserId,
           enqueue: (chunk) => {
             if (closed) return
             try { controller.enqueue(chunk) } catch { close() }
           },
           close,
         }
+        if (replay.reset) {
+          client.enqueue(encoder.encode(`event: cursor.reset\nid: ${replay.resetCursor ?? 0}\ndata: ${JSON.stringify({ cursor: replay.resetCursor ?? 0, reason: 'retention' })}\n\n`))
+        }
+        for (const event of replay.events) {
+          client.enqueue(encoder.encode(`id: ${event.id}\ndata: ${JSON.stringify(event.payload)}\n\n`))
+        }
         sseClients.add(client)
-        const connected = [...active.values()].filter((session) => session.record.userId === authenticatedUser!.id).length
+        const connected = [...active.values()].filter((session) => session.record.userId === eventUserId).length
         client.enqueue(encoder.encode(`event: connected\ndata: ${JSON.stringify({ clientId: 'pi-local', connected, total: connected })}\n\n`))
         heartbeat = setInterval(() => client?.enqueue(encoder.encode('event: heartbeat\ndata: {}\n\n')), 30000)
       },
@@ -2176,7 +2250,7 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
 
   if (path[1] === 'subpolar-cli' && path[2] === 'tools' && request.method === 'POST') {
     const input = await body(request)
-    const userId = authenticatedUser?.id
+    const userId = authenticatedUser?.id ?? gatewayCredential?.ownerId
       ?? (internalRequest && typeof input.userId === 'string' ? input.userId : undefined)
       ?? (internalRequest && path[3] === 'register' ? 'system' : undefined)
     if (!userId) return json({ error: 'A user identity is required' }, 401)
@@ -2186,7 +2260,8 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
       const agentName = typeof input.agentName === 'string' ? input.agentName : 'master'
 
       if (path[3] === 'register') {
-        if (!internalRequest) return json({ error: 'Tool registration requires the internal token' }, 403)
+        if (gatewayCredential) assertGatewayAccess(gatewayCredential, 'add', { agentName, ...(typeof input.projectId === 'string' ? { projectId: input.projectId } : {}) })
+        else if (!internalRequest) return json({ error: { code: 'GATEWAY_PERMISSION_DENIED', message: 'Tool registration requires an authorized gateway credential' } }, 403)
         if (typeof input.toolId !== 'string' || typeof input.namespace !== 'string' || typeof input.description !== 'string') return json({ error: 'toolId, namespace, and description are required' }, 400)
         const adapter = input.adapter === 'http' || input.adapter === 'openapi' || input.adapter === 'mcp' ? input.adapter : 'internal'
         const risk = input.risk === 'write' || input.risk === 'delete' || input.risk === 'external' ? input.risk : 'read'
@@ -2207,18 +2282,27 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
         return json({ tool })
       }
 
-      if (path[3] === 'list') return json({ tools: await listToolsForAgent(client, userId, agentName) })
+      if (path[3] === 'list') {
+        if (gatewayCredential) assertGatewayAccess(gatewayCredential, 'list', { agentName })
+        return json({ tools: await listToolsForAgent(client, userId, agentName) })
+      }
       if (path[3] === 'search') {
+        if (gatewayCredential) assertGatewayAccess(gatewayCredential, 'query', { agentName })
         if (typeof input.query !== 'string' || !input.query.trim()) return json({ error: 'A non-empty query is required' }, 400)
         const tools = await searchToolsForAgent(client, userId, agentName, input.query)
         return json({ tools, columns: ['tool', 'description', 'usage'] })
       }
-      if (path[3] === 'describe' && typeof input.toolId === 'string') return json({ tool: await describeToolForAgent(client, userId, agentName, input.toolId) })
+      if (path[3] === 'describe' && typeof input.toolId === 'string') {
+        if (gatewayCredential) assertGatewayAccess(gatewayCredential, 'describe', { agentName })
+        return json({ tool: await describeToolForAgent(client, userId, agentName, input.toolId) })
+      }
       if (path[3] === 'call' && typeof input.toolId === 'string') {
         const sessionId = typeof input.sessionId === 'string' && input.sessionId.trim() ? input.sessionId : undefined
+        if (gatewayCredential) assertGatewayAccess(gatewayCredential, 'call', { agentName, ...(sessionId ? { sessionId } : {}) })
         if (!sessionId || userId === 'system') return json({ error: 'A valid sessionId is required for tool execution' }, 400)
         const persistedSession = await createProjectSessionRepository(client).getSessionById(sessionId)
         if (!persistedSession || persistedSession.userId !== userId) return json({ error: 'Session not found' }, 404)
+        if (gatewayCredential) assertGatewayAccess(gatewayCredential, 'call', { agentName, sessionId, ...(persistedSession.projectId ? { projectId: persistedSession.projectId } : {}) })
         const executionUserId = persistedSession.userId
         if (authenticatedUser && authenticatedUser.id !== executionUserId) return json({ error: 'Session not found' }, 404)
         if (typeof input.userId === 'string' && input.userId !== executionUserId) return json({ error: 'Identity assertion does not match the session owner' }, 403)
@@ -2249,6 +2333,7 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
          return json(redactSensitive(result), result.ok || !('approvalRequired' in result) ? 200 : 202)
       }
       if (path[3] === 'continue' && typeof input.approvalId === 'string') {
+        if (gatewayCredential) assertGatewayAccess(gatewayCredential, 'approvals', { ...(typeof input.sessionId === 'string' ? { sessionId: input.sessionId } : {}) })
         if (userId === 'system') return json({ error: 'An authenticated user is required' }, 401)
         const sessionId = typeof input.sessionId === 'string' ? input.sessionId : undefined
         const session = sessionId ? await createProjectSessionRepository(client).getSessionById(sessionId) : null
@@ -2259,6 +2344,7 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
       }
       return json({ error: 'Unknown tool gateway operation' }, 404)
     } catch (error) {
+      if (error instanceof GatewayAuthError) return json({ error: { code: error.code, message: error.message } }, error.code === 'GATEWAY_PERMISSION_DENIED' || error.code === 'GATEWAY_SCOPE_DENIED' ? 403 : 401)
       console.warn(`Tool gateway request failed: ${redactedDiagnostic(error)}`)
       return json({ error: 'Tool gateway unavailable' }, 503)
     }
@@ -2271,15 +2357,25 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
   }
 
   if (path[1] === 'permission' && request.method === 'GET') {
-    if (!authenticatedUser) return json({ message: 'Unauthorized' }, 401)
+    if (gatewayCredential) {
+      const denied = (() => { try { assertGatewayAccess(gatewayCredential!, 'approvals', { ...(url.searchParams.get('sessionId') ? { sessionId: url.searchParams.get('sessionId')! } : {}) }); return null } catch (error) { return gatewayErrorResponse(error) } })()
+      if (denied) return denied
+    }
+    const permissionUserId = authenticatedUser?.id ?? gatewayCredential?.ownerId
+    if (!permissionUserId) return json({ message: 'Unauthorized' }, 401)
     try {
-      const approvals = await listPendingApprovals(await applicationDatabase(), authenticatedUser.id)
+      const approvals = await listPendingApprovals(await applicationDatabase(), permissionUserId, url.searchParams.get('sessionId') ?? undefined)
       return json(approvals.map((approval) => permissionAskedProperties({ id: approval.id, sessionId: approval.session_id, toolId: approval.tool_id, input: approval.input, reason: approval.reason })))
     } catch (error) { console.warn(`Approval store request failed: ${redactedDiagnostic(error)}`); return json({ message: 'Approval store unavailable' }, 503) }
   }
 
   if (path[1] === 'session' && path[3] === 'permissions' && path[4] && request.method === 'POST') {
-    if (!authenticatedUser) return json({ message: 'Unauthorized' }, 401)
+    if (gatewayCredential) {
+      const denied = gatewayErrorResponse((() => { try { assertGatewayAccess(gatewayCredential!, 'approvals', { sessionId: decodeURIComponent(path[2] ?? '') }); return null } catch (error) { return error } })())
+      if (denied) return denied
+    }
+    const permissionUserId = authenticatedUser?.id ?? gatewayCredential?.ownerId
+    if (!permissionUserId) return json({ message: 'Unauthorized' }, 401)
     const input = await body(request)
     const responseValue = input.response
     if (responseValue !== 'approve' && responseValue !== 'approved' && responseValue !== 'once' && responseValue !== 'always' && responseValue !== 'reject' && responseValue !== 'rejected' && responseValue !== true && responseValue !== false) {
@@ -2290,12 +2386,12 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     const sessionId = decodeURIComponent(path[2] ?? '')
     if (!sessionId) return json({ message: 'Session not found' }, 404)
     const client = await applicationDatabase()
-    const approval = await respondToApproval(client, authenticatedUser.id, decodeURIComponent(path[4]), decision, sessionId)
+    const approval = await respondToApproval(client, permissionUserId, decodeURIComponent(path[4]), decision, sessionId)
     if (!approval) return json({ message: 'Approval not found' }, 404)
     if (!approved) return json({ ok: true, approval })
-    const session = await createProjectSessionRepository(client).getSession(authenticatedUser.id, sessionId)
+    const session = await createProjectSessionRepository(client).getSession(permissionUserId, sessionId)
     if (!session) return json({ ok: true, approval, result: { ok: false, error: { code: 'SESSION_NOT_FOUND', message: 'Session not found' } } }, 404)
-    const result = await continueApprovedTool(client, authenticatedUser.id, approval.id, { sessionId: session.id, cwd: session.directory, callId: crypto.randomUUID() })
+    const result = await continueApprovedTool(client, permissionUserId, approval.id, { sessionId: session.id, cwd: session.directory, callId: crypto.randomUUID() })
     return json({ ok: true, approval, result })
   }
 

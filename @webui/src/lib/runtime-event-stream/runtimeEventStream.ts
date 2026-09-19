@@ -39,6 +39,7 @@ export class EventStream {
   private upstreamConnectedCount: number | null = null
   private upstreamTotalCount: number | null = null
   private lastVisibilityReport: { clientId: string; visible: boolean; activeSessionId: string | null } | null = null
+  private lastEventId = 0
 
   constructor(options: EventStreamOptions = {}) {
     this.transport = options.transport ?? createBrowserEventStreamTransport()
@@ -182,6 +183,7 @@ export class EventStream {
     if (directories.length > 0) {
       url.searchParams.set('directories', directories.join(','))
     }
+    if (this.lastEventId > 0) url.searchParams.set('after', String(this.lastEventId))
     return url.toString()
   }
 
@@ -191,9 +193,10 @@ export class EventStream {
     this.connection = this.transport.open(this.buildUrl(), {
       onOpen: () => this.handleOpen(),
       onError: () => this.handleError(),
-      onMessage: (data) => this.handleMessage(data),
+      onMessage: (data, lastEventId) => this.handleMessage(data, lastEventId),
       onConnected: (data) => this.handleConnected(data),
       onHeartbeat: () => this.markActivity(),
+      onReset: (cursor) => this.handleReset(cursor),
     })
   }
 
@@ -227,13 +230,22 @@ export class EventStream {
     }
   }
 
-  private handleMessage(data: string): void {
+  private handleMessage(data: string, lastEventId?: string): void {
     try {
+      const eventId = Number(lastEventId)
+      if (Number.isSafeInteger(eventId) && eventId > 0 && eventId <= this.lastEventId) return
+      if (Number.isSafeInteger(eventId) && eventId > 0) this.lastEventId = eventId
       this.markActivity()
       this.broadcast(flattenEventEnvelope(JSON.parse(data)))
     } catch {
       this.markActivity()
     }
+  }
+
+  private handleReset(cursor: string): void {
+    const value = Number(cursor)
+    if (Number.isSafeInteger(value) && value >= 0) this.lastEventId = value
+    this.markActivity()
   }
 
   private handleConnected(data: string): void {

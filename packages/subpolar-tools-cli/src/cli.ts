@@ -491,7 +491,8 @@ function approvalPending(payload: unknown): boolean {
 }
 
 async function eventsCommand(parsed: ParsedOptions, base: string, token: string, fetcher: Fetcher, io: CliIo, signal?: AbortSignal): Promise<number> {
-  return withRequest(base, token, parsed.timeout, fetcher, '/api/sse/stream', {
+  const query = parsed.sessionId ? `?sessionId=${encodeURIComponent(parsed.sessionId)}` : ''
+  return withRequest(base, token, parsed.timeout, fetcher, `/api/sse/stream${query}`, {
     method: 'GET',
     headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
   }, async (response) => {
@@ -626,7 +627,8 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
       if (!args[0]) fail('approvals requires list, continue, or reject')
       if (args[0] === 'list') {
         commandArgs('approvals list', args, 1)
-        printResult(io, flags.json, command, await requestJson(base, token, flags.timeout, fetcher, '/api/permission', 'GET', undefined, cancellation.signal), token)
+        const query = flags.sessionId ? `?sessionId=${encodeURIComponent(flags.sessionId)}` : ''
+        printResult(io, flags.json, command, await requestJson(base, token, flags.timeout, fetcher, `/api/permission${query}`, 'GET', undefined, cancellation.signal), token)
         return EXIT_OK
       }
       if (args[0] === 'continue') {

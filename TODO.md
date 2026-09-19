@@ -5,10 +5,10 @@
 Current phase: Phase 0A / Phase 0 foundation
 Current milestone: Milestone A - Dependable Subpolar
 Current branch: main
-Last completed commit: pending — queue, Pi adapter, and E2E contract checkpoint
-Last verified commit: working tree — queue/Pi/E2E checkpoint independently verified with notes
+Last completed commit: pending — cursor replay and scoped gateway credentials checkpoint
+Last verified commit: working tree — cursor/gateway checkpoint independently verified with notes
 Current blockers: full WebUI dependencies are unavailable; the local CLI is still a fixture executor rather than Pi-backed; no disposable E2E harness exists; scoped remote gateway credentials are not implemented
-Next recommended action: commit queue/Pi/E2E checkpoint, then implement cursor replay and scoped gateway credentials
+Next recommended action: commit cursor/gateway checkpoint, then implement attachments and theme/productivity foundations
 
 ## Architecture Decisions
 
@@ -178,6 +178,10 @@ Requirements:
 | impl-queue | P1 durable steering/follow-up queue controls | main composer/bridge scope | COMPLETE - VERIFIED WITH NOTES | Atomic claims, legal transitions, UI/API tests |
 | impl-pi-executor | P0A Pi-backed executor composition | main package scope | COMPLETE - VERIFIED WITH NOTES | 40 package tests; host Pi integration remains open |
 | impl-e2e-harness | P16 disposable WebUI/PocketBase harness | main test-infra scope | COMPLETE - VERIFIED WITH NOTES | Contract smoke/harness scaffolding; live E2E not run |
+| impl-cursor-replay | P0 durable event cursor replay/reconnect | main bridge/event scope | COMPLETE - VERIFIED WITH NOTES | Cursor/replay tests; live reconnect E2E not run |
+| impl-gateway-credentials | P14 scoped remote gateway credentials | main auth/tools scope | COMPLETE - VERIFIED WITH NOTES | 96 server + 19 CLI tests; live remote auth not run |
+| impl-cursor-replay | P0 durable event cursor replay/reconnect | main bridge/event scope | IN PROGRESS | SSE cursor store, Last-Event-ID, replay tests |
+| impl-gateway-credentials | P14 scoped remote gateway credentials | main auth/tools scope | IN PROGRESS | Credential lifecycle, scoped tool CLI auth, tests |
 
 ## Completed Work
 
@@ -191,12 +195,15 @@ Requirements:
 - 8b40180 committed and independently verified as the canonical routing/first-send checkpoint.
 - Phase 1 focused checkpoint independently verified: 87 Vitest tests, 81 Bun server tests, bridge/app typechecks, and direct Vite build passed; full build remains blocked by unrelated settings errors.
 - Queue/Pi/E2E checkpoint independently verified: 40 package tests, 9 queue/bridge/E2E contract tests, atomic queue corrections, and source/build checks pass; live services unavailable.
+- 1b4019a committed and verified as the queue/Pi/E2E checkpoint.
+- Cursor/gateway checkpoint independently verified: 27 focused cursor/credential/CLI tests and 37 package tests pass; live service/E2E unavailable.
 
 ## Known Bugs
 
 - WebUI still has legacy process-global session metadata and Pi lifecycle outside the new package run seam; durable cross-process run recovery is not implemented.
 - WebUI production build has existing TypeScript failures in `IntegrationsSettings.tsx`, `STTSettings.tsx`, and `TTSSettings.tsx`.
 - Cursor replay, attachments, suggestions, and session pagination remain incomplete.
+- Live cursor reconnect and scoped gateway credential deployment remain unverified without PocketBase/WebUI services.
 - Git API/UI and several hooks/tests are orphaned.
 - No disposable WebUI/PocketBase E2E harness exists.
 - `subpolar-cli` currently runs only the explicitly documented local echo fixture; it is not yet a Pi-backed complete headless runtime.
@@ -227,7 +234,6 @@ Requirements:
 
 ## Next Actions
 
-1. Commit this queue/Pi/E2E checkpoint and record its SHA.
-2. Implement durable cursor replay and reconnect recovery.
-3. Implement scoped remote gateway credentials and server-side `subpolar-tools add` authorization.
-4. Continue attachments, suggestions, themes, Git/worktrees, tasks, subagents, memory, browser, voice, and automations in dependency order.
+1. Commit this cursor/gateway checkpoint and record its SHA.
+2. Implement attachments and theme/productivity foundations.
+3. Continue Git/worktrees, tasks, subagents, memory, browser, voice, and automations in dependency order.

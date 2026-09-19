@@ -15,7 +15,8 @@ export interface EventStreamConnection {
 export interface EventStreamTransportHandlers {
   onOpen(): void
   onError(): void
-  onMessage(data: string): void
+  onMessage(data: string, lastEventId?: string): void
+  onReset?(cursor: string): void
   onConnected(data: string): void
   onHeartbeat(): void
 }

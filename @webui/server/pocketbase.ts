@@ -252,6 +252,21 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('approval_id', 'text'),
     field('created_at', 'number', { required: true }),
   ], ['CREATE INDEX idx_tool_call_audit_user_created ON tool_call_audit (user_id, created_at)'])
+
+  await ensureCollection(client, 'gateway_credentials', [
+    field('owner_id', 'text', { required: true }),
+    field('principal', 'text', { required: true }),
+    field('prefix', 'text', { required: true }),
+    field('secret_hash', 'text', { required: true }),
+    field('permissions', 'json', { required: true }),
+    field('project_ids', 'json'),
+    field('agent_names', 'json'),
+    field('session_ids', 'json'),
+    field('created_at', 'number', { required: true }),
+    field('expires_at', 'number'),
+    field('revoked_at', 'number'),
+    field('last_used_at', 'number'),
+  ], ['CREATE UNIQUE INDEX idx_gateway_credentials_prefix ON gateway_credentials (prefix)'])
 }
 
 function escapeFilter(value: string): string {
