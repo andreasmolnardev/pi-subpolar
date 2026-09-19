@@ -25,6 +25,10 @@ export default defineConfig({
         "/api": {
           target: "http://127.0.0.1:4173",
           changeOrigin: true,
+          // The transcript transport uses WebSockets under /api. Without this,
+          // Vite proxies HTTP/SSE requests but leaves the WebSocket handshake
+          // on the frontend server.
+          ws: true,
         },
       },
     },

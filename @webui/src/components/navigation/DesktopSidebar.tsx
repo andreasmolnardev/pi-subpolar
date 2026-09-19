@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDesktop } from "@/hooks/useDesktop";
@@ -10,6 +10,7 @@ import { settingsApi, type AgentToolPolicyEffect } from "@/api/settings";
 import { DEFAULT_USER_PREFERENCES } from "@/api/types/settings";
 import { useAgents } from "@/hooks/usePiHarness";
 import { useSettings } from "@/hooks/useSettings";
+import { useSettingsDialog } from "@/hooks/useSettingsDialog";
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { GENERAL_CHAT_PROJECT_ID } from "@subpolar/shared/utils";
 import {
@@ -24,6 +25,8 @@ import {
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSessionCompletedUnread, useSessionStatusForSession, useSessionStatus } from "@/stores/sessionStatusStore";
+import { Spinner } from "@/components/ui/spinner";
 import { Sidebar, SidebarCollapseToggle } from "@/components/ui/sidebar";
 import {
   DropdownMenu,
@@ -101,13 +104,18 @@ function SidebarNavItem({
   active,
   onClick,
   indent,
+  sessionID,
 }: {
   icon?: React.ElementType;
   label: string;
   active?: boolean;
   onClick?: () => void;
   indent?: boolean;
+  sessionID?: string;
 }) {
+  const status = useSessionStatusForSession(sessionID);
+  const completedUnread = useSessionCompletedUnread(sessionID);
+
   return (
     <button
       type="button"
@@ -121,6 +129,12 @@ function SidebarNavItem({
       )}
     >
       {Icon && <Icon className="h-4 w-4 flex-shrink-0" />}
+      {sessionID && status.type !== "idle" && (
+        <Spinner className="h-3.5 w-3.5 flex-shrink-0 text-primary" />
+      )}
+      {sessionID && status.type === "idle" && completedUnread && (
+        <span className="h-2 w-2 flex-shrink-0 rounded-full bg-primary" aria-label="New message" />
+      )}
       <span className="truncate">{label}</span>
     </button>
   );
@@ -195,13 +209,14 @@ interface Agent {
   icon?: string;
   skills?: string[];
   allowedCommands?: string[];
-  toolAccess?: Array<{ type: "builtin" | "skill" | "cli" | "subpolar"; id: string; permission: "allow" | "ask" | "deny"; command?: string }>;
+  toolAccess?: Array<{ type: "builtin" | "skill" | "cli" | "subpolar"; id: string; permission: "allow" | "ask" | "deny" | "auto"; command?: string }>;
   disable?: boolean;
   [key: string]: unknown;
 }
 
-function policyEffect(permission: "allow" | "ask" | "deny"): AgentToolPolicyEffect {
+function policyEffect(permission: "allow" | "ask" | "deny" | "auto"): AgentToolPolicyEffect {
   if (permission === "ask") return "approval";
+  if (permission === "auto") return "allow";
   return permission;
 }
 
@@ -209,8 +224,8 @@ function subpolarPolicies(agent: Agent) {
   const policies = (agent.toolAccess ?? [])
     .filter((tool) => tool.type === "subpolar")
     .map((tool) => ({ toolId: tool.id, effect: policyEffect(tool.permission) }));
-  if (policies.some((policy) => policy.effect !== "deny") && !policies.some((policy) => policy.toolId === "tools.list")) {
-    return [{ toolId: "tools.list", effect: "allow" as const }, ...policies];
+  if (policies.some((policy) => policy.effect !== "deny") && !policies.some((policy) => policy.toolId === "search-tool")) {
+    return [{ toolId: "search-tool", effect: "allow" as const }, ...policies];
   }
   return policies;
 }
@@ -221,6 +236,7 @@ export function DesktopSidebar() {
   const [collapsed, toggle] = useSidebarCollapsed();
   const { isAuthenticated, isLoading, user } = useAuth();
   const { preferences } = useSettings();
+  const { open: openSettings, setActiveTab } = useSettingsDialog();
   const isDesktop = useDesktop();
 
   const [agentsExpanded, setAgentsExpanded] = useState(true);
@@ -265,17 +281,26 @@ export function DesktopSidebar() {
     return overrideNames ? base.filter((agent) => overrideNames.has(agent.name)) : base;
   }, [hiddenSidebarAgents, projectAgents, selectedSidebarProject?.agentNames, selectedSidebarProject?.hasAgentOverride]);
 
+  const projectMatchesSelected = useCallback((session: { projectId: number | null; directory: string | null }) => {
+    if (selectedSidebarProjectId === String(GENERAL_CHAT_PROJECT_ID)) {
+      return session.projectId === GENERAL_CHAT_PROJECT_ID || session.directory === generalChatDirectory;
+    }
+    return String(session.projectId) === selectedSidebarProjectId || session.directory === selectedSidebarDirectory;
+  }, [generalChatDirectory, selectedSidebarDirectory, selectedSidebarProjectId]);
+
   const selectedProjectSessions = useMemo(() => {
     if (!storedSessions) return [];
     return storedSessions
       .filter((session) => {
-        if (selectedSidebarProjectId === String(GENERAL_CHAT_PROJECT_ID)) {
-          return session.projectId === GENERAL_CHAT_PROJECT_ID || session.directory === generalChatDirectory;
-        }
-        return String(session.projectId) === selectedSidebarProjectId || session.directory === selectedSidebarDirectory;
+        if (session.archived) return false;
+        return projectMatchesSelected(session);
       })
       .slice(0, 5);
-  }, [generalChatDirectory, selectedSidebarDirectory, selectedSidebarProjectId, storedSessions]);
+  }, [projectMatchesSelected, storedSessions]);
+
+  const archivedProjectSessions = useMemo(() => {
+    return (storedSessions ?? []).filter((session) => session.archived && projectMatchesSelected(session)).slice(0, 5);
+  }, [projectMatchesSelected, storedSessions]);
 
   const { data: configs } = useQuery({
     queryKey: ["subpolar-configs"],
@@ -498,20 +523,48 @@ onValueChange={(value) => {
                     key={session.id}
                     label={session.title || session.id}
                     active={isSessionActive(session.id)}
-                    onClick={() => navigate(`/projects/${projectId}/sessions/${encodeURIComponent(session.id)}`)}
+                    onClick={() => {
+                      useSessionStatus.getState().markRead(session.id);
+                      navigate(`/projects/${projectId}/sessions/${encodeURIComponent(session.id)}`);
+                    }}
                     indent
+                    sessionID={session.id}
                   />
                 );
               })}
+            {archivedProjectSessions.length > 0 && (
+              <>
+                <div className="mx-2 my-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="h-px flex-1 bg-border" />
+                  <span>Archived</span>
+                  <span className="h-px flex-1 bg-border" />
+                </div>
+                {archivedProjectSessions.map((session) => {
+                  const projectId = getSessionProjectId(session.directory, session.projectId);
+                  return (
+                    <SidebarNavItem
+                      key={session.id}
+                      label={session.title || session.id}
+                      active={isSessionActive(session.id)}
+                      onClick={() => navigate(`/projects/${projectId}/sessions/${encodeURIComponent(session.id)}`)}
+                      indent
+                    />
+                  );
+                })}
+              </>
+            )}
 
           </SidebarSection>
         </div>
 
         {/* Profile */}
         <div className="border-t border-border mt-auto">
-          <div
+          <button
+            type="button"
+            aria-label="Open account settings"
+            onClick={() => { setActiveTab('account'); openSettings(); }}
             className={cn(
-              "flex items-center gap-3 w-full p-3 hover:bg-accent/50 transition-colors",
+              "flex items-center gap-3 w-full p-3 hover:bg-accent/50 transition-colors text-left",
               collapsed && "justify-center",
             )}
           >
@@ -538,7 +591,7 @@ onValueChange={(value) => {
                 </span>
               </div>
             )}
-          </div>
+          </button>
         </div>
       </Sidebar>
 

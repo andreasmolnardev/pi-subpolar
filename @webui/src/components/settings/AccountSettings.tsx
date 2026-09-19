@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Loader2, User, Lock, LogOut, AlertCircle, CheckCircle, Edit2 } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { changePassword } from '@/lib/auth-client'
+import { UsageSettings } from '@/components/settings/UsageSettings'
 
 export function AccountSettings() {
   const { user, logout } = useAuth()
@@ -180,6 +181,8 @@ export function AccountSettings() {
           </CardContent>
         </Card>
       </div>
+
+      <UsageSettings />
 
       <Card className="border-0 shadow-none">
         <CardHeader className="pb-2 sm:pb-4">

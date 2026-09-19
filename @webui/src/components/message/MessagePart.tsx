@@ -32,6 +32,19 @@ interface AssistantMetadata {
   completed?: number
 }
 
+export function ThinkingBlock({ text, active = false, label = 'Thinking...' }: { text: string; active?: boolean; label?: string }) {
+  return (
+    <details open={false} className="group my-2 text-sm text-muted-foreground">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md py-1 text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
+        <Brain className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className={active ? 'reasoning-text-trail font-medium' : 'font-medium text-muted-foreground'}>{label}</span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
+      </summary>
+      <div className="overflow-hidden whitespace-pre-wrap pl-6 pt-1 text-muted-foreground/90 animate-disclosure-down">{text}</div>
+    </details>
+  )
+}
+
 function formatTime(value?: number): string | undefined {
   return value ? new Date(value).toLocaleTimeString() : undefined
 }
@@ -117,7 +130,6 @@ function TTSButton({ messageId, content, className = "" }: TTSButtonProps) {
 export const MessagePart = memo(function MessagePart({ part, role, allParts, partIndex, onFileClick, onChildSessionClick, messageTextContent, isActiveGenerationStep = false, assistantMetadata }: MessagePartProps) {
   const { preferences } = useSettings()
   const simpleChatMode = preferences?.simpleChatMode ?? false
-  const showReasoning = preferences?.showReasoning ?? false
   const copyableContent = getCopyableContent(part, allParts)
   const isMobile = useMobile()
   
@@ -138,19 +150,8 @@ export const MessagePart = memo(function MessagePart({ part, role, allParts, par
       if (simpleChatMode && part.tool !== 'task') return null
       return <ToolCallPart part={part} onFileClick={onFileClick} onChildSessionClick={onChildSessionClick} />
     case 'reasoning':
-      if (simpleChatMode || !showReasoning) return null
-      return (
-        <details open={isActiveGenerationStep} className="group my-2 text-sm text-muted-foreground">
-          <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md py-1 text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
-            <Brain className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span className={isActiveGenerationStep ? 'reasoning-text-trail font-medium' : 'font-medium text-muted-foreground'}>Reasoning</span>
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
-          </summary>
-          <div className="overflow-hidden whitespace-pre-wrap pl-6 pt-1 text-muted-foreground/90 animate-disclosure-down">
-            {part.text}
-          </div>
-        </details>
-      )
+      if (simpleChatMode) return null
+      return <ThinkingBlock text={part.text || ''} active={isActiveGenerationStep} />
     case 'snapshot':
       if (simpleChatMode) return null
       return (

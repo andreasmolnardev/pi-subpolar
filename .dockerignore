@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+!.env.example
+node_modules
+@webui/node_modules
+@webui/dist
+pocketbase/pb_data
+.DS_Store
+*.log

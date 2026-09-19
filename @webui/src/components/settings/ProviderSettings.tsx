@@ -10,14 +10,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { Loader2, Check, X, Shield, ChevronDown, ChevronRight, Key, Search, Pencil, Trash2, Plus } from 'lucide-react'
-import { providerCredentialsApi, getProviders, customProvidersApi } from '@/api/providers'
-import type { CustomProviderConfig, PiProviderApiType, Provider } from '@/api/providers'
-import { oauthApi, type OAuthAuthorizeResponse } from '@/api/oauth'
+import { Loader2, Check, X, Shield, Search, Pencil, Trash2, Plus, RefreshCw } from 'lucide-react'
+import { providerAccountsApi, getProviders, customProvidersApi } from '@/api/providers'
+import type { CustomProviderConfig, PiProviderApiType, Provider, ProviderCatalogProvider, ProviderInstance, ProviderAuthMethodKind } from '@/api/providers'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { OAuthAuthorizeDialog } from './OAuthAuthorizeDialog'
-import { OAuthCallbackDialog } from './OAuthCallbackDialog'
-import { ApiKeyDialog } from '@/components/model/ApiKeyDialog'
+import { ApiKeyDialog, type ProviderLoginTarget } from '@/components/model/ApiKeyDialog'
 import { invalidateProviderCaches } from '@/lib/queryInvalidation'
 import { useSettings } from '@/hooks/useSettings'
 import type { DefaultModels } from '@/api/types/settings'
@@ -182,6 +179,12 @@ function formatModels(provider: CustomProviderConfig | null): string {
   return provider?.models.map((model) => model.id).join('\n') ?? ''
 }
 
+function safeEditorHeaders(headers: Record<string, string> | undefined): string {
+  const sensitive = /(api[-_ ]?key|authorization|credential|password|refresh|secret|token|cookie)/i
+  const safe = Object.fromEntries(Object.entries(headers ?? {}).map(([key, value]) => [key, sensitive.test(key) ? '' : value]))
+  return JSON.stringify(safe, null, 2)
+}
+
 function CustomProviderDialog({
   open,
   provider,
@@ -199,17 +202,16 @@ function CustomProviderDialog({
   const [name, setName] = useState(provider?.name ?? '')
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? '')
   const [api, setApi] = useState<PiProviderApiType>(provider?.api ?? 'openai-completions')
-  const [apiKey, setApiKey] = useState(provider?.apiKey ?? '')
+  const [apiKey, setApiKey] = useState('')
   const [authHeader, setAuthHeader] = useState(provider?.authHeader ?? false)
   const [models, setModels] = useState(formatModels(provider))
-  const [headers, setHeaders] = useState(JSON.stringify(provider?.headers ?? {}, null, 2))
+  const [headers, setHeaders] = useState(safeEditorHeaders(provider?.headers))
   const [error, setError] = useState<string | null>(null)
   const [preset, setPreset] = useState<CustomProviderPreset>('none')
   const [isDiscovering, setIsDiscovering] = useState(false)
 
   useEffect(() => {
     if (provider || preset !== 'lmstudio') return
-
     setId(LM_STUDIO_PRESET.id)
     setName(LM_STUDIO_PRESET.name)
     setBaseUrl(LM_STUDIO_PRESET.baseUrl)
@@ -297,9 +299,7 @@ function CustomProviderDialog({
             <div className="space-y-2">
               <Label>Preset</Label>
               <Select value={preset} onValueChange={(value) => setPreset(value as CustomProviderPreset)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">None</SelectItem>
                   <SelectItem value="lmstudio">LM Studio</SelectItem>
@@ -327,22 +327,16 @@ function CustomProviderDialog({
             <div className="space-y-2">
               <Label>API Type</Label>
               <Select value={api} onValueChange={(value) => setApi(value as PiProviderApiType)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PI_PROVIDER_API_TYPES.map((apiType) => (
-                    <SelectItem key={apiType} value={apiType}>{apiType}</SelectItem>
-                  ))}
-                </SelectContent>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{PI_PROVIDER_API_TYPES.map((apiType) => <SelectItem key={apiType} value={apiType}>{apiType}</SelectItem>)}</SelectContent>
               </Select>
             </div>
           </div>
 
           <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
             <div className="space-y-2">
-              <Label htmlFor="custom-provider-api-key">{preset === 'lmstudio' ? 'Bearer Token' : 'API Key or Config Value'}</Label>
-              <Input id="custom-provider-api-key" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={preset === 'lmstudio' ? 'Optional LM Studio token' : '$MY_PROVIDER_API_KEY'} />
+              <Label htmlFor="custom-provider-api-key">{preset === 'lmstudio' ? 'Bearer Token (optional)' : 'API Key or Config Value (optional)'}</Label>
+              <Input id="custom-provider-api-key" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={preset === 'lmstudio' ? 'Enter only when needed' : '$MY_PROVIDER_API_KEY'} autoComplete="new-password" />
             </div>
             <div className="flex items-center gap-2 pb-2">
               <Switch checked={authHeader} onCheckedChange={setAuthHeader} />
@@ -353,7 +347,7 @@ function CustomProviderDialog({
           <div className="grid gap-2 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="custom-provider-models">Model IDs</Label>
-              <Textarea id="custom-provider-models" value={models} onChange={(event) => setModels(event.target.value)} placeholder={preset === 'lmstudio' ? 'Fetched from LM Studio on save' : 'model-one&#10;model-two'} className="min-h-28" disabled={preset === 'lmstudio'} />
+              <Textarea id="custom-provider-models" value={models} onChange={(event) => setModels(event.target.value)} placeholder={preset === 'lmstudio' ? 'Fetched from LM Studio on save' : 'model-one\nmodel-two'} className="min-h-28" disabled={preset === 'lmstudio'} />
             </div>
             <div className="space-y-2">
               <Label htmlFor="custom-provider-headers">Headers JSON</Label>
@@ -376,19 +370,43 @@ function CustomProviderDialog({
   )
 }
 
+function statusLabel(state: ProviderInstance['status']['state']): string {
+  if (state === 'authenticated') return 'Connected'
+  if (state === 'expired') return 'Expired'
+  if (state === 'error') return 'Needs attention'
+  if (state === 'unconfigured') return 'Not connected'
+  return 'Unknown'
+}
+
+function statusBadge(instance: ProviderInstance) {
+  const connected = instance.status.configured
+  return (
+    <Badge variant={connected ? 'default' : 'secondary'} className={connected ? 'bg-green-600 hover:bg-green-700 shrink-0' : 'shrink-0'}>
+      {connected ? <Check className="h-3 w-3 mr-1" /> : <X className="h-3 w-3 mr-1" />}
+      {statusLabel(instance.status.state)}
+    </Badge>
+  )
+}
+
+function loginTarget(provider: ProviderCatalogProvider, instance: ProviderInstance, preferredKind?: ProviderAuthMethodKind): ProviderLoginTarget {
+  const methods = preferredKind
+    ? [...provider.authMethods].sort((left) => left.kind === preferredKind ? -1 : 1)
+    : provider.authMethods
+  return {
+    providerId: provider.id,
+    instanceId: instance.instanceId,
+    name: provider.name,
+    methods,
+    env: [],
+  }
+}
+
 export function ProviderSettings() {
-  const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
-  const [oauthDialogOpen, setOauthDialogOpen] = useState(false)
-  const [oauthCallbackDialogOpen, setOauthCallbackDialogOpen] = useState(false)
-  const [oauthResponse, setOauthResponse] = useState<OAuthAuthorizeResponse | null>(null)
-  const [oauthMethodIndex, setOauthMethodIndex] = useState<number | null>(null)
-  const [connectedExpanded, setConnectedExpanded] = useState(false)
-  const [availableExpanded, setAvailableExpanded] = useState(false)
-  const [availableSearch, setAvailableSearch] = useState('')
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false)
-  const [apiKeyProvider, setApiKeyProvider] = useState<Provider | null>(null)
+  const [apiKeyTarget, setApiKeyTarget] = useState<ProviderLoginTarget | null>(null)
   const [apiKeyMode, setApiKeyMode] = useState<'add' | 'edit'>('add')
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<ProviderInstance | null>(null)
+  const [availableSearch, setAvailableSearch] = useState('')
   const [customProviderDialogOpen, setCustomProviderDialogOpen] = useState(false)
   const [customProviderTarget, setCustomProviderTarget] = useState<CustomProviderConfig | null>(null)
   const [customProviderDeleteTarget, setCustomProviderDeleteTarget] = useState<string | null>(null)
@@ -397,29 +415,21 @@ export function ProviderSettings() {
   const { data: providersData, isLoading: providersLoading } = useQuery({
     queryKey: ['providers'],
     queryFn: () => getProviders(),
-    staleTime: 300000,
+    staleTime: 30000,
   })
+  const providers = providersData?.providers ?? []
+  const catalogProviders = providersData?.catalog?.providers ?? []
 
-  const providers = providersData?.providers
-
-  const { data: credentialsList, isLoading: credentialsLoading } = useQuery({
-    queryKey: ['provider-credentials'],
-    queryFn: () => providerCredentialsApi.list(),
-  })
-
-  const { data: authMethods } = useQuery({
-    queryKey: ['provider-auth-methods'],
-    queryFn: () => oauthApi.getAuthMethods(),
-  })
-
-  const { data: customProviders = [] } = useQuery({
+  const { data: customProviders = [], isLoading: customProvidersLoading } = useQuery({
     queryKey: ['custom-providers'],
     queryFn: () => customProvidersApi.list(),
+    retry: false,
   })
 
-  const deleteCredentialMutation = useMutation({
-    mutationFn: (providerId: string) => providerCredentialsApi.delete(providerId),
+  const deleteAccountMutation = useMutation({
+    mutationFn: (instanceId: string) => providerAccountsApi.delete(instanceId),
     onSuccess: () => {
+      setDeleteTarget(null)
       invalidateProviderCaches(queryClient)
     },
   })
@@ -443,128 +453,44 @@ export function ProviderSettings() {
     },
   })
 
-  const handleDeleteCredential = (providerId: string) => {
-    setDeleteTarget(providerId)
-  }
-
-  const handleDeleteConfirm = () => {
-    if (deleteTarget) {
-      deleteCredentialMutation.mutate(deleteTarget)
-      setDeleteTarget(null)
-    }
-  }
-
-  const handleDeleteCancel = () => {
-    setDeleteTarget(null)
-  }
-
-  const handleAddCustomProvider = useCallback(() => {
-    setCustomProviderTarget(null)
-    setCustomProviderDialogOpen(true)
-  }, [])
-
-  const handleEditCustomProvider = useCallback((provider: CustomProviderConfig) => {
-    setCustomProviderTarget(provider)
-    setCustomProviderDialogOpen(true)
-  }, [])
-
-  const handleOAuthAuthorize = (response: OAuthAuthorizeResponse, methodIndex: number) => {
-    setOauthResponse(response)
-    setOauthMethodIndex(methodIndex)
-    setOauthDialogOpen(false)
-    setOauthCallbackDialogOpen(true)
-  }
-
-  const handleOAuthDialogClose = () => {
-    setOauthDialogOpen(false)
-    setOauthMethodIndex(null)
-    setSelectedProvider(null)
-  }
-
-  const handleOAuthSuccess = () => {
-    invalidateProviderCaches(queryClient)
-    setOauthCallbackDialogOpen(false)
-    setOauthResponse(null)
-    setOauthMethodIndex(null)
-    setSelectedProvider(null)
-  }
-
-  const supportsOAuth = useCallback((providerId: string) => {
-    const methods = authMethods?.[providerId] || []
-    return methods.some(method => method.type === 'oauth')
-  }, [authMethods])
-
-  const hasCredentials = useCallback((providerId: string) => {
-    return credentialsList?.includes(providerId) || providers?.some((provider) => provider.id === providerId && provider.isConnected) || false
-  }, [credentialsList, providers])
-
-  const oauthProviders = useMemo(() => {
-    if (!providers || !authMethods) return []
-    const oauth = providers.filter(provider => supportsOAuth(provider.id))
-    return oauth.slice().sort((a, b) => {
-      const aConnected = hasCredentials(a.id) ? 1 : 0
-      const bConnected = hasCredentials(b.id) ? 1 : 0
-      return bConnected - aConnected
-    })
-  }, [providers, authMethods, supportsOAuth, hasCredentials])
-
-  const apiKeyProviders = useMemo(() => {
-    if (!providers || !authMethods) return { connected: [], available: [] }
-    const nonOAuthProviders = providers.filter(provider => !supportsOAuth(provider.id))
-    const connected = nonOAuthProviders.filter(provider => hasCredentials(provider.id))
-    const available = nonOAuthProviders.filter(provider => !hasCredentials(provider.id))
-    return { connected, available }
-  }, [providers, authMethods, supportsOAuth, hasCredentials])
-
-  const conversationModelProviders = useMemo(() => {
-    return providers?.filter((provider) => hasCredentials(provider.id)) ?? []
-  }, [providers, hasCredentials])
-
-  const filteredAvailableProviders = useMemo(() => {
-    if (!availableSearch.trim()) return apiKeyProviders.available
-    const search = availableSearch.toLowerCase()
-    return apiKeyProviders.available.filter(provider => 
-      provider.name.toLowerCase().includes(search) || 
-      provider.id.toLowerCase().includes(search)
-    )
-  }, [apiKeyProviders.available, availableSearch])
-
-  const selectedProviderName = useMemo(() => {
-    if (!selectedProvider) return ''
-    return providers?.find(p => p.id === selectedProvider)?.name || selectedProvider
-  }, [selectedProvider, providers])
-
-  const handleAddApiKey = useCallback((provider: Provider) => {
-    setApiKeyProvider(provider)
-    setApiKeyMode('add')
+  const openLogin = useCallback((provider: ProviderCatalogProvider, instance: ProviderInstance, mode: 'add' | 'edit') => {
+    setApiKeyTarget(loginTarget(provider, instance, mode === 'edit' ? instance.authMethod : undefined))
+    setApiKeyMode(mode)
     setApiKeyDialogOpen(true)
   }, [])
 
-  const handleEditApiKey = useCallback((provider: Provider) => {
-    setApiKeyProvider(provider)
-    setApiKeyMode('edit')
-    setApiKeyDialogOpen(true)
-  }, [])
+  const filteredProviders = useMemo(() => {
+    const search = availableSearch.trim().toLowerCase()
+    if (!search) return catalogProviders
+    return catalogProviders.filter((provider) => (
+      provider.name.toLowerCase().includes(search) || provider.id.toLowerCase().includes(search) ||
+      provider.instances.some((instance) => instance.label.toLowerCase().includes(search) || instance.email?.toLowerCase().includes(search))
+    ))
+  }, [availableSearch, catalogProviders])
+
+  const connectedInstances = useMemo(
+    () => catalogProviders.flatMap((provider) => provider.instances.filter((instance) => instance.status.configured)),
+    [catalogProviders],
+  )
+
+  const conversationProviders = useMemo(
+    () => providers.filter((provider) => provider.isConnected),
+    [providers],
+  )
 
   const handleApiKeySuccess = useCallback(() => {
     setApiKeyDialogOpen(false)
-    setApiKeyProvider(null)
+    setApiKeyTarget(null)
     invalidateProviderCaches(queryClient)
   }, [queryClient])
 
   const handleApiKeyDialogClose = useCallback((open: boolean) => {
     setApiKeyDialogOpen(open)
-    if (!open) {
-      setApiKeyProvider(null)
-    }
+    if (!open) setApiKeyTarget(null)
   }, [])
 
-  if (providersLoading || credentialsLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    )
+  if (providersLoading || customProvidersLoading) {
+    return <div className="flex items-center justify-center py-12"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
   }
 
   return (
@@ -575,371 +501,121 @@ export function ProviderSettings() {
       </TabsList>
 
       <TabsContent value="defaults" className="px-0">
-        <DefaultModelsSettings providers={providers ?? []} conversationProviders={conversationModelProviders} />
+        <DefaultModelsSettings providers={providers} conversationProviders={conversationProviders} />
       </TabsContent>
 
       <TabsContent value="providers" className="px-0">
         <div className="space-y-8">
-      <div className="space-y-4">
-        <div>
-          <h2 className="text-lg font-semibold text-foreground mb-2">OAuth Providers</h2>
-          <p className="text-sm text-muted-foreground">
-            Connect to AI providers using OAuth authentication.
-          </p>
-        </div>
-
-      {oauthProviders.length === 0 ? (
-        <Card className="bg-card border-border">
-          <CardContent className="pt-6">
-            <p className="text-sm text-muted-foreground text-center">
-              No OAuth-capable providers available.
-            </p>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid gap-4">
-          {oauthProviders.map((provider) => {
-            const hasKey = hasCredentials(provider.id)
-            const modelCount = Object.keys(provider.models || {}).length
-
-            return (
-              <Card key={provider.id} className="bg-card border-border">
-                <CardHeader className="p-2">
-                  <div className="flex flex-col gap-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <CardTitle className="text-base">
-                        {provider.name || provider.id}
-                      </CardTitle>
-                      {hasKey ? (
-                        <Badge variant="default" className="bg-green-600 hover:bg-green-700 shrink-0">
-                          <Check className="h-3 w-3 mr-1" />
-                          Connected
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary" className="shrink-0">
-                          <X className="h-3 w-3 mr-1" />
-                          Not Connected
-                        </Badge>
-                      )}
-                    </div>
-                    <CardDescription>
-                      {modelCount > 0 && (
-                        <span className="text-xs">{modelCount} model{modelCount !== 1 ? 's' : ''}</span>
-                      )}
-                    </CardDescription>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        size="sm"
-                        variant={hasKey ? 'outline' : 'default'}
-                        onClick={() => {
-                          setSelectedProvider(provider.id)
-                          setOauthDialogOpen(true)
-                        }}
-                      >
-                        <Shield className="h-4 w-4 mr-1" />
-                        {hasKey ? 'Reconnect' : 'Connect'}
-                      </Button>
-                      {hasKey && (
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          onClick={() => handleDeleteCredential(provider.id)}
-                          disabled={deleteCredentialMutation.isPending}
-                        >
-                          Disconnect
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                </CardHeader>
-              </Card>
-            )
-          })}
-        </div>
-      )}
-
-      {selectedProvider && (
-        <OAuthAuthorizeDialog
-          providerId={selectedProvider}
-          providerName={selectedProviderName}
-          methods={authMethods?.[selectedProvider] || []}
-          open={oauthDialogOpen}
-          onOpenChange={handleOAuthDialogClose}
-          onSuccess={handleOAuthAuthorize}
-        />
-      )}
-
-      {selectedProvider && oauthResponse && oauthMethodIndex !== null && (
-        <OAuthCallbackDialog
-          providerId={selectedProvider}
-          providerName={selectedProviderName}
-          authResponse={oauthResponse}
-          methodIndex={oauthMethodIndex}
-          open={oauthCallbackDialogOpen}
-          onOpenChange={setOauthCallbackDialogOpen}
-          onSuccess={handleOAuthSuccess}
-        />
-      )}
-      </div>
-
-      <div className="space-y-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold text-foreground mb-2">Custom Providers</h2>
-            <p className="text-sm text-muted-foreground">
-              Manage custom Pi-compatible provider endpoints.
-            </p>
-          </div>
-          <Button size="sm" onClick={handleAddCustomProvider}>
-            <Plus className="h-4 w-4 mr-1" />
-            Add
-          </Button>
-        </div>
-
-        {customProviders.length === 0 ? (
-          <Card className="bg-card border-border">
-            <CardContent className="pt-6">
-              <p className="text-sm text-muted-foreground text-center">
-                No custom providers configured.
-              </p>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid gap-2">
-            {customProviders.map((provider) => (
-              <Card key={provider.id} className="bg-card border-border">
-                <CardHeader className="p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <CardTitle className="text-sm truncate">{provider.name}</CardTitle>
-                      <CardDescription className="text-xs truncate">
-                        {provider.id} · {provider.models.length} model{provider.models.length !== 1 ? 's' : ''} · {provider.api}
-                      </CardDescription>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Button size="sm" variant="ghost" onClick={() => handleEditCustomProvider(provider)} className="h-8 w-8 p-0">
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setCustomProviderDeleteTarget(provider.id)}
-                        disabled={deleteCustomProviderMutation.isPending}
-                        className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                </CardHeader>
-              </Card>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="space-y-4">
-        <div>
-          <h2 className="text-lg font-semibold text-foreground mb-2">API Keys</h2>
-          <p className="text-sm text-muted-foreground">
-            Manage API keys for AI providers.
-          </p>
-        </div>
-
-        <div className="space-y-3">
-          <button
-            onClick={() => setConnectedExpanded(!connectedExpanded)}
-            className="flex items-center gap-2 w-full text-left py-2 px-1 hover:bg-accent/50 rounded-md transition-colors"
-          >
-            {connectedExpanded ? (
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-            )}
-            <span className="font-medium text-sm">Connected</span>
-            <Badge variant="secondary" className="ml-auto">
-              {apiKeyProviders.connected.length}
-            </Badge>
-          </button>
-
-          {connectedExpanded && (
-            <div className="pl-6 space-y-2">
-              {apiKeyProviders.connected.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-2">
-                  No providers configured. Add an API key below to get started.
+          <section className="space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-foreground mb-2">Provider Accounts</h2>
+                <p className="text-sm text-muted-foreground">
+                  Each account is a separate provider instance. Credentials stay on the server and are never displayed.
                 </p>
-              ) : (
-                apiKeyProviders.connected.map((provider) => {
-                  const modelCount = Object.keys(provider.models || {}).length
-                  return (
-                    <Card key={provider.id} className="bg-card border-border">
-                      <CardHeader className="p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex-1 min-w-0">
-                            <CardTitle className="text-sm truncate">
-                              {provider.name || provider.id}
-                            </CardTitle>
-                            {modelCount > 0 && (
-                              <CardDescription className="text-xs">
-                                {modelCount} model{modelCount !== 1 ? 's' : ''}
-                              </CardDescription>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <Badge variant="default" className="bg-green-600 hover:bg-green-700 shrink-0 text-xs">
-                              <Check className="h-3 w-3 mr-1" />
-                              Connected
-                            </Badge>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleEditApiKey(provider)}
-                              className="h-8 w-8 p-0"
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleDeleteCredential(provider.id)}
-                              disabled={deleteCredentialMutation.isPending}
-                              className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        </div>
-                      </CardHeader>
-                    </Card>
-                  )
-                })
-              )}
+              </div>
+              <Badge variant="secondary">{connectedInstances.length} connected</Badge>
             </div>
-          )}
-        </div>
 
-        <div className="space-y-3">
-          <button
-            onClick={() => setAvailableExpanded(!availableExpanded)}
-            className="flex items-center gap-2 w-full text-left py-2 px-1 hover:bg-accent/50 rounded-md transition-colors"
-          >
-            {availableExpanded ? (
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input placeholder="Search providers or accounts..." value={availableSearch} onChange={(event) => setAvailableSearch(event.target.value)} className="pl-9" autoComplete="off" />
+            </div>
+
+            {filteredProviders.length === 0 ? (
+              <Card className="bg-card border-border"><CardContent className="pt-6"><p className="text-sm text-muted-foreground text-center">No providers available.</p></CardContent></Card>
             ) : (
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-            )}
-            <span className="font-medium text-sm">Available Providers</span>
-            <Badge variant="secondary" className="ml-auto">
-              {apiKeyProviders.available.length}
-            </Badge>
-          </button>
-
-          {availableExpanded && (
-            <div className="pl-6 space-y-3">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search providers..."
-                  value={availableSearch}
-                  onChange={(e) => setAvailableSearch(e.target.value)}
-                  className="pl-9 md:text-sm"
-                  autoComplete="off"
-                />
-              </div>
-
-              <div className="space-y-2 max-h-64 overflow-y-auto scrollbar-thin pt-4 pb-1 pr-1 [mask-image:linear-gradient(to_bottom,transparent,black_16px,black)]">
-                {filteredAvailableProviders.length === 0 ? (
-                  <p className="text-sm text-muted-foreground py-2">
-                    {availableSearch ? 'No providers match your search.' : 'No available providers.'}
-                  </p>
-                ) : (
-                  filteredAvailableProviders.map((provider, index) => {
-                    const modelCount = Object.keys(provider.models || {}).length
-                    return (
-                      <div key={provider.id} className={`flex items-center justify-between gap-2 py-1.5 px-2 rounded-md hover:bg-accent/80 transition-colors ${index % 2 === 1 ? 'bg-accent/30' : ''}`}>
-                        <div className="flex-1 min-w-0">
-                          <span className="text-sm truncate block">
-                            {provider.name || provider.id}
-                          </span>
-                          {modelCount > 0 && (
-                            <span className="text-xs text-muted-foreground">
-                              {modelCount} model{modelCount !== 1 ? 's' : ''}
-                            </span>
-                          )}
+              <div className="grid gap-4">
+                {filteredProviders.map((provider) => (
+                  <Card key={provider.id} className="bg-card border-border">
+                    <CardHeader className="p-4 pb-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <CardTitle className="text-base">{provider.name}</CardTitle>
+                          <CardDescription className="text-xs mt-1">{provider.instances.length} instance{provider.instances.length !== 1 ? 's' : ''}</CardDescription>
                         </div>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => handleAddApiKey(provider)}
-                          className="h-7 px-2"
-                        >
-                          <Key className="h-3.5 w-3.5 mr-1" />
-                          Add Key
-                        </Button>
+                        <div className="flex flex-wrap justify-end gap-1">
+                          {provider.authMethods.map((method) => <Badge key={method.kind} variant="outline" className="text-xs">{method.label}</Badge>)}
+                        </div>
                       </div>
-                    )
-                  })
-                )}
+                    </CardHeader>
+                    <CardContent className="p-4 pt-0 space-y-3">
+                      {provider.instances.map((instance) => (
+                        <div key={instance.instanceId} className="rounded-md border border-border p-3">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium">{instance.label}</span>
+                                {statusBadge(instance)}
+                              </div>
+                              {instance.email && <p className="text-xs text-muted-foreground mt-1">{instance.email}</p>}
+                              {instance.status.label && <p className="text-xs text-muted-foreground mt-1">Source: {instance.status.label}</p>}
+                            </div>
+                            <div className="flex flex-wrap gap-2 shrink-0">
+                              <Button size="sm" variant={instance.status.configured ? 'outline' : 'default'} onClick={() => openLogin(provider, instance, 'edit')}>
+                                {instance.status.configured ? <RefreshCw className="h-3.5 w-3.5 mr-1" /> : <Shield className="h-3.5 w-3.5 mr-1" />}
+                                {instance.status.configured ? 'Reconnect' : 'Login'}
+                              </Button>
+                              {instance.source === 'pocketbase' && (
+                                <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(instance)} disabled={deleteAccountMutation.isPending}>
+                                  <Trash2 className="h-3.5 w-3.5 mr-1" /> Disconnect
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      <Button size="sm" variant="outline" onClick={() => openLogin(provider, { id: provider.id, instanceId: provider.id, providerId: provider.id, label: provider.name, source: 'runtime', status: provider.authStatus }, 'add')}>
+                        <Plus className="h-3.5 w-3.5 mr-1" /> Add another account
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ))}
               </div>
+            )}
+          </section>
+
+          <section className="space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-foreground mb-2">Custom Providers</h2>
+                <p className="text-sm text-muted-foreground">Manage custom Pi-compatible provider endpoints.</p>
+              </div>
+              <Button size="sm" onClick={() => { setCustomProviderTarget(null); setCustomProviderDialogOpen(true) }}><Plus className="h-4 w-4 mr-1" /> Add</Button>
             </div>
-          )}
-        </div>
-      </div>
 
-      {apiKeyProvider && (
-        <ApiKeyDialog
-          open={apiKeyDialogOpen}
-          onOpenChange={handleApiKeyDialogClose}
-          provider={{
-            id: apiKeyProvider.id,
-            name: apiKeyProvider.name,
-            api: apiKeyProvider.api,
-            env: apiKeyProvider.env || [],
-            npm: apiKeyProvider.npm,
-            models: Object.entries(apiKeyProvider.models || {}).map(([id, model]) => ({
-              id,
-              name: model.name || id,
-            })),
-            source: 'builtin',
-            isConnected: hasCredentials(apiKeyProvider.id),
-          }}
-          onSuccess={handleApiKeySuccess}
-          mode={apiKeyMode}
-        />
-      )}
+            {customProviders.length === 0 ? (
+              <Card className="bg-card border-border"><CardContent className="pt-6"><p className="text-sm text-muted-foreground text-center">No custom providers configured.</p></CardContent></Card>
+            ) : (
+              <div className="grid gap-2">
+                {customProviders.map((provider) => (
+                  <Card key={provider.id} className="bg-card border-border"><CardHeader className="p-3"><div className="flex items-center justify-between gap-2"><div className="min-w-0"><CardTitle className="text-sm truncate">{provider.name}</CardTitle><CardDescription className="text-xs truncate">{provider.id} · {provider.models.length} model{provider.models.length !== 1 ? 's' : ''} · {provider.api}</CardDescription></div><div className="flex items-center gap-1"><Button size="sm" variant="ghost" onClick={() => { setCustomProviderTarget(provider); setCustomProviderDialogOpen(true) }} className="h-8 w-8 p-0"><Pencil className="h-3.5 w-3.5" /></Button><Button size="sm" variant="ghost" onClick={() => setCustomProviderDeleteTarget(provider.id)} disabled={deleteCustomProviderMutation.isPending} className="h-8 w-8 p-0 text-destructive hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /></Button></div></div></CardHeader></Card>
+                ))}
+              </div>
+            )}
+          </section>
 
-      {customProviderDialogOpen && (
-        <CustomProviderDialog
-          key={customProviderTarget?.id ?? 'new'}
-          open={customProviderDialogOpen}
-          provider={customProviderTarget}
-          onOpenChange={(open) => {
-            setCustomProviderDialogOpen(open)
-            if (!open) setCustomProviderTarget(null)
-          }}
-          onSave={(provider) => saveCustomProviderMutation.mutate(provider)}
-          isSaving={saveCustomProviderMutation.isPending}
-        />
-      )}
+          {apiKeyTarget && <ApiKeyDialog open={apiKeyDialogOpen} onOpenChange={handleApiKeyDialogClose} provider={apiKeyTarget} onSuccess={handleApiKeySuccess} mode={apiKeyMode} />}
+          {customProviderDialogOpen && <CustomProviderDialog key={customProviderTarget?.id ?? 'new'} open={customProviderDialogOpen} provider={customProviderTarget} onOpenChange={(open) => { setCustomProviderDialogOpen(open); if (!open) setCustomProviderTarget(null) }} onSave={(provider) => saveCustomProviderMutation.mutate(provider)} isSaving={saveCustomProviderMutation.isPending} />}
 
-      <DeleteDialog
-        open={deleteTarget !== null}
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
-        onConfirm={handleDeleteConfirm}
-        onCancel={handleDeleteCancel}
-        title="Remove Credentials"
-        description={`Are you sure you want to remove credentials for ${deleteTarget || 'this provider'}?`}
-        isDeleting={deleteCredentialMutation.isPending}
-      />
-      <DeleteDialog
-        open={customProviderDeleteTarget !== null}
-        onOpenChange={(open) => !open && setCustomProviderDeleteTarget(null)}
-        onConfirm={() => customProviderDeleteTarget && deleteCustomProviderMutation.mutate(customProviderDeleteTarget)}
-        onCancel={() => setCustomProviderDeleteTarget(null)}
-        title="Delete Custom Provider"
-        description={`Are you sure you want to delete ${customProviderDeleteTarget || 'this custom provider'}?`}
-        isDeleting={deleteCustomProviderMutation.isPending}
-      />
+          <DeleteDialog
+            open={deleteTarget !== null}
+            onOpenChange={(open) => !open && setDeleteTarget(null)}
+            onConfirm={() => { if (deleteTarget) deleteAccountMutation.mutate(deleteTarget.instanceId) }}
+            onCancel={() => setDeleteTarget(null)}
+            title="Disconnect provider account"
+            description={`Are you sure you want to disconnect ${deleteTarget?.label || 'this provider account'}?`}
+            isDeleting={deleteAccountMutation.isPending}
+          />
+          <DeleteDialog
+            open={customProviderDeleteTarget !== null}
+            onOpenChange={(open) => !open && setCustomProviderDeleteTarget(null)}
+            onConfirm={() => customProviderDeleteTarget && deleteCustomProviderMutation.mutate(customProviderDeleteTarget)}
+            onCancel={() => setCustomProviderDeleteTarget(null)}
+            title="Delete Custom Provider"
+            description={`Are you sure you want to delete ${customProviderDeleteTarget || 'this custom provider'}?`}
+            isDeleting={deleteCustomProviderMutation.isPending}
+          />
         </div>
       </TabsContent>
     </Tabs>

@@ -5,7 +5,8 @@ import { useUserBash } from '@/stores/userBashStore'
 import { useSessionStatusForSession } from '@/stores/sessionStatusStore'
 import { usePermissions, useQuestions } from '@/contexts/EventContext'
 import { detectFileReferences } from '@/lib/fileReferences'
-import { Brain, ChevronDown, Code2, ExternalLink, FileText, Globe2, Loader2, Pencil, Search, Terminal, Wrench } from 'lucide-react'
+import { Brain, ChevronDown, Code2, ExternalLink, FileText, Globe2, Loader2, Pencil, Search, Terminal, Wrench, Check, X } from 'lucide-react'
+import { Marker, MarkerContent, MarkerIcon } from '@/components/ui/marker'
 import { CopyButton } from '@/components/ui/copy-button'
 import { getToolSpecificRender } from './FileToolRender'
 
@@ -80,6 +81,19 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
     userBashCommands.has(part.state.input.command)
   const isTodoTool = part.tool === 'todowrite' || part.tool === 'todoread'
   const [expanded, setExpanded] = useState(isUserBashCommand || isTodoTool || (preferences?.expandToolCalls ?? false))
+  const [lazyDetails, setLazyDetails] = useState<{ output?: string; error?: string } | null>(null)
+  const detailsUrl = part.state.status !== 'pending' ? (part.state.metadata as { detailsUrl?: string } | undefined)?.detailsUrl : undefined
+
+  useEffect(() => {
+    if (!expanded || !detailsUrl || lazyDetails) return
+    let cancelled = false
+    fetch(detailsUrl).then(async (response) => {
+      if (!response.ok) return
+      const value = await response.json() as { output?: string; error?: string }
+      if (!cancelled) setLazyDetails(value)
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [detailsUrl, expanded, lazyDetails])
 
   const pendingPermission = getPermissionForCallID(part.callID, part.sessionID)
   const isWaitingPermission = part.state.status === 'running' && !!pendingPermission
@@ -158,7 +172,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
       case 'read':
       case 'write':
       case 'edit':
-        return (input.filePath as string) || null
+        return (input.filePath as string) || (input.path as string) || null
       case 'bash':
         return (input.command as string) || null
       case 'glob':
@@ -187,16 +201,16 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
     if (!isCompactTool) return part.tool
 
     if (part.tool === 'read') {
-      if (part.state.status === 'running') return 'Reading file'
-      if (part.state.status === 'completed') return 'Read File'
-      if (part.state.status === 'error') return 'Read Failed'
-      return 'Preparing read'
+      if (part.state.status === 'running') return 'Reading file...'
+      if (part.state.status === 'completed') return 'Read file'
+      if (part.state.status === 'error') return 'Read file failed'
+      return 'Preparing read...'
     }
 
-    if (part.state.status === 'running') return part.tool === 'glob' ? 'Running glob' : 'Running command'
-    if (part.state.status === 'completed') return part.tool === 'glob' ? 'Ran Glob' : 'Ran Command'
-    if (part.state.status === 'error') return part.tool === 'glob' ? 'Glob Failed' : 'Command Failed'
-    return part.tool === 'glob' ? 'Preparing glob' : 'Preparing command'
+    if (part.state.status === 'running') return part.tool === 'glob' ? 'Running search...' : 'Running command...'
+    if (part.state.status === 'completed') return part.tool === 'glob' ? 'Searched files' : 'Ran command'
+    if (part.state.status === 'error') return part.tool === 'glob' ? 'Search failed' : 'Command failed'
+    return part.tool === 'glob' ? 'Preparing search...' : 'Preparing command...'
   }
 
   if (part.tool === 'task') {
@@ -302,10 +316,31 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
     )
   }
 
-  const toolSpecificRender = getToolSpecificRender(part, onFileClick)
-  if (toolSpecificRender) {
-    return toolSpecificRender
+  // Tool calls are timeline markers rather than full chat bubbles. The details
+  // remain available on demand, while the transcript stays easy to scan.
+  if (['bash', 'read', 'write', 'edit', 'glob', 'grep', 'list', 'apply_patch'].includes(part.tool)) {
+    const icon = part.state.status === 'running' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : part.state.status === 'completed' ? <Check className="h-3.5 w-3.5 text-green-600" /> : part.state.status === 'error' ? <X className="h-3.5 w-3.5 text-red-600" /> : getToolIcon()
+    const label = part.tool === 'edit' || part.tool === 'write'
+      ? part.state.status === 'running' ? 'Editing file...' : part.state.status === 'completed' ? `Edited file${previewText ? ` ${previewText}` : ''}` : part.state.status === 'error' ? 'Edit failed' : 'Preparing edit...'
+      : getCompactToolLabel()
+    return (
+      <details className="group my-1 text-sm" open={part.state.status === 'running'}>
+        <summary className="list-none cursor-pointer [&::-webkit-details-marker]:hidden">
+          <Marker><MarkerIcon>{icon}</MarkerIcon><MarkerContent>{label}</MarkerContent>{previewText && part.tool !== 'bash' && <MarkerContent className="text-xs">{previewText}</MarkerContent>}<ChevronDown className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180" /></Marker>
+        </summary>
+        <div className="space-y-2 pl-6 pt-1 text-muted-foreground">
+          {previewText && <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-all">{previewText}</pre>}
+          {part.state.status === 'running' && <span className="reasoning-text-trail">Running...</span>}
+          {part.state.status === 'completed' && (lazyDetails?.output || ('output' in part.state && part.state.output)) && <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-words">{lazyDetails?.output || ('output' in part.state ? part.state.output : '')}</pre>}
+          {part.state.status === 'error' && <pre className="text-red-600 text-xs whitespace-pre-wrap">{lazyDetails?.error || part.state.error}</pre>}
+          {detailsUrl && !lazyDetails && <span className="text-xs text-muted-foreground">Loading details...</span>}
+        </div>
+      </details>
+    )
   }
+
+  const toolSpecificRender = getToolSpecificRender(part, onFileClick)
+  if (toolSpecificRender) return toolSpecificRender
 
   if (isUserBashCommand) {
     const command = part.state.input.command as string

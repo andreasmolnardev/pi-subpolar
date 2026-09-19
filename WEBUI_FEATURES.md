@@ -1,10 +1,10 @@
 # WebUI Feature Disposition
 
-WebUI targets one local Pi installation. Pi RPC is execution and session authority; browser state is presentation state. No Subpolar backend, PocketBase, SDK runtime, or OpenCode compatibility API is carried over.
+WebUI uses the embedded Pi SDK for execution and session authority, with a Bun bridge providing the application boundary. PocketBase is the identity and application-policy store; browser state remains presentation state. The bridge does not yet carry over the sibling repository's repository, file-service, automation, or integration adapters.
 
 ## Core WebUI
 
-| Source feature | Decision | RPC surface |
+| Source feature | Decision | SDK surface |
 | --- | --- | --- |
 | Chat and live assistant output | Keep | `prompt`, `steer`, `follow_up`, RPC events |
 | Tool-call and tool-result transcript | Keep | `tool_execution_*` events |
@@ -18,28 +18,32 @@ WebUI targets one local Pi installation. Pi RPC is execution and session authori
 | Slash-command discovery and execution | Keep | `get_commands`, `prompt` |
 | Markdown, code, diff, and Mermaid rendering | Keep | Client-only rendering |
 | Responsive/mobile layout | Keep | Client-only |
+| PocketBase email authentication | Keep | `/api/auth`; `pb_auth` HttpOnly cookie |
+| Authenticated application routes | Keep | Bridge auth middleware |
+| PocketBase user preferences | Keep | `user_preferences` collection |
+| Central tool registry and policy checks | Keep | `/api/pi/tools/authorize`; `/api/subpolar-cli/tools/*` |
+| Tool approvals and audit records | Keep | `tool_approvals`; `tool_call_audit` |
 
-## Pi Extensions
+## Subpolar SDK integrations
 
-| Source feature | Decision | Extension/RPC surface |
+| Source feature | Decision | SDK/application surface |
 | --- | --- | --- |
-| Virtual project roots | Extension | Existing `projects.ts`; `/api/extensions/projects` |
-| Agent profiles and tool allowlists | Extension | Existing `agent-profiles.ts`; `/api/extensions/profiles` |
-| Registered-tool browser | Extension | Existing `list-tools.ts`; `/api/extensions/tools` |
-| Session title generation | Extension | Existing `session-title.ts`; `/api/extensions/session-title` |
-| Cross-session history search | Extension | Existing `session-history-search.ts`; `/api/extensions/session-search` |
-| OpenAPI-generated tools | Extension | Existing `openapi-tools.ts`; `/api/extensions/openapi-tools` |
+| Virtual project roots | SDK integration | `@webui/subpolar/extensions/projects.ts`; `/api/extensions/projects` |
+| Agent profiles and tool allowlists | SDK integration | `@webui/subpolar/extensions/agent-profiles.ts`; `/api/extensions/profiles` |
+| Registered-tool browser | SDK integration | `@webui/subpolar/extensions/list-tools.ts`; `/api/extensions/tools` |
+| Session title generation | SDK integration | `@webui/subpolar/extensions/session-title.ts`; `/api/extensions/session-title` |
+| Cross-session history search | SDK integration | `@webui/subpolar/extensions/session-history-search.ts`; `/api/extensions/session-search` |
+| OpenAPI-generated tools | SDK integration | `@webui/subpolar/extensions/openapi-tools.ts`; `/api/extensions/openapi-tools` |
 
-## Left Out
+## Still Left Out
 
 | Source feature | Reason |
 | --- | --- |
-| Login, registration, setup, and multi-user auth | Local Pi process has no Subpolar account boundary |
-| PocketBase persistence and Subpolar database schema | Pi owns session files and local configuration |
+| Sibling repository's full server-side domain schema and repository persistence | Pi still owns conversation/session files; PocketBase currently stores identity, preferences, agents, and tool policy data |
 | Repository cloning, discovery, worktrees, and source-control panel | Requires a repository service; Pi tools can operate on a selected local project |
 | File browser CRUD, uploads, ZIP archives, and virtualized preview | Requires a file service; use Pi `read`, `write`, `edit`, `find`, `grep`, and `ls` through RPC |
 | Automations, schedules, run history, and productivity workspace | Requires a durable scheduler and database, neither supplied by Pi RPC |
-| MCP server management UI | Pi configuration/extension scope; no safe browser CRUD contract selected yet |
+| MCP server management UI | Adapter and browser CRUD work remains; tool routing currently supports internal/HTTP records |
 | Provider API-key and OAuth management | Credentials remain in Pi auth storage and must not pass through browser endpoints |
 | External TTS/STT | Not part of Pi RPC; can be added as separate browser integrations later |
 | Push notifications and service-worker install flow | No server event broker selected |
@@ -48,7 +52,8 @@ WebUI targets one local Pi installation. Pi RPC is execution and session authori
 ## Bridge Rules
 
 - Browser talks only to local WebUI bridge HTTP/WebSocket endpoints.
-- Bridge translates requests to Pi RPC commands and forwards RPC events without exposing stdin/stdout directly.
-- Every extension surface gets a typed bridge endpoint, even when implementation invokes a Pi slash command internally.
+- Bridge translates requests to SDK session operations and forwards typed events without exposing a process or stdin/stdout.
+- Every Subpolar integration gets a typed bridge endpoint; slash commands are dispatched by the in-process SDK.
 - Bridge binds to loopback by default and requires an origin check.
-- Secrets stay in Pi auth/config storage; bridge responses redact them.
+- PocketBase superuser credentials stay server-side; bridge responses never expose them.
+- Pi provider credentials remain in Pi auth/config storage unless an explicit server-side provider adapter is added.

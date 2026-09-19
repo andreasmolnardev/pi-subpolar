@@ -1,5 +1,5 @@
 import type { paths } from './opencode-types'
-import { fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
+import { FetchError, fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
 
 type SessionListResponse = paths['/session']['get']['responses']['200']['content']['application/json']
 type SessionResponse = paths['/session/{sessionID}']['get']['responses']['200']['content']['application/json']
@@ -68,7 +68,7 @@ export class SubpolarClient {
     return this.baseURL.replace(/\/api\/opencode$/, '/api')
   }
 
-  private toLegacySession(session: { id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }) {
+  private toLegacySession(session: { id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; archived?: boolean }) {
     const created = session.createdAt ?? Date.now()
     const updated = session.updatedAt ?? created
     return {
@@ -78,6 +78,7 @@ export class SubpolarClient {
       title: session.title || 'Untitled Session',
       version: 'pi',
       time: { created, updated },
+      archived: session.archived ?? false,
     } as LegacySession
   }
 
@@ -130,6 +131,15 @@ export class SubpolarClient {
     })
   }
 
+  async archiveSession(sessionID: string, archived: boolean) {
+    return fetchWrapper(`${this.nativeBaseURL}/sessions/${sessionID}`, {
+      method: 'PATCH',
+      params: this.getParams(),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archived }),
+    })
+  }
+
   async updateSession(sessionID: string, data: { title?: string }) {
     return fetchWrapper(`${this.nativeBaseURL}/sessions/${sessionID}`, {
       method: 'PATCH',
@@ -156,7 +166,10 @@ export class SubpolarClient {
   }
 
   async listMessages(sessionID: string) {
-    const response = await fetchWrapper<{ messages: Array<{ id: string; role: string; content: string; createdAt: number; metadata?: Record<string, unknown> }> }>(`${this.nativeBaseURL}/sessions/${sessionID}/messages`, { params: this.getParams() })
+    const response = await fetchWrapper<{ messages: Array<{ id?: string; role?: string; content?: string; createdAt?: number; metadata?: Record<string, unknown>; info?: MessageListResponse[number]['info']; parts?: MessageListResponse[number]['parts'] }> }>(`${this.nativeBaseURL}/sessions/${sessionID}/messages`, { params: this.getParams() })
+    if (response.messages.every((message) => message.info && Array.isArray(message.parts))) {
+      return response.messages.map((message) => ({ info: message.info!, parts: message.parts! })) as MessageListResponse
+    }
     return response.messages.map(message => {
       const userMetadata = message.role === 'user' ? getUserMessageMetadata(message.metadata) : {}
       const reasoning = typeof message.metadata?.reasoning === 'string' ? message.metadata.reasoning : ''
@@ -416,9 +429,16 @@ export class SubpolarClient {
   }
 
   async listPendingQuestions() {
-    return fetchWrapper<QuestionListResponse>(`${this.nativeBaseURL}/question`, {
-      params: this.getParams(),
-    })
+    try {
+      return await fetchWrapper<QuestionListResponse>(`${this.nativeBaseURL}/question`, {
+        params: this.getParams(),
+      })
+    } catch (error) {
+      // The bridge receives questions over SSE; older bridge versions do not
+      // expose the optional polling endpoint used for initial reconciliation.
+      if (error instanceof FetchError && error.statusCode === 404) return []
+      throw error
+    }
   }
 
   async listAgents() {

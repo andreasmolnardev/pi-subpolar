@@ -18,7 +18,7 @@ import { buildAgentPromptPreview } from '@/lib/agentPromptPreview'
 const toolAccessSchema = z.object({
   type: z.enum(['builtin', 'cli', 'subpolar']),
   id: z.string().min(1),
-  permission: z.enum(['allow', 'ask', 'deny']),
+  permission: z.enum(['allow', 'ask', 'deny', 'auto']),
   command: z.string().optional(),
 })
 
@@ -96,11 +96,11 @@ function generatedToolSkill(tool: SubpolarTool): SkillFileInfo {
   }
 }
 
-function permissionFrom(value: unknown, fallback: 'allow' | 'ask' | 'deny' = 'deny'): 'allow' | 'ask' | 'deny' {
-  return value === 'allow' || value === 'ask' || value === 'deny' ? value : fallback
+function permissionFrom(value: unknown, fallback: 'allow' | 'ask' | 'deny' | 'auto' = 'deny'): 'allow' | 'ask' | 'deny' | 'auto' {
+  return value === 'allow' || value === 'ask' || value === 'deny' || value === 'auto' ? value : fallback
 }
 
-function policyPermission(effect: AgentToolPolicy['effect']): 'allow' | 'ask' | 'deny' {
+function policyPermission(effect: AgentToolPolicy['effect']): 'allow' | 'ask' | 'deny' | 'auto' {
   if (effect === 'approval') return 'ask'
   return effect
 }
@@ -108,7 +108,7 @@ function policyPermission(effect: AgentToolPolicy['effect']): 'allow' | 'ask' | 
 function buildToolAccess(agent?: Agent, policies: AgentToolPolicy[] = []): ToolAccess[] {
   const configured = agent?.toolAccess?.length ? agent.toolAccess.filter(tool => tool.type !== 'subpolar' && tool.type !== 'skill') as ToolAccess[] : undefined
   const bashPermission = agent?.permission?.bash
-  const piBashPolicy = policies.find(policy => policy.tool_id === 'pi.bash')
+  const piBashPolicy = policies.find(policy => policy.tool_id === 'bash')
   const fallback = [
     { type: 'builtin' as const, id: 'edit', permission: permissionFrom(agent?.permission?.edit, 'allow') },
     { type: 'builtin' as const, id: 'webfetch', permission: permissionFrom(agent?.permission?.webfetch, 'allow') },
@@ -116,7 +116,8 @@ function buildToolAccess(agent?: Agent, policies: AgentToolPolicy[] = []): ToolA
     ...(agent?.allowedCommands || []).map((command): ToolAccess => ({ type: 'cli', id: command, command, permission: 'allow' })),
   ]
   const base = configured ?? fallback
-  const subpolar = policies.filter(policy => !policy.tool_id.startsWith('pi.')).map((policy): ToolAccess => ({
+  const builtinToolIds = new Set(['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'search-tool'])
+  const subpolar = policies.filter(policy => !builtinToolIds.has(policy.tool_id)).map((policy): ToolAccess => ({
     type: 'subpolar',
     id: policy.tool_id,
     permission: policyPermission(policy.effect),
@@ -135,8 +136,8 @@ function buildSkillAccess(agent?: Agent): AgentSkillAccess[] {
 interface AgentDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSubmit: (name: string, agent: Agent) => void | Promise<void>
-  editingAgent?: { name: string; agent: Agent } | null
+  onSubmit: (name: string, agent: any) => void | Promise<void>
+  editingAgent?: { name: string; agent: any } | null
   availableSkills?: SkillFileInfo[]
 }
 
@@ -345,15 +346,18 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
       const editPermission = builtinTools.edit?.permission || 'deny'
       const webfetchPermission = builtinTools.webfetch?.permission || 'deny'
       const otherBashPermission = builtinTools['other-bash']?.permission || 'deny'
+      // The legacy agent API only accepts allow/ask/deny. Keep the richer
+      // auto value in toolAccess for the Pi permissions extension.
+      const legacyPermission = (value: string): 'allow' | 'ask' | 'deny' => value === 'auto' ? 'allow' : value as 'allow' | 'ask' | 'deny'
       agent.tools = {
         edit: editPermission !== 'deny',
         bash: otherBashPermission !== 'deny' || effectiveToolAccess.some(tool => tool.type === 'cli'),
         webfetch: webfetchPermission !== 'deny',
       }
       agent.permission = {
-        edit: editPermission,
-        webfetch: webfetchPermission,
-        bash: otherBashPermission,
+        edit: legacyPermission(editPermission),
+        webfetch: legacyPermission(webfetchPermission),
+        bash: legacyPermission(otherBashPermission),
       }
       agent.allowedCommands = Array.from(new Set(effectiveToolAccess.filter(tool => tool.type === 'cli').map(tool => ('command' in tool ? tool.command : undefined) || tool.id)))
       const cliTools = effectiveToolAccess.filter(tool => tool.type === 'cli')
@@ -361,8 +365,8 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
         agent.permission = {
           ...agent.permission,
           bash: Object.fromEntries([
-            ...cliTools.map(tool => [`${('command' in tool ? tool.command : undefined) || tool.id} *`, tool.permission]),
-            ['*', otherBashPermission],
+            ...cliTools.map(tool => [`${('command' in tool ? tool.command : undefined) || tool.id} *`, legacyPermission(tool.permission)]),
+            ['*', legacyPermission(otherBashPermission)],
           ]),
         }
       }
@@ -566,11 +570,11 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
                     </Button>
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Permission</label>
-                      <Select value={selectedTool.permission} onValueChange={(value) => updateSelectedTool({ permission: value as 'allow' | 'ask' | 'deny' })}>
+                      <Select value={selectedTool.permission} onValueChange={(value) => updateSelectedTool({ permission: value as 'allow' | 'ask' | 'deny' | 'auto' })}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="allow">Allow</SelectItem>
-                          <SelectItem value="ask">Ask</SelectItem>
+                          <SelectItem value="auto">Auto approval</SelectItem>
+                          <SelectItem value="ask">Manual approval</SelectItem>
                           <SelectItem value="deny">Deny</SelectItem>
                         </SelectContent>
                       </Select>

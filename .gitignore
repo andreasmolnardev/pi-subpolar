@@ -1,6 +1,11 @@
 .pi/
+node_modules/
 @webui/node_modules/
 @webui/dist/
 @webui/.sessions.json
 .DS_Store
+.env
+.env.*
+!.env.example
 *.log
+pocketbase/pb_data/

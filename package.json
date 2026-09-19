@@ -1,0 +1,12 @@
+{
+  "name": "pi-subpolar",
+  "private": true,
+  "scripts": {
+    "dev": "./start-webui.sh",
+    "start": "./start-webui.sh",
+    "webui": "npm --prefix @webui run dev",
+    "bridge": "bun @webui/bridge.ts",
+    "typecheck": "npm --prefix @webui run typecheck",
+    "build": "npm --prefix @webui run build"
+  }
+}

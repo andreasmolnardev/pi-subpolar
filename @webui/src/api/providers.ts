@@ -140,6 +140,74 @@ export interface CustomProviderConfig {
   modelOverrides?: Record<string, unknown>;
 }
 
+export type ProviderAuthMethodKind = 'api_key' | 'oauth' | 'subscription';
+export type ProviderAuthState = 'authenticated' | 'expired' | 'unconfigured' | 'error' | 'unknown';
+
+export interface ProviderAuthStatus {
+  state: ProviderAuthState;
+  configured: boolean;
+  method?: ProviderAuthMethodKind;
+  source?: string;
+  label?: string;
+}
+
+export interface ProviderAuthMethod {
+  kind: ProviderAuthMethodKind;
+  label: string;
+  available: boolean;
+  status: ProviderAuthStatus;
+}
+
+/** Sanitized provider account instance. Credential material is never part of this type. */
+export interface ProviderInstance {
+  id: string;
+  instanceId: string;
+  providerId: string;
+  label: string;
+  email?: string;
+  source: 'runtime' | 'pocketbase';
+  authMethod?: ProviderAuthMethodKind;
+  status: ProviderAuthStatus;
+}
+
+export interface ProviderCatalogModel {
+  id: string;
+  instanceId: string;
+  providerId: string;
+  modelId: string;
+  name: string;
+  api: string;
+  reasoning: boolean;
+  input: readonly ('text' | 'image')[];
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  contextWindow: number;
+  maxTokens: number;
+}
+
+export interface ProviderCatalogProvider {
+  id: string;
+  name: string;
+  source: 'runtime' | 'pocketbase' | 'mixed';
+  authMethods: readonly ProviderAuthMethod[];
+  authStatus: ProviderAuthStatus;
+  instances: readonly ProviderInstance[];
+  models: readonly ProviderCatalogModel[];
+}
+
+export interface ProviderCatalog {
+  providers: readonly ProviderCatalogProvider[];
+  accounts: readonly ProviderInstance[];
+  models: readonly ProviderCatalogModel[];
+}
+
+// Names mirror the canonical server DTOs while the shorter aliases remain convenient in UI code.
+export type ProviderAuthStatusDto = ProviderAuthStatus;
+export type ProviderAuthMethodDto = ProviderAuthMethod;
+export type ProviderAccountDto = ProviderInstance;
+export type ProviderModelDto = ProviderCatalogModel;
+export type ProviderCatalogProviderDto = ProviderCatalogProvider;
+export type ProviderCatalogDto = ProviderCatalog;
+
 export interface ProviderWithModels {
   id: string;
   name: string;
@@ -191,88 +259,144 @@ function classifyProviderSource(providerId: string, isFromConfig: boolean): Prov
   return "configured";
 }
 
-const modelModalities = ["text", "audio", "image", "video", "pdf"] as const;
 
-function enabledModalities(capabilities: Record<string, boolean> | undefined): ("text" | "audio" | "image" | "video" | "pdf")[] {
-  if (!capabilities) return ["text"];
-  return modelModalities.filter((modality) => capabilities[modality]);
+function catalogProviderToLegacyProviders(catalog: ProviderCatalog): Provider[] {
+  const providers: Provider[] = [];
+
+  for (const provider of catalog.providers) {
+    const instances = provider.instances.length > 0
+      ? provider.instances
+      : [{
+          id: provider.id,
+          instanceId: provider.id,
+          providerId: provider.id,
+          label: provider.name,
+          source: 'runtime' as const,
+          status: provider.authStatus,
+        }];
+
+    for (const instance of instances) {
+      const models: Record<string, Model> = {};
+      for (const catalogModel of provider.models.filter((model) => model.instanceId === instance.instanceId)) {
+        models[catalogModel.modelId] = {
+          id: catalogModel.modelId,
+          key: catalogModel.modelId,
+          name: catalogModel.name,
+          attachment: catalogModel.input.includes('image'),
+          reasoning: catalogModel.reasoning,
+          tool_call: true,
+          cost: {
+            input: catalogModel.cost.input,
+            output: catalogModel.cost.output,
+            cache_read: catalogModel.cost.cacheRead,
+            cache_write: catalogModel.cost.cacheWrite,
+          },
+          limit: { context: catalogModel.contextWindow, output: catalogModel.maxTokens },
+          modalities: { input: [...catalogModel.input], output: ['text'] },
+        };
+      }
+
+      const displayName = instances.length > 1 || instance.instanceId !== provider.id
+        ? `${provider.name} · ${instance.label}`
+        : provider.name;
+      providers.push({
+        id: instance.instanceId,
+        name: displayName,
+        env: [],
+        models,
+        source: provider.source === 'pocketbase' ? 'configured' : 'builtin',
+        isConnected: instance.status.configured,
+      });
+    }
+  }
+
+  return providers;
 }
 
-
-interface PiProviderResponse {
-  all: PiProvider[];
-  connected: string[];
-  default: Record<string, string>;
+export async function getProviderCatalog(directory?: string): Promise<ProviderCatalog> {
+  const response = await fetchWrapper<ProviderCatalog | { catalog: ProviderCatalog }>(`${API_BASE_URL}/api/providers/catalog`, {
+    params: { directory },
+  });
+  return 'catalog' in response ? response.catalog : response;
 }
+
+export const providerCatalogApi = {
+  get: getProviderCatalog,
+};
 
 export interface ProvidersResult {
   providers: Provider[];
   connected: string[];
   default: Record<string, string>;
+  catalog?: ProviderCatalog;
 }
 
 export async function getProviders(directory?: string): Promise<ProvidersResult> {
   try {
-    const response = await fetchWrapper<PiProviderResponse>(`${API_BASE_URL}/api/provider`, {
-      params: { directory },
-    });
-
-    if (response?.all && Array.isArray(response.all)) {
-      const connectedSet = new Set(response.connected || []);
-
-      const providers: Provider[] = response.all.map((piProvider: PiProvider) => {
-        const models: Record<string, Model> = {};
-
-        Object.entries(piProvider.models).forEach(([modelId, piModel]) => {
-          const capabilities = piModel.capabilities;
-          models[modelId] = {
-            id: piModel.api?.id || piModel.id || modelId,
-            key: modelId,
-            name: piModel.name || piModel.id || modelId,
-            attachment: capabilities?.attachment ?? capabilities?.input?.image ?? false,
-            reasoning: capabilities?.reasoning ?? false,
-            temperature: capabilities?.temperature ?? false,
-            tool_call: capabilities?.toolcall ?? true,
-            cost: {
-              input: piModel.cost?.input ?? 0,
-              output: piModel.cost?.output ?? 0,
-              cache_read: piModel.cost?.cache?.read ?? 0,
-              cache_write: piModel.cost?.cache?.write ?? 0,
-            },
-            limit: {
-              context: piModel.limit?.context ?? 0,
-              output: piModel.limit?.output ?? 0,
-            },
-            modalities: {
-              input: enabledModalities(capabilities?.input),
-              output: enabledModalities(capabilities?.output),
-            },
-            provider: {
-              npm: piModel.api?.npm ?? "pi",
-            },
-            variants: piModel.variants,
-          };
-        });
-
-        return {
-          id: piProvider.id,
-          name: piProvider.name,
-          env: piProvider.env,
-          source: piProvider.source === "custom" ? "configured" : "builtin",
-          models,
-          options: piProvider.options,
-          isConnected: connectedSet.has(piProvider.id),
-        };
-      });
-
-      return { providers, connected: response.connected || [], default: response.default || {} };
-    }
+    const catalog = await getProviderCatalog(directory);
+    const providers = catalogProviderToLegacyProviders(catalog);
+    return {
+      providers,
+      connected: providers.filter((provider) => provider.isConnected).map((provider) => provider.id),
+      default: {},
+      catalog,
+    };
   } catch {
-    // Silently return empty providers on failure - graceful degradation
+    // Keep model selectors usable when the catalog endpoint is unavailable.
+    return { providers: [], connected: [], default: {} };
   }
-
-  return { providers: [], connected: [], default: {} };
 }
+
+export interface ProviderAccountUpdate {
+  displayName?: string;
+  status?: 'active' | 'disabled';
+}
+
+export interface ProviderAccountStatus {
+  instanceId: string;
+  providerType: string;
+  authType: 'api_key' | 'oauth';
+  status: 'active' | 'disabled';
+  hasCredential: boolean;
+  credentialExpiresAt?: number;
+  lastUsedAt?: number;
+  configured: boolean;
+  expired: boolean;
+}
+
+/** Account-instance operations. These endpoints return sanitized metadata only. */
+export const providerAccountsApi = {
+  list: async (): Promise<ProviderInstance[]> => {
+    const response = await fetchWrapper<ProviderInstance[] | { accounts: ProviderInstance[] }>(`${API_BASE_URL}/api/providers/accounts`);
+    return Array.isArray(response) ? response : response.accounts;
+  },
+
+  get: async (instanceId: string): Promise<ProviderInstance | null> => {
+    const response = await fetchWrapper<ProviderInstance | { account?: ProviderInstance }>(
+      `${API_BASE_URL}/api/providers/accounts/${encodeURIComponent(instanceId)}`,
+    );
+    return 'account' in response ? response.account ?? null : response as ProviderInstance;
+  },
+
+  status: async (instanceId: string): Promise<ProviderAccountStatus | null> => {
+    const response = await fetchWrapper<ProviderAccountStatus | { status?: ProviderAccountStatus }>(
+      `${API_BASE_URL}/api/providers/accounts/${encodeURIComponent(instanceId)}/status`,
+    );
+    return 'status' in response && typeof response.status === 'object' ? response.status ?? null : response as ProviderAccountStatus;
+  },
+
+  update: async (instanceId: string, input: ProviderAccountUpdate): Promise<ProviderInstance> => {
+    const response = await fetchWrapper<ProviderInstance | { account: ProviderInstance }>(
+      `${API_BASE_URL}/api/providers/accounts/${encodeURIComponent(instanceId)}`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
+    );
+    return 'account' in response ? response.account : response;
+  },
+
+  delete: async (instanceId: string): Promise<void> => {
+    await fetchWrapper(`${API_BASE_URL}/api/providers/accounts/${encodeURIComponent(instanceId)}`, { method: 'DELETE' });
+  },
+};
 
 export async function getPiModelState(): Promise<PiModelState> {
   return await fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`);
@@ -413,33 +537,6 @@ export function formatProviderName(
   return provider.name || provider.id;
 }
 
-export const providerCredentialsApi = {
-  list: async (): Promise<string[]> => {
-    const { providers } = await fetchWrapper<{ providers: string[] }>(`${API_BASE_URL}/api/providers/credentials`);
-    return providers;
-  },
-
-  getStatus: async (providerId: string): Promise<boolean> => {
-    const { hasCredentials } = await fetchWrapper<{ hasCredentials: boolean }>(
-      `${API_BASE_URL}/api/providers/${providerId}/credentials/status`
-    );
-    return hasCredentials;
-  },
-
-  set: async (providerId: string, apiKey: string): Promise<void> => {
-    await fetchWrapper(`${API_BASE_URL}/api/providers/${providerId}/credentials`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiKey }),
-    });
-  },
-
-  delete: async (providerId: string): Promise<void> => {
-    await fetchWrapper(`${API_BASE_URL}/api/providers/${providerId}/credentials`, {
-      method: 'DELETE',
-    });
-  },
-};
 
 export const customProvidersApi = {
   list: async (): Promise<CustomProviderConfig[]> => {

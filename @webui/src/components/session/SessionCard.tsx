@@ -2,7 +2,7 @@ import { useRef, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { SessionStatusIndicator } from "@/components/ui/session-status-indicator";
-import { Trash2, Clock } from "lucide-react";
+import { Trash2, Clock, Archive } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import type { Session } from "@/api/types";
 import { useSwipe } from "@/hooks/useSwipe";
@@ -16,6 +16,7 @@ interface SessionCardProps {
   onSelect: (sessionID: string, directory?: string) => void;
   onToggleSelection: (selected: boolean) => void;
   onDelete: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onArchive?: () => void;
 }
 
 export const SessionCard = ({
@@ -27,6 +28,7 @@ export const SessionCard = ({
   onSelect,
   onToggleSelection,
   onDelete,
+  onArchive,
 }: SessionCardProps) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const { bind, swipeOffset, isOpen, isSwipingBack, close, swipeStyles } = useSwipe();
@@ -135,15 +137,24 @@ export const SessionCard = ({
               </div>
             )}
             {manageMode && (
-              <button
-                className="h-6 w-6 p-0 text-foreground hover:text-red-600 dark:hover:text-red-400 bg-transparent border-none cursor-pointer"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(e);
-                }}
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-1">
+                {onArchive && (
+                  <button
+                    aria-label="Archive session"
+                    className="h-6 w-6 p-0 text-foreground hover:text-primary bg-transparent border-none cursor-pointer"
+                    onClick={(e) => { e.stopPropagation(); onArchive(); }}
+                  >
+                    <Archive className="w-4 h-4" />
+                  </button>
+                )}
+                <button
+                  aria-label="Delete session"
+                  className="h-6 w-6 p-0 text-foreground hover:text-red-600 dark:hover:text-red-400 bg-transparent border-none cursor-pointer"
+                  onClick={(e) => { e.stopPropagation(); onDelete(e); }}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
             )}
           </div>
         </Card>

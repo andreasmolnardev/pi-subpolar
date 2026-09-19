@@ -1,0 +1,64 @@
+{
+  "default": {
+    "theme": "dark",
+    "mode": "build",
+    "autoScroll": true,
+    "expandDiffs": true,
+    "expandToolCalls": false,
+    "showReasoning": false,
+    "simpleChatMode": false,
+    "defaultModels": {},
+    "hiddenSidebarAgents": [
+      "auto",
+      "compaction",
+      "summary",
+      "title"
+    ],
+    "hiddenChatInputAgents": [
+      "compaction",
+      "summary",
+      "title"
+    ],
+    "leaderKey": "Cmd+O",
+    "directShortcuts": [
+      "submit",
+      "abort"
+    ],
+    "keyboardShortcuts": {
+      "submit": "Cmd+Enter",
+      "abort": "Escape",
+      "toggleMode": "T",
+      "undo": "Z",
+      "redo": "Shift+Z",
+      "compact": "K",
+      "fork": "F",
+      "settings": ",",
+      "sessions": "S",
+      "newSession": "N",
+      "closeSession": "W",
+      "toggleSidebar": "B",
+      "selectModel": "M",
+      "variantCycle": "Cmd+T"
+    },
+    "customCommands": [],
+    "gitCredentials": [],
+    "gitIdentity": {
+      "name": "Pi Agent",
+      "email": ""
+    },
+    "tts": {
+      "enabled": false
+    },
+    "stt": {
+      "enabled": false
+    },
+    "notifications": {
+      "enabled": false
+    },
+    "integrations": [],
+    "repoSortMode": "recent",
+    "serverEnvVars": [],
+    "disabledDefaultServerEnvVars": [],
+    "defaultModel": "openai-codex/gpt-5.6-luna"
+  }
+}

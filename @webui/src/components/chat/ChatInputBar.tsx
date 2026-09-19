@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { FolderKanban, Send, Square, X } from "lucide-react";
+import { Clipboard, FolderKanban, Send, Square, X } from "lucide-react";
 import { GENERAL_CHAT_PROJECT_ID } from "@subpolar/shared/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,6 +36,8 @@ export interface PendingSessionPrompt {
   agent?: string;
   permission?: string;
 }
+
+const LARGE_PASTE_THRESHOLD = 500;
 
 const PERMISSION_OPTIONS = [
   { value: "default", label: "Default Permissions" },
@@ -95,6 +97,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const [selectedMentions, setSelectedMentions] = useState<MentionContextItem[]>([]);
+  const [pastedText, setPastedText] = useState<string | null>(null);
 
   const apiUrl = SUBPOLAR_API_BASE_URL;
 
@@ -256,6 +259,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       textareaRef.current.style.height = "auto";
       textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
       textareaRef.current.focus();
+      setPastedText(null);
       const hasContent = value.trim().length > 0;
       setHasPromptContent(hasContent);
       onPromptChange?.(hasContent);
@@ -265,6 +269,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       textareaRef.current.value = "";
       textareaRef.current.style.height = "auto";
       textareaRef.current.focus();
+      setPastedText(null);
       setHasPromptContent(false);
       onPromptChange?.(false);
     },
@@ -273,11 +278,36 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     },
   }), [onPromptChange]);
 
+  const handleTextareaPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = e.clipboardData.getData("text/plain");
+    if (text.length < LARGE_PASTE_THRESHOLD) return;
+
+    // Keep long snippets out of the editor so they do not make the composer unexpectedly grow.
+    e.preventDefault();
+    setPastedText(text);
+    setHasPromptContent(true);
+    onPromptChange?.(true);
+  }, [onPromptChange]);
+
+  const showPastedTextInField = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea || pastedText === null) return;
+    const value = textarea.value;
+    textarea.value = value ? `${value}\n\n${pastedText}` : pastedText;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+    setPastedText(null);
+    setHasPromptContent(true);
+    onPromptChange?.(true);
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }, [onPromptChange, pastedText]);
+
   const handleTextareaInput = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       e.target.style.height = "auto";
       e.target.style.height = `${e.target.scrollHeight}px`;
-      const hasContent = e.target.value.trim().length > 0;
+      const hasContent = e.target.value.trim().length > 0 || pastedText !== null;
       setHasPromptContent(hasContent);
       onPromptChange?.(hasContent);
       const cursor = e.target.selectionStart;
@@ -286,7 +316,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       setMentionQuery(match ? match[1] : null);
       setSelectedMentionIndex(0);
     },
-    [onPromptChange],
+    [onPromptChange, pastedText],
   );
 
   const insertMention = useCallback((item: MentionItem) => {
@@ -338,7 +368,8 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
 
     if (sendPrompt.isPending) return;
 
-    const rawPrompt = textareaRef.current?.value.trim();
+    const typedPrompt = textareaRef.current?.value.trim() ?? "";
+    const rawPrompt = [typedPrompt, pastedText?.trim()].filter(Boolean).join("\n\n");
     if (!rawPrompt) return;
     if (!sessionID && !selectedProject) {
       showToast.error(sendImmediately ? "Select a project before sending" : "General chat is still loading");
@@ -351,6 +382,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     if (sessionID) {
       textareaRef.current!.value = "";
       textareaRef.current!.style.height = "auto";
+      setPastedText(null);
       setHasPromptContent(false);
       setSelectedMentions([]);
       onPromptChange?.(false);
@@ -382,6 +414,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
         setActiveSessionId(session.id);
         textareaRef.current!.value = "";
         textareaRef.current!.style.height = "auto";
+        setPastedText(null);
         setHasPromptContent(false);
         setSelectedMentions([]);
         onPromptChange?.(false);
@@ -402,6 +435,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       setActiveSessionId(session.id);
       textareaRef.current!.value = "";
       textareaRef.current!.style.height = "auto";
+      setPastedText(null);
       setHasPromptContent(false);
       setSelectedMentions([]);
       onPromptChange?.(false);
@@ -437,6 +471,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     selectedProject,
     selectedDirectory,
     selectedMentions,
+    pastedText,
     sendImmediately,
     sendPrompt,
     targetProjectId,
@@ -478,6 +513,33 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   return (
     <div className="w-full max-w-3xl mx-auto">
       <div className="relative backdrop-blur-md bg-muted/50 rounded-xl p-4 shadow-lg">
+        {pastedText !== null && (
+          <div className="mb-3 flex max-w-full items-center gap-3 rounded-2xl border border-border bg-background/40 px-4 py-3">
+            <Clipboard className="h-6 w-6 flex-shrink-0 text-primary" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-semibold text-foreground">
+                {pastedText.split("\n")[0].trim() || "Pasted text"}
+              </div>
+              <button
+                type="button"
+                onClick={showPastedTextInField}
+                className="mt-1 flex items-center gap-1 text-sm text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground"
+              >
+                Show in text field <span aria-hidden="true">›</span>
+              </button>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => setPastedText(null)}
+              className="h-7 w-7 flex-shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+              aria-label="Remove pasted text"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
         <MentionSuggestions
           isOpen={mentionQuery !== null && mentionItems.length > 0}
           items={mentionItems}
@@ -488,6 +550,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
           <textarea
             ref={textareaRef}
             onChange={handleTextareaInput}
+            onPaste={handleTextareaPaste}
             onKeyDown={handleKeyDown}
             disabled={disabled}
           placeholder={placeholder}
@@ -600,6 +663,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
                 textareaRef.current.value = "";
                 textareaRef.current.style.height = "auto";
                 textareaRef.current.focus();
+                setPastedText(null);
                 setHasPromptContent(false);
                 onPromptChange?.(false);
               }}

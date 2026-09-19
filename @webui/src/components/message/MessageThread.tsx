@@ -58,7 +58,7 @@ const compareMessageIds = (id1: string, id2: string): number => {
   return id1.localeCompare(id2)
 }
 
-const hasRenderableContent = (role: Message['role'], parts: Part[], simpleChatMode: boolean, showReasoning: boolean): boolean => {
+const hasRenderableContent = (role: Message['role'], parts: Part[], simpleChatMode: boolean): boolean => {
   if (!parts || parts.length === 0) return false
    
   return parts.some(part => {
@@ -66,7 +66,7 @@ const hasRenderableContent = (role: Message['role'], parts: Part[], simpleChatMo
       case 'text':
         return !!(part.text && part.text.trim())
       case 'reasoning':
-        return !simpleChatMode && showReasoning && !!(part.text && part.text.trim())
+        return !simpleChatMode && !!(part.text && part.text.trim())
       case 'file':
         return role === 'user'
       case 'patch':
@@ -193,7 +193,6 @@ interface MessageRowProps {
   handleCancelEdit: () => void
   model?: string
   simpleChatMode: boolean
-  showReasoning: boolean
 }
 
 const MessageRow = memo(function MessageRow({
@@ -214,7 +213,6 @@ const MessageRow = memo(function MessageRow({
   handleCancelEdit,
   model,
   simpleChatMode,
-  showReasoning,
 }: MessageRowProps) {
   const msg = msgWithParts.info
   const parts = msgWithParts.parts
@@ -238,7 +236,7 @@ const MessageRow = memo(function MessageRow({
 
   const isEditingThisMessage = editingUserMessageId === msg.id
 
-  const hasContent = hasRenderableContent(msg.role, parts, simpleChatMode, showReasoning)
+  const hasContent = hasRenderableContent(msg.role, parts, simpleChatMode)
   const hasError = msg.role === 'assistant' && 'error' in msg && msg.error
   const standaloneSubAgentMessage = isStandaloneSubAgentMessage(msg.role, parts)
   const bubbleParts = parts.filter(isBubblePart)
@@ -440,7 +438,6 @@ export const MessageThread = memo(function MessageThread({
   const sessionStatus = useSessionStatusForSession(sessionID)
   const { preferences } = useSettings()
   const simpleChatMode = preferences?.simpleChatMode ?? false
-  const showReasoning = preferences?.showReasoning ?? false
   
   const pendingAssistantId = useMemo(() => {
     if (!messages) return undefined
@@ -550,7 +547,6 @@ export const MessageThread = memo(function MessageThread({
           handleCancelEdit={handleCancelEdit}
           model={model}
           simpleChatMode={simpleChatMode}
-          showReasoning={showReasoning}
         />
       ))}
       {isWaitingForAssistantResponse && <SendingIndicator />}

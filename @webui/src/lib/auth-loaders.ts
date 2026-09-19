@@ -26,7 +26,14 @@ async function fetchAuthConfig(): Promise<AuthConfig> {
 }
 
 async function checkSession() {
-  return true
+  try {
+    const response = await fetch('/api/auth/session', { credentials: 'include' })
+    if (!response.ok) return false
+    const data = await response.json() as { user?: unknown }
+    return Boolean(data.user)
+  } catch {
+    return false
+  }
 }
 
 export async function loginLoader() {

@@ -10,6 +10,7 @@ import { showToast } from '@/lib/toast'
 import { eventStream, type EventStreamHealthState } from '@/lib/runtime-event-stream'
 import { SUBPOLAR_API_BASE_URL } from '@/config'
 import { addToSessionKeyedState, removeFromSessionKeyedState } from '@/lib/sessionKeyedState'
+import { useSessionStatus } from '@/stores/sessionStatusStore'
 
 type PermissionsBySession = Record<string, PermissionRequest[]>
 type QuestionsBySession = Record<string, QuestionRequest[]>
@@ -462,6 +463,17 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
     const handleSSEMessage = (data: unknown) => {
       if (!data || typeof data !== 'object' || !('type' in data)) return
       
+      const rawEvent = data as { type: string; properties?: Record<string, unknown> }
+      if (rawEvent.type === 'session_info_changed') {
+        // Pi SDK emits this directly when automatic title generation finishes.
+        // Refresh both the legacy sidebar cache and directory-scoped session lists.
+        queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        queryClient.invalidateQueries({
+          predicate: (query) => query.queryKey[0] === 'subpolar' && query.queryKey[1] === 'sessions',
+        })
+        return
+      }
+
       const event = data as SSEEvent
       
       switch (event.type) {
@@ -502,6 +514,24 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
               queryKey: ['subpolar', 'messages'],
               predicate: (query) => query.queryKey.includes(sessionID)
             })
+          }
+          break
+        case 'session.status':
+          if ('sessionID' in event.properties && 'status' in event.properties) {
+            const sessionID = event.properties.sessionID as string
+            const wasRunning = useSessionStatus.getState().getStatus(sessionID).type !== 'idle'
+            useSessionStatus.getState().setStatus(sessionID, event.properties.status)
+            if (event.properties.status.type === 'idle' && wasRunning) {
+              useSessionStatus.getState().markCompleted(sessionID)
+            }
+          }
+          break
+        case 'session.idle':
+          if ('sessionID' in event.properties) {
+            const sessionID = event.properties.sessionID as string
+            const wasRunning = useSessionStatus.getState().getStatus(sessionID).type !== 'idle'
+            useSessionStatus.getState().setStatus(sessionID, { type: 'idle' })
+            if (wasRunning) useSessionStatus.getState().markCompleted(sessionID)
           }
           break
         case 'lsp.updated':

@@ -33,14 +33,17 @@ interface Agent {
   skills?: string[]
   skillAccess?: AgentSkillAccess[]
   allowedCommands?: string[]
-  toolAccess?: Array<{ type: 'builtin' | 'skill' | 'cli' | 'subpolar'; id: string; permission: 'allow' | 'ask' | 'deny'; command?: string }>
+  toolAccess?: Array<{ type: 'builtin' | 'skill' | 'cli' | 'subpolar'; id: string; permission: 'allow' | 'ask' | 'deny' | 'auto'; command?: string }>
   disable?: boolean
   sort_order?: number
   [key: string]: unknown
 }
 
-function policyEffect(permission: 'allow' | 'ask' | 'deny'): AgentToolPolicyEffect {
+function policyEffect(permission: 'allow' | 'ask' | 'deny' | 'auto'): AgentToolPolicyEffect {
   if (permission === 'ask') return 'approval'
+  // The settings API predates auto approval. Persist it as allow as well as
+  // toolAccess (which the Pi permissions extension reads as auto).
+  if (permission === 'auto') return 'allow'
   return permission
 }
 
@@ -49,9 +52,9 @@ function subpolarPolicies(agent: Agent) {
     .filter(tool => tool.type === 'subpolar')
     .map(tool => ({ toolId: tool.id, effect: policyEffect(tool.permission) }))
   const bashTool = (agent.toolAccess ?? []).find(tool => tool.type === 'builtin' && tool.id === 'other-bash')
-  if (bashTool) policies.push({ toolId: 'pi.bash', effect: policyEffect(bashTool.permission) })
-  if (policies.some(policy => policy.effect !== 'deny') && !policies.some(policy => policy.toolId === 'tools.list')) {
-    return [{ toolId: 'tools.list', effect: 'allow' as const }, ...policies]
+  if (bashTool) policies.push({ toolId: 'bash', effect: policyEffect(bashTool.permission) })
+  if (policies.some(policy => policy.effect !== 'deny') && !policies.some(policy => policy.toolId === 'search-tool')) {
+    return [{ toolId: 'search-tool', effect: 'allow' as const }, ...policies]
   }
   return policies
 }
@@ -107,6 +110,9 @@ export function Agents() {
         permission: agent.permission || {},
         skills: agent.skills || [],
         skillAccess: agent.skillAccess || [],
+        // Keep the detailed permission level for Pi's permissions extension;
+        // the policy table below remains the backend enforcement projection.
+        toolAccess: agent.toolAccess || [],
         enabled: !agent.disable,
         sort_order: agent.sort_order || 0,
       }
@@ -318,6 +324,7 @@ export function Agents() {
                           {Object.entries(agent.permission).map(([action, level]) => {
                             const colorMap: Record<string, string> = {
                               allow: 'bg-green-500/10 text-green-600 dark:text-green-400',
+                              auto: 'bg-green-500/10 text-green-600 dark:text-green-400',
                               ask: 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400',
                               deny: 'bg-red-500/10 text-red-600 dark:text-red-400',
                             }
@@ -327,7 +334,7 @@ export function Agents() {
                                 key={action}
                                 className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${colorMap[levelStr] || 'bg-muted text-muted-foreground'}`}
                               >
-                                {action} permissions: {levelStr}
+                                {action} permissions: {levelStr === 'ask' ? 'manual approval' : levelStr}
                               </span>
                             )
                           })}

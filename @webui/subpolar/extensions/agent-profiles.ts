@@ -25,7 +25,7 @@ import { Type } from "typebox";
 
 const MASTER = "master";
 const MASTER_ALIASES = new Set(["master", "omniscient"]);
-const MASTER_PROFILE_TOOLS = ["list_agent_profiles", "create_agent_profile", "edit_agent_profile", "manage_openapi_tools"];
+const MASTER_PROFILE_TOOLS = ["list_agent_profiles", "create_agent_profile", "edit_agent_profile", "manage_external_tools"];
 
 type Profile = {
   systemPrompt: string;
@@ -35,6 +35,16 @@ type Profile = {
 type Profiles = Record<string, Profile>;
 
 type ProfileState = { name: string };
+
+type BackgroundSession = { name: string; status: "running" | "done" };
+type BackgroundBridge = {
+  getSessions: () => BackgroundSession[];
+  setRefresh: (refresh: () => void) => void;
+};
+
+function backgroundBridge(): BackgroundBridge | undefined {
+  return (globalThis as Record<string, unknown>)["__piBackgroundSessions"] as BackgroundBridge | undefined;
+}
 
 function readProfiles(path: string): Profiles {
   if (!existsSync(path)) return {};
@@ -83,9 +93,9 @@ export default function agentProfiles(pi: ExtensionAPI) {
   let activeName = MASTER;
   let activeProfile: Profile | undefined;
 
-  // The master profile is omniscient: it always receives every tool currently
-  // registered, including tools generated later by extensions (for example,
-  // provider_operationId tools from openapi-tools.ts).
+  // The master profile receives every tool currently allowed by the SDK. The
+  // WebUI session allowlist contains only centrally routed wrappers and the
+  // Subpolar gateway, so native extension tools cannot bypass the router.
   function allToolNames(): string[] {
     return [...new Set(pi.getAllTools().map((tool) => tool.name))];
   }
@@ -101,9 +111,12 @@ export default function agentProfiles(pi: ExtensionAPI) {
 
   function updateStatus(ctx: ExtensionContext): void {
     ctx.ui.setStatus("agent-profile", ctx.ui.theme.fg("accent", `profile:${activeName}`));
+    const sessions = backgroundBridge()?.getSessions() ?? [];
     ctx.ui.setWidget("agent-profiles", [
       "[Profiles]",
-      `  ${profileNames().join(", ")}`,
+      ...profileNames().map((name) => `  ${name}`),
+      "[Background sessions]",
+      ...sessions.map((session) => `  ${session.status === "done" ? "✓" : "•"} ${session.name}`),
     ]);
   }
 
@@ -115,8 +128,12 @@ export default function agentProfiles(pi: ExtensionAPI) {
     activeProfile = normalized === MASTER ? undefined : profiles[normalized];
     // Profile-management tools are deliberately master-only, even if a config
     // file accidentally includes them in another profile's tool list.
-    const profileTools = activeProfile?.tools.filter((tool) => !MASTER_PROFILE_TOOLS.includes(tool));
-    pi.setActiveTools(activeProfile ? profileTools ?? [] : allToolNames());
+    const profileTools = activeProfile?.tools.filter((tool) => !MASTER_PROFILE_TOOLS.includes(tool)) ?? [];
+    // Discovery and the central gateway must remain available even when a
+    // profile has a narrow tool allowlist; the PocketBase router still applies
+    // the profile's actual policy when either tool is used.
+    if (activeProfile) profileTools.push("search-tool", "subpolar-tools");
+    pi.setActiveTools(activeProfile ? [...new Set(profileTools)] : allToolNames());
     updateStatus(ctx);
     return true;
   }
@@ -316,6 +333,9 @@ export default function agentProfiles(pi: ExtensionAPI) {
 
   pi.on("session_start", async (event, ctx) => {
     profiles = loadProfiles(ctx.cwd);
+    backgroundBridge()?.setRefresh(() => updateStatus(ctx));
+    queueMicrotask(() => backgroundBridge()?.setRefresh(() => updateStatus(ctx)));
+    setTimeout(() => backgroundBridge()?.setRefresh(() => updateStatus(ctx)), 0);
     // Do not derive master access from the current active list: that list may
     // not yet include tools registered by another extension during startup.
     // Master must expose every registered tool.

@@ -1,12 +1,13 @@
 import { useCallback, useState, useMemo, useEffect } from "react";
 import { useSessionsAcrossDirectories, useDeleteSession, useCreateSession } from "@/hooks/usePiHarness";
+import { updateStoredSession } from "@/api/sessions";
 import type { DeleteSessionTarget } from "@/hooks/usePiHarness";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { SessionCard } from "./SessionCard";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, Trash2, Pencil, X } from "lucide-react";
+import { Search, Trash2, Pencil, X, Archive } from "lucide-react";
 
 interface SessionListProps {
   apiUrl: string;
@@ -43,6 +44,12 @@ export const SessionList = ({
   const [searchQuery, setSearchQuery] = useState("");
   const { data: sessions, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = useSessionsAcrossDirectories(apiUrl, directoriesList, { search: searchQuery, limit: 25 });
   const deleteSession = useDeleteSession(apiUrl, directoriesList);
+  const [archivedSessionKeys, setArchivedSessionKeys] = useState<Set<string>>(new Set());
+  const archiveSession = useCallback(async (session: { id: string; directory?: string }) => {
+    await updateStoredSession(session.id, { archived: true });
+    const key = getSessionSelectionKey(session);
+    setArchivedSessionKeys((current) => new Set(current).add(key));
+  }, [getSessionSelectionKey]);
   const createSession = useCreateSession(apiUrl, sessionCreateDirectory, (newSession) => {
     onSelectSession(newSession.id);
   });
@@ -56,6 +63,7 @@ export const SessionList = ({
 
     const filtered = sessions.filter((session) => {
       if (session.parentID) return false;
+      if ((session as typeof session & { archived?: boolean }).archived || archivedSessionKeys.has(getSessionSelectionKey(session))) return false;
       if (directorySet.size > 0 && session.directory && !directorySet.has(session.directory)) return false;
       return true;
     });
@@ -69,7 +77,7 @@ export const SessionList = ({
     });
 
     return Array.from(uniqueSessions.values()).sort((a, b) => b.time.updated - a.time.updated);
-  }, [sessions, directorySet, getSessionSelectionKey]);
+  }, [sessions, directorySet, getSessionSelectionKey, archivedSessionKeys]);
 
   const todaySessions = useMemo(() => {
     const today = new Date();
@@ -180,6 +188,13 @@ export const SessionList = ({
     }
   };
 
+  const handleBulkArchive = async () => {
+    const selected = filteredSessions.filter((session) => selectedSessions.has(getSessionSelectionKey(session)));
+    await Promise.all(selected.map((session) => archiveSession(session)));
+    setSelectedSessions(new Set());
+    setManageMode(false);
+  };
+
   const handleBulkDelete = () => {
     if (selectedSessions.size > 0) {
       const selectedTargets = filteredSessions
@@ -201,6 +216,16 @@ export const SessionList = ({
             </span>
             <Button variant="ghost" onClick={toggleSelectAll} className="shrink-0 h-9 text-xs" size="sm">
               {allVisibleSelected ? "Unselect All" : "Select All"}
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => void handleBulkArchive()}
+              disabled={selectedSessions.size === 0}
+              className="shrink-0 h-9 text-xs"
+              size="sm"
+            >
+              <Archive className="w-3 h-3 mr-1" />
+              Archive
             </Button>
             <Button
               variant="ghost"
@@ -279,6 +304,7 @@ export const SessionList = ({
                       onSelect={onSelectSession}
                       onToggleSelection={(selected) => toggleSessionSelection(session, selected)}
                       onDelete={(e) => handleDelete(session, e)}
+                      onArchive={() => void archiveSession(session)}
                     />
                   ))}
                 </>
@@ -298,6 +324,7 @@ export const SessionList = ({
                   onSelect={onSelectSession}
                   onToggleSelection={(selected) => toggleSessionSelection(session, selected)}
                   onDelete={(e) => handleDelete(session, e)}
+                  onArchive={() => void archiveSession(session)}
                 />
               ))}
             </>

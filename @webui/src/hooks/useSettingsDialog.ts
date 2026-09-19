@@ -1,7 +1,7 @@
 import { useCallback, useRef } from 'react'
 import { useUrlParams } from './useUrlParams'
 
-const settingsTabs = ['account', 'general', 'chat', 'appearance', 'notifications', 'voice', 'shortcuts', 'providers', 'integrations', 'menu'] as const
+const settingsTabs = ['account', 'general', 'chat', 'appearance', 'notifications', 'voice', 'shortcuts', 'providers', 'integrations', 'extensions', 'usage', 'proxy', 'menu'] as const
 
 type Tab = typeof settingsTabs[number]
 
