@@ -245,7 +245,8 @@ export type AdapterCapability =
   | "run.outcome.persistence"
   | "event.replay"
   | "multi-process-concurrency"
-  | "durable-approvals";
+  | "durable-approvals"
+  | "memory.persistence";
 
 export interface AdapterCapabilities {
   adapter: string;
@@ -295,4 +296,26 @@ export interface SessionStore {
   readonly capabilities: AdapterCapabilities;
   load(sessionId: string): Promise<SessionRecord | undefined>;
   append(sessionId: string, entries: SessionTranscriptEntry[]): Promise<SessionRecord>;
+}
+
+export type MemoryScope = "user" | "agent" | "project";
+
+export interface MemoryRecord {
+  id: string;
+  ownerId: string;
+  scope: MemoryScope;
+  agentId?: string;
+  projectId?: string;
+  content: string;
+  metadata: JsonValue;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+  tombstone: boolean;
+}
+
+export interface MemoryStore {
+  readonly capabilities: AdapterCapabilities;
+  list(ownerId: string, limit?: number): Promise<readonly MemoryRecord[]>;
+  save(record: MemoryRecord): Promise<MemoryRecord>;
 }

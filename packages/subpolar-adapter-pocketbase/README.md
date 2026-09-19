@@ -54,3 +54,10 @@ contract's legacy `json-file` durability value is only a compatibility marker.
 The fake-client tests are the contract example. They compare session and policy
 approval outcomes with the local foundation, exercise cross-user denial, and
 verify unsupported capability behavior.
+
+Memory persistence also requires an explicitly configured `memories` collection.
+Memory mappings construct owner, scope, and record ID fields from trusted adapter
+values rather than caller-supplied overrides. Memory persistence does not imply
+idempotency; that capability is advertised and usable only when an explicit
+`idempotency` port is injected, otherwise `idempotency.execute()` throws the
+typed `PocketBaseUnsupportedCapabilityError`.

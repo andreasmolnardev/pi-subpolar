@@ -17,6 +17,7 @@ import { createProjectSessionRepository, type SessionContext } from './project-s
 import { assertPathWithinWorkspace, configuredWorkspaceRoot } from './project-filesystem.ts'
 import { discardPendingApprovalInput, retainPendingApprovalInput, takePendingApprovalInput } from './approval-execution.ts'
 import type { ToolGatewayContext } from './tool-gateway.ts'
+import { PocketBaseMemoryService, type MemoryContext, type MemoryScope } from './memory.ts'
 
 export type ToolAdapter = 'internal' | 'http' | 'openapi' | 'mcp'
 export type ToolEffect = 'allow' | 'deny' | 'approval'
@@ -29,6 +30,10 @@ export type AgentApprovalMode = 'auto' | 'ask' | 'deny'
 export const TOOL_CONTEXT_MODES: readonly ToolContextMode[] = ['always', 'discoverable', 'on-demand', 'disabled']
 export const SKILL_CONTEXT_MODES: readonly SkillContextMode[] = ['always-loaded', 'discoverable', 'explicit-only', 'disabled']
 export const DECLARED_CAPABILITIES = ['subagent/run', 'read', 'write', 'bash'] as const
+const memoryMutationTools = new Set(['memory/write', 'memory/update', 'memory/delete'])
+export function memoryPolicyAllows(agent: { policies: Pick<AgentPolicySet, 'memory'>; template?: AgentDefinition['template'] }, toolId: string): boolean {
+  return agent.policies.memory === true && !(memoryMutationTools.has(toolId) && (agent.template === 'plan' || agent.template === 'reviewer'))
+}
 
 export type AgentPolicySet = {
   builtin: Record<string, boolean>
@@ -133,6 +138,10 @@ const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>>
   { tool_id: 'write', namespace: 'builtin', description: 'Write files in the selected project', adapter: 'internal', target: 'pi', operation: 'write', input_schema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: {} },
   { tool_id: 'edit', namespace: 'builtin', description: 'Edit files in the selected project', adapter: 'internal', target: 'pi', operation: 'edit', input_schema: { type: 'object', properties: { path: { type: 'string' }, edits: { type: 'array' } }, required: ['path', 'edits'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: {} },
   { tool_id: 'bash', namespace: 'builtin', description: 'Execute commands in the selected project', adapter: 'internal', target: 'pi', operation: 'bash', input_schema: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } }, required: ['command'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'external', requires_approval: true, enabled: true, metadata: {} },
+  { tool_id: 'memory/query', namespace: 'builtin', description: 'Query explicitly requested scoped memory; results are never injected automatically', adapter: 'internal', target: 'memory', operation: 'query', input_schema: { type: 'object', properties: { scope: { type: 'string', enum: ['user', 'agent', 'project'] }, query: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: { capability: 'memory/query' } },
+  { tool_id: 'memory/write', namespace: 'builtin', description: 'Write an explicitly scoped memory record', adapter: 'internal', target: 'memory', operation: 'write', input_schema: { type: 'object', properties: { scope: { type: 'string', enum: ['user', 'agent', 'project'] }, content: { type: 'string' }, metadata: { type: 'object' }, idempotencyKey: { type: 'string' } }, required: ['scope', 'content'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'memory/write' } },
+  { tool_id: 'memory/update', namespace: 'builtin', description: 'Update an explicitly scoped memory record by version', adapter: 'internal', target: 'memory', operation: 'update', input_schema: { type: 'object', properties: { id: { type: 'string' }, content: { type: 'string' }, metadata: { type: 'object' }, version: { type: 'number' } }, required: ['id', 'version'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'memory/update' } },
+  { tool_id: 'memory/delete', namespace: 'builtin', description: 'Tombstone an explicitly scoped memory record by version', adapter: 'internal', target: 'memory', operation: 'delete', input_schema: { type: 'object', properties: { id: { type: 'string' }, version: { type: 'number' } }, required: ['id', 'version'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'delete', requires_approval: true, enabled: true, metadata: { capability: 'memory/delete' } },
 ]
 
 function recordObject(value: unknown): Record<string, unknown> {
@@ -225,6 +234,7 @@ function templateDefaults(template?: AgentDefinition['template']): Pick<AgentDef
   const tool_context_modes: Record<string, ToolContextMode> = { read: 'always', grep: 'always', find: 'always', ls: 'always', 'search-tool': 'discoverable' }
   if (!template || !readOnly) Object.assign(tool_context_modes, { write: 'always', edit: 'always', bash: 'always' })
   else Object.assign(tool_context_modes, { write: 'disabled', edit: 'disabled', bash: 'disabled' })
+  if (template === 'plan' || template === 'reviewer') tool_context_modes['memory/query'] = 'discoverable'
   return { model: '', thinking: 'medium', approval_mode: readOnly ? 'auto' : 'ask', policies: { builtin: {}, registered: {}, browser: false, memory: false, subagent: false }, tool_context_modes, skill_context_modes: {} }
 }
 function normalizeSources(value: unknown, template: AgentDefinition['template']): AgentEffectiveSource {
@@ -257,6 +267,10 @@ function requiredInputError(schema: Record<string, unknown>, input: unknown): st
     if (!(String(key) in input)) return `Missing required field: ${String(key)}`
   }
   return null
+}
+
+function memoryContext(context: ToolGatewayContext, agentId: string, projectId?: string): MemoryContext {
+  return { ownerId: context.userId, agentId, ...(projectId ? { projectId } : {}) }
 }
 
 const legacyToolIds: Record<string, string> = {
@@ -415,6 +429,7 @@ export async function listToolsForAgent(client: PocketBase, userId: string, agen
   const tools = await client.collection('tool_registry').getFullList({ filter: 'enabled = true', sort: 'namespace,tool_id' })
   return tools.flatMap((record) => {
     const tool = toTool(record)
+    if (tool.tool_id.startsWith('memory/') && !memoryPolicyAllows(agent, tool.tool_id)) return []
     const contextMode = toolContextMode(agent, tool.tool_id)
     const effect = policyMap.get(tool.tool_id)
     if (contextMode === 'disabled' || contextMode === 'on-demand' || effect === 'deny' || (!effect && !agent.name.startsWith('master'))) return []
@@ -439,7 +454,10 @@ async function getTool(client: PocketBase, toolId: string): Promise<ToolDefiniti
 }
 
 async function writeAudit(client: PocketBase, data: Record<string, unknown>): Promise<void> {
-  const safe = redactSensitive(data)
+  const memoryAudit = typeof data.tool_id === 'string' && data.tool_id.startsWith('memory/')
+    ? { ...data, input: { ...recordObject(data.input), ...(recordObject(data.input).content !== undefined ? { content: '[REDACTED]' } : {}) } }
+    : data
+  const safe = redactSensitive(memoryAudit)
   await client.collection('tool_call_audit').create({ ...(safe && typeof safe === 'object' && !Array.isArray(safe) ? safe : {}), created_at: Date.now() })
 }
 
@@ -459,10 +477,20 @@ export async function respondToApproval(client: PocketBase, userId: string, appr
 
 
 
-async function invokeInternalTool(tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext): Promise<unknown> {
+async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext & { agentId?: string; projectId?: string }): Promise<unknown> {
   if (tool.target === 'subagent' && tool.operation === 'run') {
     if (!subagentToolRunner) throw new Error('Subagent execution host is unavailable')
     return subagentToolRunner(input, { ...context, cwd, callId } as ToolGatewayContext)
+  }
+  if (tool.target === 'memory') {
+    if (!context?.agentId) throw new Error('Memory requires an active agent')
+    const service = new PocketBaseMemoryService(client)
+    const scoped = memoryContext(context, context.agentId, context.projectId)
+    const args = recordObject(input)
+    if (tool.operation === 'query') return service.query(scoped, { scope: args.scope as MemoryScope | undefined, query: typeof args.query === 'string' ? args.query : undefined, limit: typeof args.limit === 'number' ? args.limit : undefined })
+    if (tool.operation === 'write') return service.write(scoped, { scope: args.scope as MemoryScope, content: String(args.content ?? ''), metadata: recordObject(args.metadata), idempotencyKey: typeof args.idempotencyKey === 'string' ? args.idempotencyKey : undefined })
+    if (tool.operation === 'update') return service.update(scoped, String(args.id), { content: typeof args.content === 'string' ? args.content : undefined, metadata: args.metadata === undefined ? undefined : recordObject(args.metadata), version: Number(args.version) })
+    if (tool.operation === 'delete') return service.tombstone(scoped, String(args.id), Number(args.version))
   }
   const definitions = {
     read: createReadToolDefinition(cwd),
@@ -478,9 +506,9 @@ async function invokeInternalTool(tool: ToolDefinition, input: unknown, cwd: str
   return definition.execute(callId, input as never, undefined, undefined, undefined as never)
 }
 
-async function invokeExternalTool(tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext): Promise<unknown> {
+async function invokeExternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext & { agentId?: string; projectId?: string }): Promise<unknown> {
   if (tool.adapter === 'internal') {
-    if (tool.target === 'pi') return invokeInternalTool(tool, input, cwd, callId, context)
+    if (tool.target === 'pi' || tool.target === 'memory') return invokeInternalTool(client, tool, input, cwd, callId, context)
     return { routed: true, toolId: tool.tool_id, operation: tool.operation, input }
   }
   if (tool.adapter === 'mcp') {
@@ -581,6 +609,14 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'error', error_code: 'VALIDATION_FAILED' })
     return { ok: false as const, toolId: canonicalId, error: { code: 'VALIDATION_FAILED', message: validationError } }
   }
+  if (canonicalId.startsWith('memory/') && effective.policies.memory !== true) {
+    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MEMORY_DISABLED' })
+    return { ok: false as const, toolId: canonicalId, error: { code: 'MEMORY_DISABLED', message: 'Memory is disabled for this agent' } }
+  }
+  if (memoryMutationTools.has(canonicalId) && (agent.template === 'plan' || agent.template === 'reviewer')) {
+    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MEMORY_QUERY_ONLY' })
+    return { ok: false as const, toolId: canonicalId, error: { code: 'MEMORY_QUERY_ONLY', message: 'This agent profile is query-only for memory' } }
+  }
 
   const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(userId)}" && agent_id = "${escapeFilter(agent.id)}"` })
   const matching = policies.filter((item) => item.tool_id === canonicalId || item.tool_id === '*')
@@ -624,7 +660,7 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
   }
 
   try {
-    const result = await invokeExternalTool(tool, input, options.cwd ?? process.cwd(), options.callId ?? crypto.randomUUID(), { userId, agentName, sessionId, permissionOverride: override, capabilities: options.capabilities })
+    const result = await invokeExternalTool(client, tool, input, options.cwd ?? process.cwd(), options.callId ?? crypto.randomUUID(), { userId, agentName, agentId: agent.id, projectId: persistedSession.projectId ? String(persistedSession.projectId) : undefined, sessionId, permissionOverride: override, capabilities: options.capabilities })
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'success', result_summary: `Executed ${tool.adapter} tool` })
     return { ok: true as const, toolId: canonicalId, result }
   } catch (error) {
@@ -716,6 +752,9 @@ async function executeApprovedTool(
   if (tool.tool_id !== toolId) return { ok: false as const, toolId, error: { code: 'UNKNOWN_TOOL', message: 'Approved tool no longer matches the registered tool' } }
   const validationError = requiredInputError(tool.input_schema, input)
   if (validationError) return { ok: false as const, toolId, error: { code: 'VALIDATION_FAILED', message: validationError } }
+  const effective = effectiveAgentConfiguration(agent, session.projectId ? String(session.projectId) : undefined)
+  if (toolId.startsWith('memory/') && effective.policies.memory !== true) return { ok: false as const, toolId, error: { code: 'MEMORY_DISABLED', message: 'Memory is disabled for this agent' } }
+  if (memoryMutationTools.has(toolId) && (agent.template === 'plan' || agent.template === 'reviewer')) return { ok: false as const, toolId, error: { code: 'MEMORY_QUERY_ONLY', message: 'This agent profile is query-only for memory' } }
   const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(userId)}" && agent_id = "${escapeFilter(agent.id)}"` })
   const matching = policies.filter((item) => item.tool_id === toolId || item.tool_id === '*')
   const explicitlyAllowed = matching.some((item) => item.effect === 'allow' || item.effect === 'approval')
@@ -728,9 +767,11 @@ async function executeApprovedTool(
   try {
     const resumedInput = toolId === 'subagent/run' ? { ...recordObject(input), approvalId: approval.id } : input
     const requestedCapabilities = recordObject(input).capabilities
-    const result = await invokeExternalTool(tool, resumedInput, cwd, callId, {
+    const result = await invokeExternalTool(client, tool, resumedInput, cwd, callId, {
       userId,
       agentName: agent.name,
+      agentId: agent.id,
+      projectId: session.projectId ? String(session.projectId) : undefined,
       sessionId: session.id,
       cwd,
       permissionOverride: session.permissionOverride,

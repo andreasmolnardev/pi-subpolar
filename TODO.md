@@ -5,10 +5,10 @@
 Current phase: Phase 0A / Phase 0 foundation
 Current milestone: Milestone A - Dependable Subpolar
 Current branch: main
-Last completed commit: pending — cursor replay and scoped gateway credentials checkpoint
-Last verified commit: working tree — cursor/gateway checkpoint independently verified with notes
+Last completed commit: pending — memory capability checkpoint
+Last verified commit: working tree — memory checkpoint independently verified with notes
 Current blockers: full WebUI dependencies are unavailable; the local CLI is still a fixture executor rather than Pi-backed; no disposable E2E harness exists; scoped remote gateway credentials are not implemented
-Next recommended action: commit the verified Tasks/subagent/worktree checkpoint, then implement memory
+Next recommended action: commit memory checkpoint, then implement browser session foundations
 
 ## Architecture Decisions
 
@@ -188,6 +188,7 @@ Requirements:
 | impl-git-read | P3 read-only Git repository/worktree service | main git server scope | COMPLETE - VERIFIED WITH NOTES | Safe executor, path policy, status/branches/diff/worktrees routes and tests |
 | verify-git-read | Independent Git security verification | main read-only | COMPLETE - FINDINGS CORRECTED | Ownership/path/argv/output/parser findings corrected |
 | impl-tasks-subagents | P4 durable Tasks/subagent/run/worktree metadata | main task/agent scope | COMPLETE - VERIFIED WITH NOTES | 20 focused tests, ownership/ceiling/approval/worktree checks |
+| impl-memory | P7 explicit scoped memory capability | main memory/tool scope | COMPLETE - VERIFIED WITH NOTES | 119 server + 63 package tests; live persistence service unverified |
 | audit-general-capabilities | P7-P13 memory/browser/voice/automation audit | main read-only | IN PROGRESS | Dependency map and independent implementation slices |
 
 ## Completed Work
@@ -210,6 +211,8 @@ Requirements:
 - Git read checkpoint verified: focused Git tests and 101 native server tests pass; bridge/WebUI typechecks and bridge build pass; mutations intentionally excluded.
 - e66da09 committed and verified as the Git read checkpoint.
 - Tasks/subagent/worktree checkpoint independently verified: 20 focused tests, bridge typecheck/build, fail-closed capability ceiling, approval resume, ownership, atomic transitions, and custom-root worktree checks pass; live PocketBase unavailable.
+- 61f32e1 committed and verified as the Tasks/subagent/worktree checkpoint.
+- Memory checkpoint independently verified: 5 focused memory tests, 119 server tests, 63 package tests, typechecks, atomic idempotency/ownership, persistence validation, redaction, and no-injection checks pass.
 - 1671cb3 committed and verified as the agent profile/context checkpoint.
 
 ## Known Bugs
@@ -248,6 +251,6 @@ Requirements:
 
 ## Next Actions
 
-1. Commit the verified Tasks/subagent/worktree checkpoint.
-2. Implement memory with explicit scope, authorization, audit, and opt-in defaults.
-3. Continue browser, voice, and automations in dependency order.
+1. Commit the verified memory checkpoint.
+2. Implement browser session foundations with network policy and normal gateway approvals.
+3. Continue voice and automations in dependency order.

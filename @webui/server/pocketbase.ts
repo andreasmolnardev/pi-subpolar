@@ -262,6 +262,20 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('created_at', 'number', { required: true }),
   ], ['CREATE INDEX idx_tool_call_audit_user_created ON tool_call_audit (user_id, created_at)'])
 
+  await ensureCollection(client, 'memory_records', [
+    field('owner_id', 'text', { required: true }),
+    field('scope', 'select', { required: true, values: ['user', 'agent', 'project'], maxSelect: 1 }),
+    field('agent_id', 'text'),
+    field('project_id', 'text'),
+    field('content', 'text', { required: true }),
+    field('metadata', 'json'),
+    field('created_at', 'number', { required: true }),
+    field('updated_at', 'number', { required: true }),
+    field('version', 'number', { required: true }),
+    field('tombstone', 'bool', { required: true }),
+    field('idempotency_key', 'text'),
+  ], ['CREATE UNIQUE INDEX idx_memory_owner_idempotency ON memory_records (owner_id, idempotency_key)', 'CREATE INDEX idx_memory_owner_updated ON memory_records (owner_id, updated_at)', 'CREATE INDEX idx_memory_owner_scope ON memory_records (owner_id, scope)'], true)
+
   await ensureCollection(client, 'gateway_credentials', [
     field('owner_id', 'text', { required: true }),
     field('principal', 'text', { required: true }),

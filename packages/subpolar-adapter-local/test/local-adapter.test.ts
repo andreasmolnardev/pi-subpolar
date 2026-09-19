@@ -17,6 +17,21 @@ describe("local adapter", () => {
     await expect((first.sessions as EphemeralSessionStore).persist()).rejects.toMatchObject({ code: "UNSUPPORTED_CAPABILITY" });
   });
 
+  test("does not claim durable memory without an explicit memory store", async () => {
+    const ephemeral = createLocalAdapter();
+    expect(ephemeral.capabilities.supports["memory.persistence"]).toBe(false);
+    await ephemeral.memory.save({ id: "m-1", ownerId: "user-a", scope: "user", content: "x", metadata: null, createdAt: entry.occurredAt, updatedAt: entry.occurredAt, version: 1, tombstone: false });
+    expect((await ephemeral.memory.list("user-a"))).toHaveLength(1);
+
+    const directory = await mkdtemp(join(tmpdir(), "subpolar-memory-"));
+    try {
+      const durable = createLocalAdapter({ memoryFile: join(directory, "memory.json") });
+      expect(durable.capabilities.supports["memory.persistence"]).toBe(true);
+      await durable.memory.save({ id: "m-1", ownerId: "user-a", scope: "user", content: "x", metadata: null, createdAt: entry.occurredAt, updatedAt: entry.occurredAt, version: 1, tombstone: false });
+      expect((await createLocalAdapter({ memoryFile: join(directory, "memory.json") }).memory.list("user-a"))).toHaveLength(1);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   test("explicit JSON persistence resumes transcripts without provider secrets", async () => {
     const directory = await mkdtemp(join(tmpdir(), "subpolar-local-"));
     const filePath = join(directory, "sessions.json");
@@ -63,5 +78,27 @@ describe("local adapter", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  test("serializes concurrent memory saves without losing records", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "subpolar-memory-"));
+    const filePath = join(directory, "memory.json");
+    try {
+      const store = createLocalAdapter({ memoryFile: filePath }).memory;
+      await Promise.all(Array.from({ length: 20 }, (_, index) => store.save({
+        id: `memory-${index}`, ownerId: "user-a", scope: "user", content: `content-${index}`, metadata: null,
+        createdAt: entry.occurredAt, updatedAt: entry.occurredAt, version: 1, tombstone: false,
+      })));
+      expect(await store.list("user-a")).toHaveLength(20);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  test("rejects malformed persisted memory records", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "subpolar-memory-"));
+    const filePath = join(directory, "memory.json");
+    try {
+      await writeFile(filePath, JSON.stringify([{ id: "memory-1", ownerId: "user-a", scope: "user", content: 7, metadata: null, createdAt: entry.occurredAt, updatedAt: entry.occurredAt, version: 1, tombstone: false }]));
+      await expect(createLocalAdapter({ memoryFile: filePath }).memory.list("user-a")).rejects.toThrow("Invalid memory memory[0].content");
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });

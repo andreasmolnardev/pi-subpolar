@@ -258,6 +258,25 @@ describe("PocketBase adapter fake-client contract", () => {
     expect((await client.collection("events").list())[0].id).not.toBe("attacker-event-id");
   });
 
+  test("memory writes cannot override trusted owner, scope, or record IDs", async () => {
+    const client = new FakeClient();
+    const adapter = createPocketBaseAdapter({ client, collections: { memories: "memories" }, now });
+    const saved = await adapter.memories.save("owner-a", {
+      id: "attacker-id",
+      ownerId: "owner-b",
+      scope: "user",
+      content: "private",
+      metadata: null,
+      createdAt: now().toISOString(),
+      updatedAt: now().toISOString(),
+      version: 1,
+      tombstone: false,
+    } as never);
+    expect(saved).toMatchObject({ id: "record-1", ownerId: "owner-a", scope: "user" });
+    expect((await client.collection("memories").list())[0]).toMatchObject({ id: "record-1", ownerId: "owner-a", scope: "user" });
+    expect(await adapter.memories.list("owner-b")).toEqual([]);
+  });
+
   test("rejects approval decisions without an atomic capability", async () => {
     const adapter = makeAdapter({ transaction: undefined });
     const approval = await adapter.approvals.create("owner-a", {

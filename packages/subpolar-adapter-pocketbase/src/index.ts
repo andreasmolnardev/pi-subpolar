@@ -7,6 +7,8 @@ import type {
   JsonValue,
   SessionStore as CoreSessionStore,
   SessionTranscriptEntry,
+  MemoryRecord,
+  MemoryScope,
 } from "../../subpolar-contracts/src/index.ts";
 
 export const POCKETBASE_ADAPTER_NAME = "pocketbase";
@@ -23,7 +25,8 @@ export type PocketBaseCapability =
   | "idempotency"
   | "conditional-updates"
   | "approval.atomic-decision"
-  | "multi-process-concurrency";
+  | "multi-process-concurrency"
+  | "memory.persistence";
 
 export interface PocketBaseAdapterCapabilities {
   adapter: typeof POCKETBASE_ADAPTER_NAME;
@@ -32,7 +35,7 @@ export interface PocketBaseAdapterCapabilities {
 }
 
 function commonCapability(capability: PocketBaseCapability): AdapterCapability {
-  if (capability === "session.persistence" || capability === "event.replay" || capability === "durable-approvals") {
+  if (capability === "session.persistence" || capability === "event.replay" || capability === "durable-approvals" || capability === "memory.persistence") {
     return capability;
   }
   return capability === "multi-process-concurrency" || capability === "transactions" || capability === "idempotency" || capability === "conditional-updates" || capability === "approval.atomic-decision"
@@ -103,6 +106,7 @@ export interface PocketBaseCollectionNames {
   approvals?: string | null;
   audits?: string | null;
   events?: string | null;
+  memories?: string | null;
 }
 
 export interface PocketBaseAdapterOptions {
@@ -238,6 +242,11 @@ export interface EventRepository {
   replay(ownerId: string, options?: EventReplayOptions): Promise<PublishedEvent[]>;
 }
 
+export interface MemoryRepository {
+  list(ownerId: string, limit?: number): Promise<MemoryRecord[]>;
+  save(ownerId: string, record: Omit<MemoryRecord, "ownerId">): Promise<MemoryRecord>;
+}
+
 export interface TransactionBoundary {
   run<T>(operation: () => Promise<T>): Promise<T>;
 }
@@ -254,6 +263,7 @@ export interface PocketBaseAdapter {
   readonly approvals: ApprovalRepository;
   readonly audits: AuditRepository;
   readonly events: EventRepository;
+  readonly memories: MemoryRepository;
   readonly transactions: TransactionBoundary;
   readonly idempotency: IdempotencyBoundary;
 }
@@ -432,6 +442,32 @@ function mapPublishedEvent(record: PocketBaseStoredRecord): PublishedEvent {
   };
 }
 
+function memoryScope(value: unknown): MemoryScope {
+  if (value === "user" || value === "agent" || value === "project") return value;
+  throw new Error("PocketBase memory has an invalid scope");
+}
+
+function mapMemory(record: PocketBaseStoredRecord, trustedOwner: string): MemoryRecord {
+  const scope = memoryScope(record.scope);
+  const tombstone = record.tombstone;
+  if (typeof tombstone !== "boolean") throw new Error("PocketBase memory has an invalid tombstone");
+  const version = record.version;
+  if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) throw new Error("PocketBase memory has an invalid version");
+  return {
+    id: requireText(record.id, "recordId"),
+    ownerId: trustedOwner,
+    scope,
+    ...(scope === "agent" ? { agentId: requireText(record.agentId as string, "agentId") } : {}),
+    ...(scope === "project" ? { projectId: requireText(record.projectId as string, "projectId") } : {}),
+    content: asString(record, "content"),
+    metadata: asJson(record, "metadata", null),
+    createdAt: asString(record, "createdAt"),
+    updatedAt: asString(record, "updatedAt"),
+    version,
+    tombstone,
+  };
+}
+
 export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): PocketBaseAdapter {
   const now = options.now ?? (() => new Date());
   const collection = (name: string | undefined): PocketBaseCollectionPort | undefined =>
@@ -442,6 +478,7 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
   const approvalCollection = collection(configuredCollectionName(options.collections, "approvals"));
   const auditCollection = collection(configuredCollectionName(options.collections, "audits"));
   const eventCollection = collection(configuredCollectionName(options.collections, "events"));
+  const memoryCollection = collection(configuredCollectionName(options.collections, "memories"));
 
   const supports: Record<PocketBaseCapability, boolean> = {
     "agent.persistence": Boolean(agentCollection),
@@ -456,6 +493,7 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
     "conditional-updates": Boolean(options.conditionalUpdate),
     "approval.atomic-decision": Boolean(approvalCollection && (options.transaction || options.idempotency || options.conditionalUpdate)),
     "multi-process-concurrency": false,
+    "memory.persistence": Boolean(memoryCollection),
   };
   const capabilities: PocketBaseAdapterCapabilities = {
     adapter: POCKETBASE_ADAPTER_NAME,
@@ -713,6 +751,35 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
     },
   };
 
+  const memories: MemoryRepository = {
+    async list(ownerId, limit = 50) {
+      const scopedOwner = owner(ownerId);
+      const records = await ownedRecords(requireCollection(memoryCollection, "memory.persistence"), scopedOwner);
+      return records.filter((item) => mapMemory(item, scopedOwner).tombstone === false).slice(0, Math.min(Math.max(Math.trunc(limit), 1), 50)).map((item) => mapMemory(item, scopedOwner));
+    },
+    async save(ownerId, input) {
+      const scopedOwner = owner(ownerId); const collection = requireCollection(memoryCollection, "memory.persistence");
+      const scope = memoryScope(input.scope);
+      requireText(input.content, "content");
+      if (!Number.isSafeInteger(input.version) || input.version < 1) throw new Error("Invalid memory version");
+      if (typeof input.tombstone !== "boolean") throw new Error("Invalid memory tombstone");
+      const data: Record<string, unknown> = {
+        ownerId: scopedOwner,
+        scope,
+        content: input.content,
+        metadata: redactJson(input.metadata),
+        createdAt: input.createdAt,
+        updatedAt: input.updatedAt,
+        version: input.version,
+        tombstone: input.tombstone,
+      };
+      if (scope === "agent") data.agentId = requireText(input.agentId as string, "agentId");
+      if (scope === "project") data.projectId = requireText(input.projectId as string, "projectId");
+      const created = await collection.create(data);
+      return { ...input, ownerId: scopedOwner, id: requireText(created.id, "recordId"), scope };
+    },
+  };
+
   return {
     capabilities,
     agents,
@@ -721,6 +788,7 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
     approvals,
     audits,
     events,
+    memories,
     transactions: {
       run: async <T>(operation: () => Promise<T>) => {
         if (!options.transaction) throw new PocketBaseUnsupportedCapabilityError("transactions");

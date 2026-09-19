@@ -97,6 +97,7 @@ export {
 export * from './request-security.ts'
 export * from './network-policy.ts'
 export * from './security-redaction.ts'
+export * from './memory.ts'
 export * from './project-filesystem.ts'
 
 export * from './provider-accounts.ts'

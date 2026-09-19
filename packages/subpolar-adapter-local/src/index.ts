@@ -6,8 +6,10 @@ import type {
   SessionRecord,
   SessionStore,
   SessionTranscriptEntry,
+  MemoryRecord,
+  MemoryStore,
 } from "../../subpolar-contracts/src/index.ts";
-import { UnsupportedCapabilityError } from "../../subpolar-contracts/src/index.ts";
+import { UnsupportedCapabilityError, type JsonValue } from "../../subpolar-contracts/src/index.ts";
 
 const ephemeralCapabilities: AdapterCapabilities = {
   adapter: "local-ephemeral",
@@ -28,8 +30,94 @@ const jsonFileCapabilities: AdapterCapabilities = {
     "event.replay": false,
     "multi-process-concurrency": false,
     "durable-approvals": false,
+    "memory.persistence": false,
   },
 };
+
+const memoryCapabilities = (durable: boolean): AdapterCapabilities => ({
+  adapter: durable ? "local-json-file" : "local-ephemeral",
+  durability: durable ? "json-file" : "ephemeral",
+  supports: { "memory.persistence": durable },
+});
+
+export class LocalMemoryStore implements MemoryStore {
+  readonly capabilities: AdapterCapabilities;
+  private readonly records = new Map<string, MemoryRecord>();
+  private operationQueue: Promise<void> = Promise.resolve();
+  constructor(private readonly filePath?: string) { this.capabilities = memoryCapabilities(Boolean(filePath)); }
+  async list(ownerId: string, limit = 50): Promise<readonly MemoryRecord[]> {
+    if (!this.filePath) return [...this.records.values()].filter((item) => item.ownerId === ownerId).slice(0, Math.min(limit, 50)).map((item) => structuredClone(item));
+    return this.serialize(async () => {
+      const records = await this.read();
+      return records.filter((item) => item.ownerId === ownerId).slice(0, Math.min(limit, 50)).map((item) => structuredClone(item));
+    });
+  }
+  async save(record: MemoryRecord): Promise<MemoryRecord> {
+    const validated = validateMemoryRecord(record, "memory.save");
+    if (!this.filePath) { this.records.set(validated.id, validated); return structuredClone(validated); }
+    return this.serialize(async () => {
+      const records = await this.read();
+      const index = records.findIndex((item) => item.id === validated.id);
+      if (index < 0) records.push(validated); else records[index] = validated;
+      await mkdir(dirname(this.filePath!), { recursive: true });
+      const temporaryPath = `${this.filePath}.tmp-${process.pid}-${randomUUID()}`;
+      await writeFile(temporaryPath, `${JSON.stringify(records, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      await rename(temporaryPath, this.filePath!);
+      return structuredClone(validated);
+    });
+  }
+  private async read(): Promise<MemoryRecord[]> {
+    try {
+      const parsed: unknown = JSON.parse(await readFile(this.filePath!, "utf8"));
+      if (!Array.isArray(parsed)) throw new Error("Memory file must contain an array");
+      return parsed.map((value, index) => validateMemoryRecord(value, `memory[${index}]`));
+    }
+    catch (error) { if ((error as { code?: string }).code === "ENOENT") return []; throw error; }
+  }
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operationQueue.then(operation, operation);
+    this.operationQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+}
+
+type PersistedMemoryRecord = MemoryRecord & { idempotencyKey?: string };
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  if (!isPlainObject(value)) return false;
+  return Object.values(value).every(isJsonValue);
+}
+
+function assertMemoryText(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) throw new Error(`Invalid memory ${field}`);
+}
+
+function assertMemoryTimestamp(value: unknown, field: string): asserts value is string {
+  assertMemoryText(value, field);
+  if (new Date(value).toISOString() !== value) throw new Error(`Invalid memory ${field}`);
+}
+
+function validateMemoryRecord(value: unknown, location: string): PersistedMemoryRecord {
+  if (!isPlainObject(value)) throw new Error(`Invalid memory record at ${location}`);
+  const allowed = new Set(["id", "ownerId", "scope", "agentId", "projectId", "content", "metadata", "createdAt", "updatedAt", "version", "tombstone", "idempotencyKey"]);
+  if (Object.keys(value).some((field) => !allowed.has(field))) throw new Error(`Invalid memory record at ${location}`);
+  assertMemoryText(value.id, `${location}.id`);
+  assertMemoryText(value.ownerId, `${location}.ownerId`);
+  if (!(["user", "agent", "project"] as const).includes(value.scope as MemoryRecord["scope"])) throw new Error(`Invalid memory scope at ${location}`);
+  if (value.agentId !== undefined) assertMemoryText(value.agentId, `${location}.agentId`);
+  if (value.projectId !== undefined) assertMemoryText(value.projectId, `${location}.projectId`);
+  assertMemoryText(value.content, `${location}.content`);
+  if (!isJsonValue(value.metadata)) throw new Error(`Invalid memory metadata at ${location}`);
+  assertMemoryTimestamp(value.createdAt, `${location}.createdAt`);
+  assertMemoryTimestamp(value.updatedAt, `${location}.updatedAt`);
+  if (typeof value.version !== "number" || !Number.isSafeInteger(value.version) || value.version < 1) throw new Error(`Invalid memory version at ${location}`);
+  if (typeof value.tombstone !== "boolean") throw new Error(`Invalid memory tombstone at ${location}`);
+  if (value.idempotencyKey !== undefined) assertMemoryText(value.idempotencyKey, `${location}.idempotencyKey`);
+  return structuredClone(value) as unknown as PersistedMemoryRecord;
+}
 
 const forbiddenSessionIds = new Set([
   "__defineGetter__",
@@ -199,14 +287,17 @@ export class JsonFileSessionStore implements SessionStore {
 
 export interface LocalAdapterOptions {
   sessionFile?: string;
+  memoryFile?: string;
 }
 
 export interface LocalAdapter {
   readonly sessions: SessionStore;
   readonly capabilities: AdapterCapabilities;
+  readonly memory: MemoryStore;
 }
 
 export function createLocalAdapter(options: LocalAdapterOptions = {}): LocalAdapter {
   const sessions = options.sessionFile ? new JsonFileSessionStore(options.sessionFile) : new EphemeralSessionStore();
-  return { sessions, capabilities: sessions.capabilities };
+  const memory = new LocalMemoryStore(options.memoryFile);
+  return { sessions, memory, capabilities: { ...sessions.capabilities, supports: { ...sessions.capabilities.supports, "memory.persistence": Boolean(options.memoryFile) } } };
 }
