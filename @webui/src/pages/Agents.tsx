@@ -115,6 +115,13 @@ export function Agents() {
         // the policy table below remains the backend enforcement projection.
         toolAccess: agent.toolAccess || [],
         enabled: !agent.disable,
+        template: agent.template,
+        model: agent.model || '',
+        thinking: agent.thinking || 'medium',
+        approval_mode: agent.approval_mode || 'ask',
+        tool_context_modes: agent.tool_context_modes || {},
+        skill_context_modes: agent.skill_context_modes || {},
+        project_overrides: agent.project_overrides || {},
         sort_order: agent.sort_order || 0,
       }
       const savedAgent = id ? await settingsApi.updateAgent(id, request) : await settingsApi.createAgent(request)

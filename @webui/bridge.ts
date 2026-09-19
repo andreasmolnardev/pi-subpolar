@@ -1107,7 +1107,7 @@ class PiSdkSession {
     this.runtimePermissionOverride = context.permissionOverride
     this.record.profile = context.agentName
     if (context.session?.permissionOverride !== undefined) this.record.permissionOverride = context.session.permissionOverride
-    const runtime = await loadAgentRuntime(client, userId, context.agentName)
+    const runtime = await loadAgentRuntime(client, userId, context.agentName, context.session?.project)
     const sessionManager = await this.openOrCreateSession()
     const sessionCwd = this.record.directory ?? this.project.path
     const resourceLoader = new DefaultResourceLoader({
@@ -1132,9 +1132,9 @@ class PiSdkSession {
               properties: permissionAskedProperties({ id: approval.id, sessionId: approval.session_id, toolId: approval.tool_id, input: approval.input, reason: approval.reason }),
             }, userId)
           },
-          listTools: () => listToolsForAgent(client, userId, runtime.agent.name),
-          searchTools: (query) => searchToolsForAgent(client, userId, runtime.agent.name, query),
-          describeTool: (toolId) => describeToolForAgent(client, userId, runtime.agent.name, toolId),
+           listTools: () => listToolsForAgent(client, userId, runtime.agent.name, context.session?.project),
+           searchTools: (query) => searchToolsForAgent(client, userId, runtime.agent.name, query),
+           describeTool: (toolId) => describeToolForAgent(client, userId, runtime.agent.name, toolId),
         }),
       ],
     })
@@ -1763,8 +1763,16 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
           mode: input.mode === 'subagent' ? 'subagent' : 'primary',
           prompt: typeof input.prompt === 'string' ? input.prompt : '',
           systemPrompt: typeof input.systemPrompt === 'string' ? input.systemPrompt : '',
-          enabled: input.enabled !== false,
-          created_at: now,
+           enabled: input.enabled !== false,
+           ...(input.template === 'general' || input.template === 'coding' || input.template === 'plan' || input.template === 'reviewer' ? { template: input.template } : {}),
+           ...(typeof input.model === 'string' ? { model: input.model } : {}),
+           ...(input.thinking === 'off' || input.thinking === 'minimal' || input.thinking === 'low' || input.thinking === 'medium' || input.thinking === 'high' ? { thinking: input.thinking } : {}),
+           ...(input.approval_mode === 'auto' || input.approval_mode === 'ask' || input.approval_mode === 'deny' ? { approval_mode: input.approval_mode } : {}),
+           ...(input.policies && typeof input.policies === 'object' ? { policies: input.policies } : {}),
+           ...(input.project_overrides && typeof input.project_overrides === 'object' ? { project_overrides: input.project_overrides } : {}),
+           ...(input.tool_context_modes && typeof input.tool_context_modes === 'object' ? { tool_context_modes: input.tool_context_modes } : {}),
+           ...(input.skill_context_modes && typeof input.skill_context_modes === 'object' ? { skill_context_modes: input.skill_context_modes } : {}),
+           created_at: now,
           updated_at: now,
         })
         return json({ ...record, systemPrompt: record.systemPrompt }, 201)
@@ -1780,8 +1788,16 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
           ...(input.mode === 'subagent' || input.mode === 'primary' ? { mode: input.mode } : {}),
           ...(typeof input.prompt === 'string' ? { prompt: input.prompt } : {}),
           ...(typeof input.systemPrompt === 'string' ? { systemPrompt: input.systemPrompt } : {}),
-          ...(typeof input.enabled === 'boolean' ? { enabled: input.enabled } : {}),
-          updated_at: Date.now(),
+           ...(typeof input.enabled === 'boolean' ? { enabled: input.enabled } : {}),
+           ...(input.template === 'general' || input.template === 'coding' || input.template === 'plan' || input.template === 'reviewer' ? { template: input.template } : {}),
+           ...(typeof input.model === 'string' ? { model: input.model } : {}),
+           ...(input.thinking === 'off' || input.thinking === 'minimal' || input.thinking === 'low' || input.thinking === 'medium' || input.thinking === 'high' ? { thinking: input.thinking } : {}),
+           ...(input.approval_mode === 'auto' || input.approval_mode === 'ask' || input.approval_mode === 'deny' ? { approval_mode: input.approval_mode } : {}),
+           ...(input.policies && typeof input.policies === 'object' ? { policies: input.policies } : {}),
+           ...(input.project_overrides && typeof input.project_overrides === 'object' ? { project_overrides: input.project_overrides } : {}),
+           ...(input.tool_context_modes && typeof input.tool_context_modes === 'object' ? { tool_context_modes: input.tool_context_modes } : {}),
+           ...(input.skill_context_modes && typeof input.skill_context_modes === 'object' ? { skill_context_modes: input.skill_context_modes } : {}),
+           updated_at: Date.now(),
         }
         const record = await client.collection('agents').update(id, update)
         return json({ ...record, systemPrompt: record.systemPrompt })

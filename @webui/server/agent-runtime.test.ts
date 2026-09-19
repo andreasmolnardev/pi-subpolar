@@ -7,6 +7,7 @@ import {
   legacyProfileToPiConfiguration,
 
 } from './agent-runtime.ts'
+import { agentTemplateDefaults, agentToolContextMode, effectiveAgentConfiguration } from './tools.ts'
 
 type TestRecord = Record<string, unknown>
 
@@ -53,6 +54,27 @@ function baseData(overrides: Partial<TestData> = {}): TestData {
 }
 
 describe('PocketBase agent runtime adapter', () => {
+  it('provides bounded template defaults and never lets a project increase exposure', () => {
+    const plan = agentTemplateDefaults('plan')
+    expect(plan.tool_context_modes.write).toBe('disabled')
+    expect(plan.approval_mode).toBe('auto')
+    const agent = {
+      ...baseData().agent,
+      template: 'plan',
+      model: '',
+      thinking: 'medium',
+      approval_mode: 'auto',
+      policies: plan.policies,
+      project_overrides: { project_1: { tools: { write: 'always' } } },
+      tool_context_modes: plan.tool_context_modes,
+      skill_context_modes: {},
+      effective_source: { model: 'template', thinking: 'template', approval: 'template', tools: 'template', skills: 'template' },
+    }
+    const effective = effectiveAgentConfiguration(agent as never, 'project_1')
+    expect(agentToolContextMode(effective, 'write')).toBe('disabled')
+    expect(effective.effective_source.tools).toBe('project')
+  })
+
   it('projects owned agent prompts and policies into routed Pi tools', async () => {
     const runtime = await loadAgentRuntime(clientFor(baseData({
       policies: [

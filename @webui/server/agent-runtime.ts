@@ -9,6 +9,12 @@ import {
   type ToolDefinition,
   type ToolEffect,
   type ToolRisk,
+  type AgentApprovalMode,
+  type AgentPolicySet,
+  type AgentEffectiveSource,
+  agentTemplateDefaults,
+  agentToolContextMode,
+  effectiveAgentConfiguration,
 } from './tools.ts'
 
 /** The only Pi tool names that can be activated by this adapter. */
@@ -115,6 +121,7 @@ export type PiRuntimeConfiguration = {
   allowedToolNames: readonly PiRoutedToolName[]
   initialActiveToolNames: readonly PiRoutedToolName[]
   excludedToolNames: readonly PiRoutedToolName[]
+  effectiveSource: AgentEffectiveSource
 }
 
 export type AgentRuntime = {
@@ -191,6 +198,13 @@ function toAgentDefinition(value: unknown): AgentDefinition {
     throw new AgentRuntimeError('INVALID_AGENT', 'PocketBase returned an invalid agent record')
   }
 
+  const template = record.template === 'general' || record.template === 'coding' || record.template === 'plan' || record.template === 'reviewer' ? record.template : undefined
+  const defaults = agentTemplateDefaults(template)
+  const modes = object(record.tool_context_modes ?? defaults.tool_context_modes)
+  const skills = object(record.skill_context_modes ?? defaults.skill_context_modes)
+  const policies = object(record.policies ?? defaults.policies)
+  const validThinking = record.thinking === 'off' || record.thinking === 'minimal' || record.thinking === 'low' || record.thinking === 'medium' || record.thinking === 'high' ? record.thinking : defaults.thinking
+  const validApproval: AgentApprovalMode = record.approval_mode === 'auto' || record.approval_mode === 'ask' || record.approval_mode === 'deny' ? record.approval_mode : defaults.approval_mode
   return {
     id,
     user_id: userId,
@@ -200,6 +214,21 @@ function toAgentDefinition(value: unknown): AgentDefinition {
     prompt: stringValue(record.prompt),
     system_prompt: stringValue(record.systemPrompt ?? record.system_prompt),
     enabled: record.enabled !== false,
+    template,
+    model: typeof record.model === 'string' ? record.model : defaults.model,
+    thinking: validThinking,
+    approval_mode: validApproval,
+    policies: {
+      builtin: object(policies.builtin) as AgentPolicySet['builtin'],
+      registered: object(policies.registered) as AgentPolicySet['registered'],
+      browser: policies.browser === true,
+      memory: policies.memory === true,
+      subagent: policies.subagent === true,
+    },
+    project_overrides: object(record.project_overrides) as AgentDefinition['project_overrides'],
+    tool_context_modes: modes as AgentDefinition['tool_context_modes'],
+    skill_context_modes: skills as AgentDefinition['skill_context_modes'],
+    effective_source: object(record.effective_source) as unknown as AgentEffectiveSource,
     created_at: finiteNumber(record.created_at),
     updated_at: finiteNumber(record.updated_at),
   }
@@ -313,7 +342,7 @@ function buildToolPolicyRuntime(agent: AgentDefinition, policies: readonly Agent
     return {
       definition,
       effect,
-      allowed: effect !== 'deny',
+      allowed: effect !== 'deny' && agentToolContextMode(agent, definition.tool_id) !== 'disabled',
       requiresApproval: effect === 'approval' || definition.requires_approval,
       piToolName: nativePiToolName(definition),
       matchingPolicies: matching,
@@ -342,7 +371,8 @@ function buildPiRuntimeConfiguration(agent: AgentDefinition, toolPolicy: AgentTo
   const excluded = new Set<PiRoutedToolName>()
 
   for (const tool of toolPolicy.tools) {
-    if (tool.allowed) allowed.add(tool.piToolName)
+    const mode = agentToolContextMode(agent, tool.definition.tool_id)
+    if (tool.allowed && (mode === 'always' || mode === 'discoverable')) allowed.add(tool.piToolName)
     else excluded.add(tool.piToolName)
   }
 
@@ -375,6 +405,7 @@ function buildPiRuntimeConfiguration(agent: AgentDefinition, toolPolicy: AgentTo
     allowedToolNames: activeToolNames,
     initialActiveToolNames: activeToolNames,
     excludedToolNames: [...excluded].filter((name) => !allowed.has(name)),
+    effectiveSource: agent.effective_source,
   }
 }
 
@@ -431,6 +462,7 @@ export async function loadAgentRuntime(
   client: PocketBase,
   userId: string,
   agentSelector = 'master',
+  projectId?: string,
 ): Promise<AgentRuntime> {
   const normalizedUserId = nonBlank(userId)
   if (!normalizedUserId) throw new AgentRuntimeError('INVALID_USER', 'A user ID is required')
@@ -438,7 +470,7 @@ export async function loadAgentRuntime(
   if (!selector) throw new AgentRuntimeError('INVALID_AGENT_SELECTOR', 'An agent name or ID is required')
 
   const record = await getAgentRecord(client, normalizedUserId, selector)
-  const agent = toAgentDefinition(record)
+  const agent = effectiveAgentConfiguration(toAgentDefinition(record), projectId)
   if (agent.user_id !== normalizedUserId) {
     throw new AgentRuntimeError('AGENT_NOT_OWNED', 'Agent was not found')
   }

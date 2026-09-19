@@ -8,7 +8,7 @@ Current branch: main
 Last completed commit: pending — cursor replay and scoped gateway credentials checkpoint
 Last verified commit: working tree — cursor/gateway checkpoint independently verified with notes
 Current blockers: full WebUI dependencies are unavailable; the local CLI is still a fixture executor rather than Pi-backed; no disposable E2E harness exists; scoped remote gateway credentials are not implemented
-Next recommended action: commit attachment/appearance checkpoint, then implement authoritative agent profiles and capability context modes
+Next recommended action: commit the authoritative agent profile/context checkpoint, then implement the bounded Git repository/worktree read service
 
 ## Architecture Decisions
 
@@ -183,8 +183,8 @@ Requirements:
 | impl-attachments | P1 chat context attachments | main composer/attachment scope | COMPLETE - VERIFIED WITH NOTES | Attachment helper tests, type/build checks; live uploads unverified |
 | impl-appearance | P2 themes and productivity foundation | main appearance/navigation scope | COMPLETE - VERIFIED WITH NOTES | Theme/reduced-motion/command palette tests; full dependency suite limited |
 | audit-next-roadmap | Re-audit remaining P1/P2/P4-P13 gaps | main read-only | IN PROGRESS | Prioritized next implementation batch |
-| impl-cursor-replay | P0 durable event cursor replay/reconnect | main bridge/event scope | IN PROGRESS | SSE cursor store, Last-Event-ID, replay tests |
-| impl-gateway-credentials | P14 scoped remote gateway credentials | main auth/tools scope | IN PROGRESS | Credential lifecycle, scoped tool CLI auth, tests |
+| impl-agent-context | P5/P6 authoritative profiles and capability context modes | main agent/tools scope | COMPLETE - VERIFIED WITH NOTES | 9 focused server tests; full build limited by unrelated settings errors |
+| design-git-service | P3 repository/worktree service design audit | main read-only | IN PROGRESS | Contracts, dependencies, bounded implementation proposal |
 
 ## Completed Work
 
@@ -201,6 +201,8 @@ Requirements:
 - 1b4019a committed and verified as the queue/Pi/E2E checkpoint.
 - Cursor/gateway checkpoint independently verified: 27 focused cursor/credential/CLI tests and 37 package tests pass; live service/E2E unavailable.
 - Attachment/appearance checkpoint verified: 6 focused tests, bridge build, and diff checks pass; live upload/vision/website and full WebUI typecheck remain environment-limited.
+- df1fd00 committed and verified as the attachment/appearance checkpoint.
+- Agent profile/context checkpoint verified: 9 focused server tests and bridge typecheck pass; full WebUI build remains blocked by unrelated settings errors.
 
 ## Known Bugs
 
@@ -238,6 +240,6 @@ Requirements:
 
 ## Next Actions
 
-1. Commit the attachment/appearance checkpoint and record its SHA.
-2. Implement authoritative agent profiles and tool/skill context modes.
-3. Continue Git/worktrees, tasks, subagents, memory, browser, voice, and automations in dependency order.
+1. Commit the authoritative agent profile/context checkpoint.
+2. Implement the bounded Git repository/worktree read service from the design audit.
+3. Continue tasks/subagents, memory, browser, voice, and automations in dependency order.

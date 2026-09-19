@@ -21,6 +21,34 @@ export type ToolAdapter = 'internal' | 'http' | 'openapi' | 'mcp'
 export type ToolEffect = 'allow' | 'deny' | 'approval'
 export type ToolRisk = 'read' | 'write' | 'delete' | 'external'
 export type PermissionOverride = 'ask' | 'none' | 'allow_all'
+export type ToolContextMode = 'always' | 'discoverable' | 'on-demand' | 'disabled'
+export type SkillContextMode = 'always-loaded' | 'discoverable' | 'explicit-only' | 'disabled'
+export type AgentApprovalMode = 'auto' | 'ask' | 'deny'
+
+export const TOOL_CONTEXT_MODES: readonly ToolContextMode[] = ['always', 'discoverable', 'on-demand', 'disabled']
+export const SKILL_CONTEXT_MODES: readonly SkillContextMode[] = ['always-loaded', 'discoverable', 'explicit-only', 'disabled']
+
+export type AgentPolicySet = {
+  builtin: Record<string, boolean>
+  registered: Record<string, boolean>
+  browser: boolean
+  memory: boolean
+  subagent: boolean
+}
+
+export type AgentProjectOverride = {
+  tools?: Record<string, ToolContextMode>
+  skills?: Record<string, SkillContextMode>
+  policies?: Partial<AgentPolicySet>
+}
+
+export type AgentEffectiveSource = {
+  model: 'agent' | 'template' | 'default'
+  thinking: 'agent' | 'template' | 'default'
+  approval: 'agent' | 'template' | 'default'
+  tools: 'agent' | 'template' | 'default' | 'project'
+  skills: 'agent' | 'template' | 'default' | 'project'
+}
 
 export type ToolDefinition = {
   id?: string
@@ -49,6 +77,15 @@ export type AgentDefinition = {
   prompt: string
   system_prompt: string
   enabled: boolean
+  template?: 'general' | 'coding' | 'plan' | 'reviewer'
+  model: string
+  thinking: 'off' | 'minimal' | 'low' | 'medium' | 'high'
+  approval_mode: AgentApprovalMode
+  policies: AgentPolicySet
+  project_overrides: Record<string, AgentProjectOverride>
+  tool_context_modes: Record<string, ToolContextMode>
+  skill_context_modes: Record<string, SkillContextMode>
+  effective_source: AgentEffectiveSource
   created_at?: number
   updated_at?: number
 }
@@ -118,6 +155,10 @@ function toTool(value: unknown): ToolDefinition {
 
 function toAgent(value: unknown): AgentDefinition {
   const record = recordObject(value)
+  const template = record.template === 'general' || record.template === 'coding' || record.template === 'plan' || record.template === 'reviewer' ? record.template : undefined
+  const fallback = templateDefaults(template)
+  const modes = normalizeToolModes(record.tool_context_modes ?? fallback.tool_context_modes)
+  const skillModes = normalizeSkillModes(record.skill_context_modes ?? fallback.skill_context_modes)
   return {
     id: String(record.id),
     user_id: String(record.user_id),
@@ -127,9 +168,60 @@ function toAgent(value: unknown): AgentDefinition {
     prompt: String(record.prompt ?? ''),
     system_prompt: String(record.systemPrompt ?? record.system_prompt ?? ''),
     enabled: record.enabled !== false,
+    template,
+    model: typeof record.model === 'string' ? record.model : fallback.model,
+    thinking: validThinking(record.thinking) ?? fallback.thinking,
+    approval_mode: validApproval(record.approval_mode) ?? fallback.approval_mode,
+    policies: normalizePolicies(record.policies ?? fallback.policies),
+    project_overrides: normalizeProjectOverrides(record.project_overrides),
+    tool_context_modes: modes,
+    skill_context_modes: skillModes,
+    effective_source: normalizeSources(record.effective_source, template),
     created_at: typeof record.created_at === 'number' ? record.created_at : undefined,
     updated_at: typeof record.updated_at === 'number' ? record.updated_at : undefined,
   }
+}
+
+function validThinking(value: unknown): AgentDefinition['thinking'] | undefined {
+  return value === 'off' || value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' ? value : undefined
+}
+function validApproval(value: unknown): AgentApprovalMode | undefined {
+  return value === 'auto' || value === 'ask' || value === 'deny' ? value : undefined
+}
+function normalizeToolModes(value: unknown): Record<string, ToolContextMode> {
+  const source = recordObject(value); const result: Record<string, ToolContextMode> = {}
+  for (const [id, mode] of Object.entries(source)) if (TOOL_CONTEXT_MODES.includes(mode as ToolContextMode)) result[canonicalToolId(id)] = mode as ToolContextMode
+  return result
+}
+function normalizeSkillModes(value: unknown): Record<string, SkillContextMode> {
+  const source = recordObject(value); const result: Record<string, SkillContextMode> = {}
+  for (const [id, mode] of Object.entries(source)) if (SKILL_CONTEXT_MODES.includes(mode as SkillContextMode)) result[id] = mode as SkillContextMode
+  return result
+}
+function normalizePolicies(value: unknown): AgentPolicySet {
+  const source = recordObject(value); const registered = recordObject(source.registered); const builtin = recordObject(source.builtin)
+  const booleans = (input: Record<string, unknown>): Record<string, boolean> => Object.fromEntries(Object.entries(input).filter(([, v]) => typeof v === 'boolean')) as Record<string, boolean>
+  return { builtin: booleans(builtin), registered: booleans(registered), browser: source.browser === true, memory: source.memory === true, subagent: source.subagent === true }
+}
+function normalizeProjectOverrides(value: unknown): Record<string, AgentProjectOverride> {
+  const result: Record<string, AgentProjectOverride> = {}
+  for (const [project, raw] of Object.entries(recordObject(value))) {
+    const item = recordObject(raw)
+    result[project] = { tools: normalizeToolModes(item.tools), skills: normalizeSkillModes(item.skills), policies: normalizePolicies(item.policies) }
+  }
+  return result
+}
+function templateDefaults(template?: AgentDefinition['template']): Pick<AgentDefinition, 'model' | 'thinking' | 'approval_mode' | 'policies' | 'tool_context_modes' | 'skill_context_modes'> {
+  const readOnly = template === 'coding' || template === 'plan' || template === 'reviewer'
+  const tool_context_modes: Record<string, ToolContextMode> = { read: 'always', grep: 'always', find: 'always', ls: 'always', 'search-tool': 'discoverable' }
+  if (!template || !readOnly) Object.assign(tool_context_modes, { write: 'always', edit: 'always', bash: 'always' })
+  else Object.assign(tool_context_modes, { write: 'disabled', edit: 'disabled', bash: 'disabled' })
+  return { model: '', thinking: 'medium', approval_mode: readOnly ? 'auto' : 'ask', policies: { builtin: {}, registered: {}, browser: false, memory: false, subagent: false }, tool_context_modes, skill_context_modes: {} }
+}
+function normalizeSources(value: unknown, template: AgentDefinition['template']): AgentEffectiveSource {
+  const source = recordObject(value); const base = template ? 'template' : 'default'
+  const pick = (key: keyof AgentEffectiveSource): AgentEffectiveSource[typeof key] => source[key] === 'agent' || source[key] === 'template' || source[key] === 'project' ? source[key] as AgentEffectiveSource[typeof key] : base
+  return { model: pick('model') as AgentEffectiveSource['model'], thinking: pick('thinking') as AgentEffectiveSource['thinking'], approval: pick('approval') as AgentEffectiveSource['approval'], tools: pick('tools') as AgentEffectiveSource['tools'], skills: pick('skills') as AgentEffectiveSource['skills'] }
 }
 
 function toApproval(value: unknown): Approval {
@@ -237,6 +329,16 @@ export async function ensureUserDefaults(client: PocketBase, userId: string): Pr
     updated_at: now,
   }))
 
+  // Templates are ordinary owned records. They can be edited, disabled, or
+  // deleted like any other profile; only their initial values are special.
+  for (const template of ['general', 'coding', 'plan', 'reviewer'] as const) {
+    const name = template[0].toUpperCase() + template.slice(1)
+    const exists = await findAgent(client, userId, name)
+    if (exists) continue
+    const defaults = templateDefaults(template)
+    await client.collection('agents').create({ user_id: userId, name, description: `${name} agent template`, mode: 'primary', prompt: '', system_prompt: '', enabled: true, template, ...defaults, created_at: now, updated_at: now })
+  }
+
   const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(userId)}" && agent_id = "${escapeFilter(agent.id)}"` })
   const existingTools = new Set(policies.map((item) => String(item.tool_id)))
   for (const seed of toolSeeds) {
@@ -259,18 +361,54 @@ export async function listAgents(client: PocketBase, userId: string): Promise<Ag
   return records.map(toAgent)
 }
 
-export async function listToolsForAgent(client: PocketBase, userId: string, agentName = 'master'): Promise<Array<{ id: string; description: string; inputSchema: Record<string, unknown>; requiresApproval: boolean }>> {
-  const agent = agentName === 'master'
+export function agentTemplateDefaults(template: AgentDefinition['template']): Pick<AgentDefinition, 'model' | 'thinking' | 'approval_mode' | 'policies' | 'tool_context_modes' | 'skill_context_modes'> {
+  return templateDefaults(template)
+}
+
+export function effectiveAgentConfiguration(agent: AgentDefinition, projectId?: string): AgentDefinition {
+  const override = projectId ? agent.project_overrides[projectId] : undefined
+  if (!override) return agent
+  const reduceMode = (base: ToolContextMode, next: ToolContextMode): ToolContextMode => {
+    const order = { disabled: 0, 'on-demand': 1, discoverable: 2, always: 3 }
+    return order[next] < order[base] ? next : base
+  }
+  const tools = { ...agent.tool_context_modes }
+  for (const [id, mode] of Object.entries(override.tools ?? {})) tools[id] = reduceMode(tools[id] ?? 'disabled', mode)
+  const skills = { ...agent.skill_context_modes, ...override.skills }
+  return { ...agent, tool_context_modes: tools, skill_context_modes: skills, policies: { ...agent.policies, ...override.policies, builtin: { ...agent.policies.builtin, ...(override.policies?.builtin ?? {}) }, registered: { ...agent.policies.registered, ...(override.policies?.registered ?? {}) } }, effective_source: { ...agent.effective_source, tools: 'project', skills: 'project' } }
+}
+
+export function agentToolContextMode(agent: AgentDefinition, toolId: string): ToolContextMode {
+  return toolContextMode(agent, toolId)
+}
+
+export function skillIsExposed(agent: AgentDefinition, skillId: string, explicit = false): boolean {
+  const mode = agent.skill_context_modes[skillId] ?? 'disabled'
+  if (mode === 'disabled') return false
+  if (mode === 'explicit-only') return explicit
+  return mode === 'always-loaded' || mode === 'discoverable'
+}
+
+function toolContextMode(agent: AgentDefinition, toolId: string): ToolContextMode {
+  // Records created before context modes existed retain their policy behavior.
+  // New templates remain fail-closed for IDs not explicitly configured.
+  return agent.tool_context_modes[toolId] ?? (agent.template ? 'disabled' : 'always')
+}
+
+export async function listToolsForAgent(client: PocketBase, userId: string, agentName = 'master', projectId?: string): Promise<Array<{ id: string; description: string; inputSchema: Record<string, unknown>; requiresApproval: boolean }>> {
+  let agent = agentName === 'master'
     ? await findAgent(client, userId, agentName) ?? await ensureUserDefaults(client, userId)
     : await findAgent(client, userId, agentName)
   if (!agent || !agent.enabled) return []
+  agent = effectiveAgentConfiguration(agent, projectId)
   const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(userId)}" && agent_id = "${escapeFilter(agent.id)}"` })
   const policyMap = new Map(policies.map((item) => [String(item.tool_id), String(item.effect) as ToolEffect]))
   const tools = await client.collection('tool_registry').getFullList({ filter: 'enabled = true', sort: 'namespace,tool_id' })
   return tools.flatMap((record) => {
     const tool = toTool(record)
+    const contextMode = toolContextMode(agent, tool.tool_id)
     const effect = policyMap.get(tool.tool_id)
-    if (effect === 'deny' || (!effect && !agent.name.startsWith('master'))) return []
+    if (contextMode === 'disabled' || contextMode === 'on-demand' || effect === 'deny' || (!effect && !agent.name.startsWith('master'))) return []
     return [{ id: tool.tool_id, description: tool.description, inputSchema: tool.input_schema, requiresApproval: tool.requires_approval || effect === 'approval' }]
   })
 }
@@ -421,6 +559,7 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
     await writeAudit(client, { user_id: userId, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'UNKNOWN_AGENT' })
     return { ok: false as const, toolId: canonicalId, error: { code: 'UNKNOWN_AGENT', message: 'Agent is disabled or does not exist' } }
   }
+  const effective = effectiveAgentConfiguration(agent, persistedSession.projectId ? String(persistedSession.projectId) : undefined)
   const validationError = requiredInputError(tool.input_schema, input)
   if (validationError) {
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'error', error_code: 'VALIDATION_FAILED' })
@@ -429,12 +568,13 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
 
   const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(userId)}" && agent_id = "${escapeFilter(agent.id)}"` })
   const matching = policies.filter((item) => item.tool_id === canonicalId || item.tool_id === '*')
-  if (matching.some((item) => item.effect === 'deny') || override === 'none') {
+  const mode = toolContextMode(effective, canonicalId)
+  if (mode === 'disabled' || matching.some((item) => item.effect === 'deny') || override === 'none' || effective.approval_mode === 'deny') {
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'PERMISSION_DENIED' })
     return { ok: false as const, toolId: canonicalId, error: { code: 'PERMISSION_DENIED', message: `Agent is not allowed to use ${canonicalId}` } }
   }
 
-  const needsApproval = override === 'ask' || (override !== 'allow_all' && (tool.requires_approval || matching.some((item) => item.effect === 'approval')))
+  const needsApproval = effective.approval_mode === 'ask' || override === 'ask' || (override !== 'allow_all' && (tool.requires_approval || matching.some((item) => item.effect === 'approval')))
   if (needsApproval) {
     const created = await createApprovalFlow(client).create({ userId, agentId: agent.id, sessionId, toolId: canonicalId, input, reason: `${canonicalId} requires approval` })
     retainPendingApprovalInput(created.approval.id, input)

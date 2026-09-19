@@ -29,7 +29,7 @@ const agentSkillAccessSchema = z.object({
 })
 
 const agentFormSchema = z.object({
-  name: z.string().min(1, 'Agent name is required').regex(/^[a-z0-9-]+$/, 'Must be lowercase letters, numbers, and hyphens only'),
+  name: z.string().min(1, 'Agent name is required').regex(/^[a-zA-Z0-9_-]+$/, 'Use letters, numbers, underscores, or hyphens'),
   description: z.string().optional(),
   prompt: z.string().min(1, 'Prompt is required'),
   systemPrompt: z.string(),
@@ -39,6 +39,10 @@ const agentFormSchema = z.object({
   skillAccess: z.array(agentSkillAccessSchema).optional(),
   allowedCommands: z.array(z.string()).optional(),
   toolAccess: z.array(toolAccessSchema).optional(),
+  template: z.enum(['general', 'coding', 'plan', 'reviewer']).optional(),
+  model: z.string().optional(),
+  thinking: z.enum(['off', 'minimal', 'low', 'medium', 'high']),
+  approval_mode: z.enum(['auto', 'ask', 'deny']),
 })
 
 type AgentFormValues = z.infer<typeof agentFormSchema>
@@ -53,7 +57,6 @@ interface Agent {
   temperature?: number
   topP?: number
   top_p?: number
-  model?: string
   tools?: Record<string, boolean>
   permission?: {
     edit?: 'ask' | 'allow' | 'deny'
@@ -66,6 +69,10 @@ interface Agent {
   allowedCommands?: string[]
   toolAccess?: Array<z.infer<typeof toolAccessSchema> | { type: 'skill'; id: string; permission: 'allow' | 'ask' | 'deny'; command?: string }>
   disable?: boolean
+  template?: 'general' | 'coding' | 'plan' | 'reviewer'
+  model?: string
+  thinking?: 'off' | 'minimal' | 'low' | 'medium' | 'high'
+  approval_mode?: 'auto' | 'ask' | 'deny'
   [key: string]: unknown
 }
 
@@ -183,6 +190,10 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
       skillAccess: buildSkillAccess(agent?.agent),
       allowedCommands: agent?.agent.allowedCommands || [],
       toolAccess: buildToolAccess(agent?.agent, policies),
+      template: agent?.agent.template,
+      model: agent?.agent.model || '',
+      thinking: agent?.agent.thinking || 'medium',
+      approval_mode: agent?.agent.approval_mode || 'ask',
     }
   }, [policies])
 
@@ -307,6 +318,10 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
       disable: values.disable,
       tools: {},
       permission: {}
+      ,template: values.template
+      ,model: values.model || ''
+      ,thinking: values.thinking
+      ,approval_mode: values.approval_mode
     }
 
     if (editingAgent?.agent.mode) {
@@ -454,6 +469,21 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
                   </FormItem>
                 )}
               />
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <FormField control={form.control} name="template" render={({ field }) => (
+                  <FormItem><FormLabel>Template</FormLabel><Select value={field.value ?? 'general'} onValueChange={field.onChange}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent>{['general', 'coding', 'plan', 'reviewer'].map(value => <SelectItem key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</SelectItem>)}</SelectContent></Select></FormItem>
+                )} />
+                <FormField control={form.control} name="thinking" render={({ field }) => (
+                  <FormItem><FormLabel>Thinking</FormLabel><Select value={field.value} onValueChange={field.onChange}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent>{['off', 'minimal', 'low', 'medium', 'high'].map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></FormItem>
+                )} />
+                <FormField control={form.control} name="approval_mode" render={({ field }) => (
+                  <FormItem><FormLabel>Approval</FormLabel><Select value={field.value} onValueChange={field.onChange}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent><SelectItem value="auto">Automatic</SelectItem><SelectItem value="ask">Ask</SelectItem><SelectItem value="deny">Deny mutations</SelectItem></SelectContent></Select></FormItem>
+                )} />
+              </div>
+              <FormField control={form.control} name="model" render={({ field }) => (
+                <FormItem><FormLabel>Model default</FormLabel><FormControl><Input {...field} placeholder="Provider/model (optional)" /></FormControl></FormItem>
+              )} />
 
               <FormField
                 control={form.control}
