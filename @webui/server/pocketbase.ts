@@ -110,6 +110,7 @@ async function ensureCollection(
   name: string,
   fields: Record<string, unknown>[],
   indexes: string[] = [],
+  verifyUniqueIndexes = false,
 ): Promise<void> {
   const collections = client.collections as unknown as {
     getOne: (name: string) => Promise<RecordModel>
@@ -119,14 +120,46 @@ async function ensureCollection(
   const existing = await collections.getOne(name).catch(() => null)
   if (!existing) {
     await collections.create({ name, type: 'base', fields, indexes })
+    if (verifyUniqueIndexes) await verifyUniqueIndexesPresent(collections, name, indexes)
     return
   }
 
   const currentFields = Array.isArray(existing.fields) ? existing.fields as Record<string, unknown>[] : []
+  const currentIndexes = Array.isArray(existing.indexes) ? existing.indexes.filter((item): item is string => typeof item === 'string') : []
   const known = new Set(currentFields.map((item) => String(item.name)))
   const missing = fields.filter((item) => !known.has(String(item.name)))
-  if (missing.length > 0) {
-    await collections.update(String(existing.id), { fields: [...currentFields, ...missing] })
+  const missingIndexes = indexes.filter((index) => !currentIndexes.includes(index))
+  if (missing.length > 0 || missingIndexes.length > 0) {
+    await collections.update(String(existing.id), {
+      ...(missing.length > 0 ? { fields: [...currentFields, ...missing] } : {}),
+      ...(missingIndexes.length > 0 ? { indexes: [...currentIndexes, ...missingIndexes] } : {}),
+    })
+  }
+  if (verifyUniqueIndexes) await verifyUniqueIndexesPresent(collections, name, indexes)
+}
+
+function indexCoversUniqueColumns(index: string, collection: string, columns: readonly string[]): boolean {
+  const normalized = index.toLowerCase().replaceAll('`', '').replaceAll('"', '').replace(/\s+/g, ' ')
+  const table = new RegExp(`\\bon\\s+${collection.toLowerCase()}\\s*\\(([^)]*)\\)`).exec(normalized)?.[1]
+  if (!/create\s+unique\s+index/.test(normalized) || !table) return false
+  return table.split(',').map((column) => column.trim()).join(',') === columns.join(',')
+}
+
+async function verifyUniqueIndexesPresent(
+  collections: { getOne: (name: string) => Promise<RecordModel> },
+  name: string,
+  indexes: readonly string[],
+): Promise<void> {
+  const collection = await collections.getOne(name)
+  const value = collection as RecordModel & Record<string, unknown>
+  const currentIndexes = Array.isArray(value.indexes) ? value.indexes.filter((item): item is string => typeof item === 'string') : []
+  for (const index of indexes) {
+    const match = /on\s+([\w-]+)\s*\(([^)]*)\)/i.exec(index)
+    const columns = match ? match[2].split(',').map((column) => column.trim()) : []
+    const verified = Boolean(match && columns.length > 0 && currentIndexes.some((candidate) => indexCoversUniqueColumns(candidate, match[1], columns)))
+    if (!verified) {
+      throw new Error(`PocketBase unique index could not be verified for ${name}`)
+    }
   }
 }
 
@@ -187,6 +220,25 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('resolved_at', 'number'),
   ], ['CREATE INDEX idx_tool_approvals_pending ON tool_approvals (user_id, status, created_at)'])
 
+  await ensureCollection(client, 'tool_approval_continuations', [
+    field('approval_id', 'text', { required: true }),
+    field('user_id', 'text', { required: true }),
+    field('claimed_at', 'number', { required: true }),
+    field('claim_expires_at', 'number'),
+    field('claim_state', 'select', { values: ['active', 'interrupted'], maxSelect: 1 }),
+    field('interrupted_at', 'number'),
+  ], ['CREATE UNIQUE INDEX idx_tool_approval_continuation_approval ON tool_approval_continuations (approval_id)'], true)
+
+  await ensureCollection(client, 'tool_approval_resolutions', [
+    field('approval_id', 'text', { required: true }),
+    field('user_id', 'text', { required: true }),
+    field('state', 'select', { required: true, values: ['approved', 'rejected', 'expired'], maxSelect: 1 }),
+    field('claimed_at', 'number', { required: true }),
+    field('claim_expires_at', 'number'),
+    field('claim_state', 'select', { values: ['active', 'interrupted'], maxSelect: 1 }),
+    field('interrupted_at', 'number'),
+  ], ['CREATE UNIQUE INDEX idx_tool_approval_resolution_approval ON tool_approval_resolutions (approval_id)'], true)
+
   await ensureCollection(client, 'tool_call_audit', [
     field('user_id', 'text', { required: true }),
     field('agent_id', 'text'),
@@ -196,6 +248,7 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('status', 'select', { required: true, values: ['success', 'error', 'approval_required', 'denied'], maxSelect: 1 }),
     field('result_summary', 'text'),
     field('error_code', 'text'),
+    field('error_message', 'text'),
     field('approval_id', 'text'),
     field('created_at', 'number', { required: true }),
   ], ['CREATE INDEX idx_tool_call_audit_user_created ON tool_call_audit (user_id, created_at)'])

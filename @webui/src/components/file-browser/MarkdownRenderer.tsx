@@ -2,7 +2,6 @@ import { memo, useMemo, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
-import rehypeRaw from 'rehype-raw'
 import { markdownComponents } from './MarkdownComponents'
 import type { Components } from 'react-markdown'
 
@@ -80,7 +79,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, classN
     <div className={`pb-[200px] p-4 prose prose-invert prose-enhanced max-w-none text-foreground overflow-hidden break-words leading-snug ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight, rehypeRaw]}
+         rehypePlugins={[rehypeHighlight]}
         components={components}
       >
         {content}

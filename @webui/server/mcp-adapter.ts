@@ -1,4 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { fetchWithNetworkPolicy, networkPolicyFromMetadata, NetworkPolicyError, validateHttpUrl, type NetworkPolicyOptions } from './network-policy.ts'
+import { redactSensitiveText } from './security-redaction.ts'
 
 export type JsonRpcId = string | number
 
@@ -47,6 +49,7 @@ export type McpServerConfig = {
   clientName?: string
   clientVersion?: string
   timeoutMs?: number
+  networkPolicy?: NetworkPolicyOptions
   limits?: Partial<McpLimits>
 }
 
@@ -219,8 +222,8 @@ function jsonBytes(value: unknown, label: string, limit: number): number {
 
 function responseError(response: JsonRpcResponse, method: string, serverKey?: string): never | undefined {
   if (!response.error) return undefined
-  const detail = response.error.data === undefined ? '' : ` (${summarize(response.error.data)})`
-  throw new McpAdapterError('MCP_REMOTE_ERROR', `MCP ${method} failed with ${response.error.code}: ${response.error.message}${detail}`, { method, serverKey })
+  const detail = response.error.data === undefined ? '' : ` (${redactSensitiveText(summarize(response.error.data))})`
+  throw new McpAdapterError('MCP_REMOTE_ERROR', `MCP ${method} failed with ${response.error.code}: ${redactSensitiveText(response.error.message)}${detail}`, { method, serverKey })
 }
 
 function summarize(value: unknown): string {
@@ -251,7 +254,7 @@ function timeoutFor(value: number | undefined, limits: McpLimits): number {
 
 function errorForTransport(error: unknown, message: string, config: McpServerConfig): McpAdapterError {
   if (error instanceof McpAdapterError) return error
-  return new McpAdapterError('MCP_CONNECTION_ERROR', `${message}: ${error instanceof Error ? error.message : String(error)}`, { serverKey: serverKeyFor(config), cause: error })
+  return new McpAdapterError('MCP_CONNECTION_ERROR', redactSensitiveText(`${message}: ${error instanceof Error ? error.message : String(error)}`), { serverKey: serverKeyFor(config), cause: error })
 }
 
 function resolveEnvValue(value: unknown): string | undefined {
@@ -308,7 +311,7 @@ export class StdioMcpTransport implements McpTransport {
         this.stderr = `${this.stderr}${typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)}`
         if (new TextEncoder().encode(this.stderr).byteLength > this.limits.maxStderrBytes) this.stderr = this.stderr.slice(-this.limits.maxStderrBytes)
       })
-      this.child.once('error', (error) => this.fail(new McpAdapterError('MCP_CONNECTION_ERROR', `MCP stdio process failed: ${error.message}`, { serverKey: serverKeyFor(this.config), cause: error })))
+      this.child.once('error', (error) => this.fail(new McpAdapterError('MCP_CONNECTION_ERROR', redactSensitiveText(`MCP stdio process failed: ${error.message}`), { serverKey: serverKeyFor(this.config), cause: error })))
       this.child.once('exit', (code, signal) => {
         if (!this.closed) {
           const suffix = this.stderr.trim() ? `: ${this.stderr.trim().slice(0, 500)}` : ''
@@ -406,7 +409,7 @@ export class HttpMcpTransport implements McpTransport {
   readonly kind: 'http' | 'sse'
   private readonly config: McpServerConfig
   private readonly limits: McpLimits
-  private readonly fetchImpl: typeof globalThis.fetch
+  private readonly fetchImpl?: typeof globalThis.fetch
   private readonly pending = new Map<string, PendingSseRequest>()
   private readonly streamAbort = new AbortController()
   private endpoint?: URL
@@ -420,8 +423,8 @@ export class HttpMcpTransport implements McpTransport {
     this.kind = config.transport === 'sse' ? 'sse' : 'http'
     this.config = config
     this.limits = limitsFor({ ...config.limits, ...(options.limits ?? {}) })
-    this.fetchImpl = options.fetch ?? globalThis.fetch
-    if (!this.fetchImpl) throw new McpAdapterError('MCP_CONFIGURATION_ERROR', 'A fetch implementation is required for HTTP/SSE MCP transport', { serverKey: serverKeyFor(config) })
+    this.fetchImpl = options.fetch
+    if (!this.fetchImpl && !globalThis.fetch) throw new McpAdapterError('MCP_CONFIGURATION_ERROR', 'A fetch implementation is required for HTTP/SSE MCP transport', { serverKey: serverKeyFor(config) })
   }
 
   async start(): Promise<void> {
@@ -429,7 +432,7 @@ export class HttpMcpTransport implements McpTransport {
     const rawUrl = nonEmptyString(this.config.url)
     if (!rawUrl) throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `${this.kind} MCP transport requires a URL`, { serverKey: serverKeyFor(this.config) })
     let url: URL
-    try { url = new URL(rawUrl) } catch (error) { throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `Invalid MCP URL: ${rawUrl}`, { serverKey: serverKeyFor(this.config), cause: error }) }
+    try { url = new URL(rawUrl) } catch (error) { throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `Invalid MCP URL: ${redactSensitiveText(rawUrl)}`, { serverKey: serverKeyFor(this.config), cause: error }) }
     this.closed = false
     this.started = true
     if (this.kind === 'http') {
@@ -440,9 +443,8 @@ export class HttpMcpTransport implements McpTransport {
       this.endpointResolve = resolve
       this.endpointReject = reject
     })
-    const connectionTimer = setTimeout(() => this.streamAbort.abort(), this.limits.requestTimeoutMs)
     try {
-      const response = await this.fetchImpl(url, { headers: this.requestHeaders('text/event-stream'), signal: this.streamAbort.signal })
+      const response = await fetchWithNetworkPolicy(url, { headers: this.requestHeaders('text/event-stream'), signal: this.streamAbort.signal }, { ...this.config.networkPolicy, timeoutMs: this.limits.requestTimeoutMs }, this.fetchImpl)
       if (!response.ok) throw new McpAdapterError('MCP_CONNECTION_ERROR', `MCP SSE endpoint returned HTTP ${response.status}`, { serverKey: serverKeyFor(this.config) })
       if (!response.body) throw new McpAdapterError('MCP_PROTOCOL_ERROR', 'MCP SSE endpoint returned no response body', { serverKey: serverKeyFor(this.config) })
       const session = response.headers.get('mcp-session-id')
@@ -457,7 +459,7 @@ export class HttpMcpTransport implements McpTransport {
       this.endpointReject?.(error)
       if (error instanceof DOMException && error.name === 'AbortError') throw new McpAdapterError('MCP_TIMEOUT', `MCP SSE connection timed out after ${this.limits.requestTimeoutMs}ms`, { serverKey: serverKeyFor(this.config) })
       throw errorForTransport(error, 'Could not connect to MCP SSE endpoint', this.config)
-    } finally { clearTimeout(connectionTimer) }
+    }
   }
 
   async request(request: JsonRpcRequest, timeoutMs: number): Promise<JsonRpcResponse> {
@@ -465,20 +467,17 @@ export class HttpMcpTransport implements McpTransport {
     if (!this.endpoint || this.closed) throw new McpAdapterError('MCP_CONNECTION_ERROR', `MCP ${this.kind} transport is closed`, { serverKey: serverKeyFor(this.config) })
     jsonBytes(request, 'MCP request', this.limits.maxInputBytes)
     const pending = this.expect(request.id, request.method, timeoutMs)
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
-      const response = await this.fetchImpl(this.endpoint, {
+      const response = await fetchWithNetworkPolicy(this.endpoint, {
         method: 'POST',
         headers: this.requestHeaders('application/json, text/event-stream'),
         body: JSON.stringify(request),
-        signal: controller.signal,
-      })
+      }, { ...this.config.networkPolicy, timeoutMs }, this.fetchImpl)
       const session = response.headers.get('mcp-session-id')
       if (session) this.sessionId = session
       if (!response.ok && response.status !== 202) {
         const text = await boundedText(response, this.limits.maxResponseBytes)
-        throw new McpAdapterError('MCP_CONNECTION_ERROR', `MCP ${this.kind} request returned HTTP ${response.status}: ${text}`, { method: request.method, serverKey: serverKeyFor(this.config) })
+        throw new McpAdapterError('MCP_CONNECTION_ERROR', `MCP ${this.kind} request returned HTTP ${response.status}: ${redactSensitiveText(text)}`, { method: request.method, serverKey: serverKeyFor(this.config) })
       }
       const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
       if (contentType.includes('application/json')) {
@@ -493,13 +492,13 @@ export class HttpMcpTransport implements McpTransport {
       }
       return await pending
     } catch (error) {
-      const normalized = error instanceof DOMException && error.name === 'AbortError'
+      const normalized = error instanceof NetworkPolicyError && error.code === 'TIMEOUT'
+        ? new McpAdapterError('MCP_TIMEOUT', `MCP ${request.method} timed out after ${timeoutMs}ms`, { method: request.method, serverKey: serverKeyFor(this.config) })
+        : error instanceof DOMException && error.name === 'AbortError'
         ? new McpAdapterError('MCP_TIMEOUT', `MCP ${request.method} timed out after ${timeoutMs}ms`, { method: request.method, serverKey: serverKeyFor(this.config) })
         : errorForTransport(error, `Could not send MCP ${request.method} request`, this.config)
       this.rejectResponse(request.id, normalized)
       throw normalized
-    } finally {
-      clearTimeout(timer)
     }
   }
 
@@ -508,15 +507,13 @@ export class HttpMcpTransport implements McpTransport {
     if (!this.endpoint || this.closed) throw new McpAdapterError('MCP_CONNECTION_ERROR', `MCP ${this.kind} transport is closed`, { serverKey: serverKeyFor(this.config) })
     const notification = params === undefined ? { jsonrpc: JSON_RPC_VERSION, method } : { jsonrpc: JSON_RPC_VERSION, method, params }
     jsonBytes(notification, 'MCP notification', this.limits.maxInputBytes)
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), this.limits.requestTimeoutMs)
     try {
-      const response = await this.fetchImpl(this.endpoint, { method: 'POST', headers: this.requestHeaders('application/json, text/event-stream'), body: JSON.stringify(notification), signal: controller.signal })
+      const response = await fetchWithNetworkPolicy(this.endpoint, { method: 'POST', headers: this.requestHeaders('application/json, text/event-stream'), body: JSON.stringify(notification) }, { ...this.config.networkPolicy, timeoutMs: this.limits.requestTimeoutMs }, this.fetchImpl)
       if (!response.ok && response.status !== 202) throw new McpAdapterError('MCP_CONNECTION_ERROR', `MCP notification returned HTTP ${response.status}`, { method, serverKey: serverKeyFor(this.config) })
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') throw new McpAdapterError('MCP_TIMEOUT', `MCP ${method} notification timed out`, { method, serverKey: serverKeyFor(this.config) })
+      if ((error instanceof NetworkPolicyError && error.code === 'TIMEOUT') || (error instanceof DOMException && error.name === 'AbortError')) throw new McpAdapterError('MCP_TIMEOUT', `MCP ${method} notification timed out`, { method, serverKey: serverKeyFor(this.config) })
       throw errorForTransport(error, `Could not send MCP ${method} notification`, this.config)
-    } finally { clearTimeout(timer) }
+    }
   }
 
   async close(): Promise<void> {
@@ -592,10 +589,10 @@ export class HttpMcpTransport implements McpTransport {
     if (!event.data || event.data === '[DONE]') return
     if (event.event === 'endpoint') {
       try {
-        const endpoint = new URL(event.data.trim(), this.config.url)
+        const endpoint = validateHttpUrl(new URL(event.data.trim(), this.config.url), this.config.networkPolicy)
         this.endpoint = endpoint
         this.endpointResolve?.(endpoint)
-      } catch (error) { this.endpointReject?.(new McpAdapterError('MCP_PROTOCOL_ERROR', `MCP SSE announced an invalid endpoint: ${event.data}`, { serverKey: serverKeyFor(this.config), cause: error })) }
+      } catch (error) { this.endpointReject?.(new McpAdapterError('MCP_PROTOCOL_ERROR', `MCP SSE announced an invalid endpoint: ${redactSensitiveText(event.data)}`, { serverKey: serverKeyFor(this.config), cause: error })) }
       return
     }
     let value: unknown
@@ -892,6 +889,7 @@ export function resolveMcpToolReference(tool: McpToolReference, defaults: Partia
     ...(nonEmptyString(value('serverKey')) ? { serverKey: nonEmptyString(value('serverKey')) } : {}),
     ...(nonEmptyString(value('protocolVersion')) ? { protocolVersion: nonEmptyString(value('protocolVersion')) } : {}),
     ...(typeof value('timeoutMs') === 'number' ? { timeoutMs: value('timeoutMs') as number } : {}),
+    networkPolicy: { ...(defaults.networkPolicy ?? {}), ...networkPolicyFromMetadata({ ...metadata, mcp: nested }) },
   }
   return { config, toolName }
 }

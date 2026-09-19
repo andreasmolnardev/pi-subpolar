@@ -1,0 +1,21 @@
+{
+  "name": "@subpolar/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "subpolar-cli": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun ./src/cli.ts",
+    "test": "bun test test"
+  },
+  "dependencies": {
+    "@subpolar/adapter-local": "workspace:*",
+    "@subpolar/contracts": "workspace:*",
+    "@subpolar/core": "workspace:*"
+  }
+}

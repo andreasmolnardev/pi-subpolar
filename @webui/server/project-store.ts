@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import PocketBase, { type RecordModel } from 'pocketbase'
+import { assertPathWithinWorkspace, isPathWithin } from './project-filesystem.ts'
 
 /** The two collections owned by this repository. */
 export const PROJECTS_COLLECTION = 'projects'
@@ -76,6 +77,15 @@ export type CreateSessionInput = {
 }
 
 export type UpdateSessionInput = Partial<Omit<CreateSessionInput, 'id'>>
+
+export class ProjectPathConflictError extends Error {
+  readonly code = 'PROJECT_PATH_CONFLICT'
+
+  constructor() {
+    super('Project path is already owned by another user')
+    this.name = 'ProjectPathConflictError'
+  }
+}
 
 export type ListSessionsOptions = {
   projectId?: string
@@ -214,11 +224,12 @@ function numberField(value: unknown, field: string): number {
 }
 
 function projectFromRecord(value: CollectionRecord): ProjectRecord {
+  const path = assertPathWithinWorkspace(requiredString(value.path, 'project path'))
   return {
     id: requiredString(value.id, 'project id'),
     userId: requiredString(value.user_id, 'project user_id'),
     name: requiredString(value.name, 'project name'),
-    path: requiredString(value.path, 'project path'),
+    path,
     createdAt: numberField(value.created_at, 'project created_at'),
     updatedAt: numberField(value.updated_at, 'project updated_at'),
   }
@@ -253,7 +264,7 @@ function normalizeProjectInput(input: CreateProjectInput): CreateProjectInput {
   if (!name) throw new Error('Project name is required')
   if (!path) throw new Error('Project path is required')
   if (name.toLocaleLowerCase() === GENERAL_CHAT_NAME.toLocaleLowerCase()) throw new Error('General Chat is reserved')
-  return { name, path: resolve(path) }
+  return { name, path: assertPathWithinWorkspace(path) }
 }
 
 function normalizePermission(value: PermissionOverride | undefined): PermissionOverride | undefined {
@@ -306,7 +317,7 @@ function updateData(input: UpdateProjectInput | UpdateSessionInput): Record<stri
   if ('path' in input && input.path !== undefined) {
     const path = typeof input.path === 'string' ? input.path.trim() : ''
     if (!path) throw new Error('Project path is required')
-    data.path = resolve(path)
+    data.path = assertPathWithinWorkspace(path)
   }
   return data
 }
@@ -389,7 +400,22 @@ export class ProjectSessionRepository {
   async createProject(userId: string, input: CreateProjectInput): Promise<ProjectRecord> {
     assertOwner(userId)
     const now = Date.now()
-    return projectFromRecord(await collection(this.client, PROJECTS_COLLECTION).create(projectData(userId, input, now)))
+    const project = normalizeProjectInput(input)
+    await this.assertProjectPathAvailable(userId, project.path)
+    return projectFromRecord(await collection(this.client, PROJECTS_COLLECTION).create(projectData(userId, project, now)))
+  }
+
+  /** Reject paths that overlap a project owned by a different user. */
+  async assertProjectPathAvailable(userId: string, path: string, excludedProjectId?: string): Promise<void> {
+    assertOwner(userId)
+    const candidate = assertPathWithinWorkspace(path)
+    const records = await collection(this.client, PROJECTS_COLLECTION).getFullList()
+    for (const record of records) {
+      const owner = String(record.user_id ?? '')
+      if (!owner || owner === userId || String(record.id ?? '') === excludedProjectId) continue
+      const other = assertPathWithinWorkspace(requiredString(record.path, 'project path'))
+      if (isPathWithin(other, candidate) || isPathWithin(candidate, other)) throw new ProjectPathConflictError()
+    }
   }
 
   async getProject(userId: string, projectId: string): Promise<ProjectRecord | null> {
@@ -416,6 +442,7 @@ export class ProjectSessionRepository {
     const existing = await this.getProject(userId, projectId)
     if (!existing) return null
     const data = updateData(input)
+    if (typeof data.path === 'string') await this.assertProjectPathAvailable(userId, data.path, existing.id)
     data.updated_at = Date.now()
     const updated = await collection(this.client, PROJECTS_COLLECTION).update(existing.id, data)
     return projectFromRecord(updated)
@@ -446,6 +473,14 @@ export class ProjectSessionRepository {
         data.project_name = project.name
       }
     }
+    if (typeof data.directory === 'string' && data.directory) {
+      const directory = assertPathWithinWorkspace(data.directory)
+      if (String(data.project_name).toLocaleLowerCase() !== GENERAL_CHAT_NAME.toLocaleLowerCase()) {
+        const project = await this.findProjectByName(userId, String(data.project_name))
+        if (project && !isPathWithin(project.path, directory)) throw new Error('Session directory is outside its project')
+      }
+      data.directory = directory
+    }
     return sessionFromRecord(await collection(this.client, SESSIONS_COLLECTION).create(data))
   }
 
@@ -453,6 +488,13 @@ export class ProjectSessionRepository {
     assertOwner(userId)
     if (!sessionId.trim()) return null
     const record = await firstOrNull(() => collection(this.client, SESSIONS_COLLECTION).getFirstListItem(ownedRecordFilter(userId, 'session_id', sessionId)))
+    return record ? sessionFromRecord(record) : null
+  }
+
+  /** Look up the durable owner before accepting a caller-supplied identity. */
+  async getSessionById(sessionId: string): Promise<StoredSessionRecord | null> {
+    if (!sessionId.trim()) return null
+    const record = await firstOrNull(() => collection(this.client, SESSIONS_COLLECTION).getFirstListItem(pocketBaseEquals('session_id', sessionId)))
     return record ? sessionFromRecord(record) : null
   }
 
@@ -482,6 +524,15 @@ export class ProjectSessionRepository {
       data.project_id = project?.id ?? ''
       data.project_name = project?.name ?? input.project.trim()
     }
+    if (typeof data.directory === 'string' && data.directory) {
+      const projectName = String(data.project_name ?? existing.project)
+      const directory = assertPathWithinWorkspace(data.directory)
+      if (projectName.toLocaleLowerCase() !== GENERAL_CHAT_NAME.toLocaleLowerCase()) {
+        const project = await this.findProjectByName(userId, projectName)
+        if (project && !isPathWithin(project.path, directory)) throw new Error('Session directory is outside its project')
+      }
+      data.directory = directory
+    }
     data.updated_at = input.updatedAt === undefined ? Date.now() : data.updated_at
     const updated = await collection(this.client, SESSIONS_COLLECTION).update(existing.recordId, data)
     return sessionFromRecord(updated)
@@ -504,12 +555,19 @@ export class ProjectSessionRepository {
     const session = await this.getSession(userId, sessionId)
     if (!session) return null
     if (!session.projectId) {
-      return session.project.toLocaleLowerCase() === GENERAL_CHAT_NAME.toLocaleLowerCase()
-        ? { session, project: null, isGeneralChat: true }
-        : null
+      if (session.project.toLocaleLowerCase() !== GENERAL_CHAT_NAME.toLocaleLowerCase()) return null
+      if (session.directory) {
+        try { assertPathWithinWorkspace(session.directory) } catch { return null }
+      }
+      return { session, project: null, isGeneralChat: true }
     }
     const project = await this.getProject(userId, session.projectId)
     if (!project) return null
+    if (session.directory) {
+      try {
+        if (!isPathWithin(project.path, assertPathWithinWorkspace(session.directory))) return null
+      } catch { return null }
+    }
     return { session, project, isGeneralChat: false }
   }
 
@@ -522,6 +580,7 @@ export class ProjectSessionRepository {
         const input = normalizeProjectInput(definition)
         const existing = await firstOrNull(() => collection(this.client, PROJECTS_COLLECTION).getFirstListItem(ownedRecordFilter(userId, 'name', input.name)))
         if (existing) {
+          await this.assertProjectPathAvailable(userId, input.path, String(existing.id))
           const updated = await collection(this.client, PROJECTS_COLLECTION).update(existing.id, { path: input.path, updated_at: Date.now() })
           migrated.push(projectFromRecord(updated))
         } else {

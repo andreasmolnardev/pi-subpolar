@@ -79,6 +79,7 @@ export {
 
 export {
   ProjectSessionRepository,
+  ProjectPathConflictError,
   createProjectSessionRepository,
   ensureProjectSessionCollections,
 } from './project-store.ts'
@@ -92,8 +93,14 @@ export {
   type McpToolReference,
 } from './mcp-adapter.ts'
 
+export * from './request-security.ts'
+export * from './network-policy.ts'
+export * from './security-redaction.ts'
+export * from './project-filesystem.ts'
+
 export * from './provider-accounts.ts'
 export * from './provider-catalog.ts'
 export * from './provider-login-flow.ts'
 export * from './provider-login-flow-store.ts'
 export * from './provider-runtime.ts'
+export * from './custom-providers.ts'

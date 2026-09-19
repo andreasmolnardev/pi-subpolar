@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   createSessionContextResolver,
@@ -115,6 +118,20 @@ describe('SessionContextResolver', () => {
     })
 
     await expect(contextResolver.resolve({ identity: 'user_1', sessionId: outside.id }))
+      .rejects.toMatchObject({ code: 'INVALID_SESSION_DIRECTORY' })
+  })
+
+  it('resolves symlinked project paths before checking session containment', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'subpolar-context-'))
+    const outside = mkdtempSync(join(tmpdir(), 'subpolar-context-outside-'))
+    mkdirSync(join(root, 'project'))
+    symlinkSync(outside, join(root, 'project', 'escape'))
+    const contextResolver = createSessionContextResolver({
+      sessions: { getSession: () => undefined, getProject: () => ({ name: 'subpolar', path: join(root, 'project') }) },
+      agents: { getAgent: () => master },
+    })
+
+    await expect(contextResolver.resolve({ identity: 'user_1', project: 'subpolar', cwd: join(root, 'project', 'escape') }))
       .rejects.toMatchObject({ code: 'INVALID_SESSION_DIRECTORY' })
   })
 

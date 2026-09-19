@@ -16,7 +16,7 @@ import {
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent'
 
 import { Hono } from 'hono'
-import { entriesPayload, projectEntries, type TranscriptMessage } from './transcript/projector'
+import { entriesPayload, projectEntries, redactTranscriptPayload, type TranscriptMessage } from './transcript/projector'
 
 import projectsExtension from './subpolar/extensions/projects.ts'
 import usageExtension from './subpolar/extensions/usage.ts'
@@ -55,6 +55,7 @@ import {
   respondToApproval,
   continueApprovedTool,
   createProjectSessionRepository,
+  ProjectPathConflictError,
   ensureProjectSessionCollections,
   createSessionContextResolver,
   createToolGatewayFromCallTool,
@@ -75,8 +76,32 @@ import {
   PocketBaseProviderLoginFlowStorage,
   ensureProviderLoginFlowCollection,
   providerLoginFlowStorageError,
-
+  createCustomProviderService,
+  ensureCustomProviderCollection,
+  customProviderDiscoveryUrl,
+  CustomProviderValidationError,
 } from './server/index.ts'
+import {
+  assertSafeBrowserMutation,
+  isAllowedOrigin,
+  InProcessRateLimiter,
+  readJsonBody,
+  requestId,
+  REQUEST_LIMITS,
+  RequestSecurityError,
+  rateLimitKey,
+} from './server/request-security.ts'
+import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse } from './server/network-policy.ts'
+import { redactSensitive, redactSensitiveText } from './server/security-redaction.ts'
+import { permissionAskedProperties } from './server/approval-event.ts'
+import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/project-filesystem.ts'
+import {
+  createCapabilitiesPayload,
+  createHealthPayload,
+  createLegacyHealthPayload,
+  type DiagnosticComponents,
+  errorEnvelope,
+} from './server/contracts.ts'
 
 type Project = { name: string; path: string }
 type SessionRecord = {
@@ -95,32 +120,20 @@ type SessionRecord = {
 type RpcCommand = Record<string, unknown> & { type: string }
 type RpcMessage = Record<string, unknown> & { type?: string; id?: string }
 
-type SocketData = { sessionId: string; unsubscribe?: () => void; history?: TranscriptMessage[]; leafId?: string | null; historyReady?: boolean; buffered?: RpcMessage[] }
+type SocketData = { sessionId: string; userId: string; record: SessionRecord; project: Project; unsubscribe?: () => void; history?: TranscriptMessage[]; leafId?: string | null; historyReady?: boolean; buffered?: RpcMessage[] }
 type PendingPrompt = { content: string; metadata?: Record<string, unknown> }
-type SseClient = { enqueue: (chunk: Uint8Array) => void; close: () => void }
+type SseClient = { userId: string; enqueue: (chunk: Uint8Array) => void; close: () => void }
 type ProxyCredential = { id: string; prefix: string; hash: string; createdAt: number; lastUsedAt?: number }
-type CustomProvider = {
-  id: string
-  name: string
-  baseUrl: string
-  api: string
-  apiKey?: string
-  headers?: Record<string, string>
-  authHeader: boolean
-  models: Array<Record<string, unknown>>
-  modelOverrides?: Record<string, unknown>
-}
-
 const root = resolve(import.meta.dir, '..')
 const webuiDir = import.meta.dir
 const subpolarDataDir = join(homedir(), '.subpolar')
+const projectsRoot = configuredWorkspaceRoot()
 const databasePath = join(subpolarDataDir, 'subpolar.sqlite')
 const legacyStatePath = join(webuiDir, '.sessions.json')
 
 const legacyProjectStatePath = join(subpolarDataDir, 'projects.json')
-const generalChatRoot = join(subpolarDataDir, 'general-chat')
+const generalChatRoot = join(projectsRoot, 'general-chat')
 const legacyProxyCredentialsPath = join(subpolarDataDir, 'proxy-credentials.json')
-const customProvidersPath = join(subpolarDataDir, 'custom-providers.json')
 const port = Number(process.env.WEBUI_PORT ?? 4173)
 const internalToken = process.env.SUBPOLAR_INTERNAL_TOKEN || randomBytes(32).toString('hex')
 process.env.SUBPOLAR_INTERNAL_TOKEN = internalToken
@@ -130,6 +143,7 @@ let inProcessToolGateway: ToolGateway | undefined
 let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccountService>> | undefined
 let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
 const migratedUsers = new Set<string>()
+const requestRateLimiter = new InProcessRateLimiter()
 
 async function applicationDatabase() {
   if (!applicationDatabasePromise) {
@@ -144,11 +158,12 @@ async function applicationDatabase() {
       .then(() => ensureProjectSessionCollections(client))
       .then(() => ensureToolRegistry(client))
       .then(() => ensureProviderAccountCollections(client))
+      .then(() => ensureCustomProviderCollection(client))
       .then(() => ensureProviderLoginFlowCollection(client))
       .catch((error) => {
-      applicationCollectionsReady = undefined
-      throw error
-    })
+        applicationCollectionsReady = undefined
+        throw error
+      })
   }
   await applicationCollectionsReady
   if (!inProcessToolGateway) inProcessToolGateway = createToolGatewayFromCallTool(client, callTool)
@@ -289,10 +304,11 @@ void providerAccountService().then(async () => {
   await syncAdminFromEnv()
   console.log('PocketBase application collections ready')
 }).catch((error) => {
-  console.warn(`PocketBase is not ready: ${error instanceof Error ? error.message : String(error)}`)
+  console.warn(`PocketBase is not ready: ${redactedDiagnostic(error)}`)
 })
 
 mkdirSync(subpolarDataDir, { recursive: true })
+mkdirSync(projectsRoot, { recursive: true })
 const database = new Database(databasePath, { create: true })
 database.exec(`
   PRAGMA journal_mode = WAL;
@@ -384,15 +400,18 @@ type ProjectDefinition = { name: string; path: string }
 
 function loadProjectDefinitions(): ProjectDefinition[] {
   const rows = database.query('SELECT name, path FROM projects ORDER BY name').all() as Array<{ name: string; path: string }>
-  if (rows.length > 0 || !existsSync(legacyProjectStatePath)) return rows.map((row) => ({ name: row.name, path: resolve(row.path) }))
+  if (rows.length > 0 || !existsSync(legacyProjectStatePath)) return rows.flatMap((row) => {
+    try { return [{ name: row.name, path: assertPathWithinWorkspace(row.path, projectsRoot) }] }
+    catch { return [] }
+  })
   try {
     const value = JSON.parse(readFileSync(legacyProjectStatePath, 'utf8')) as unknown
     if (!Array.isArray(value)) return []
     const definitions = value.flatMap((item) => {
       const entry = object(item)
-      return typeof entry.name === 'string' && typeof entry.path === 'string'
-        ? [{ name: entry.name, path: resolve(entry.path) }]
-        : []
+      if (typeof entry.name !== 'string' || typeof entry.path !== 'string') return []
+      try { return [{ name: entry.name, path: assertPathWithinWorkspace(entry.path, projectsRoot) }] }
+      catch { return [] }
     })
     saveProjectDefinitions(definitions)
     return definitions
@@ -430,28 +449,6 @@ function hashProxySecret(secret: string): string {
   return createHash('sha256').update(secret).digest('hex')
 }
 
-function loadCustomProviders(): CustomProvider[] {
-  try {
-    const value = JSON.parse(readFileSync(customProvidersPath, 'utf8')) as unknown
-    return Array.isArray(value) ? value.filter((item): item is CustomProvider => {
-      const entry = object(item)
-      return typeof entry.id === 'string' && typeof entry.name === 'string' && typeof entry.baseUrl === 'string' && typeof entry.api === 'string' && Array.isArray(entry.models)
-    }) : []
-  } catch {
-    return []
-  }
-}
-
-function saveCustomProviders(providers: CustomProvider[]): void {
-  mkdirSync(dirname(customProvidersPath), { recursive: true })
-  writeFileSync(customProvidersPath, JSON.stringify(providers, null, 2), 'utf8')
-}
-
-function publicCustomProvider(provider: CustomProvider) {
-  const { apiKey: _apiKey, ...safe } = provider
-  return safe
-}
-
 function proxyCredentialResponse(credential: ProxyCredential) {
   return { id: credential.id, prefix: credential.prefix, createdAt: credential.createdAt, lastUsedAt: credential.lastUsedAt ?? null }
 }
@@ -460,7 +457,10 @@ function saveProjectDefinitions(definitions: ProjectDefinition[]): void {
   const transaction = database.transaction((items: ProjectDefinition[]) => {
     database.exec('DELETE FROM projects')
     const insert = database.query('INSERT INTO projects (name, path) VALUES (?, ?)')
-    for (const project of items) insert.run(project.name, resolve(project.path))
+    for (const project of items) {
+      try { insert.run(project.name, assertPathWithinWorkspace(project.path, projectsRoot)) }
+      catch { /* Do not persist legacy paths outside the workspace. */ }
+    }
   })
   transaction(definitions)
 }
@@ -508,9 +508,10 @@ const pendingPrompts = new Map<string, PendingPrompt>()
 const sseClients = new Set<SseClient>()
 const encoder = new TextEncoder()
 
-function broadcastSse(value: unknown): void {
-  const chunk = encoder.encode(`data: ${JSON.stringify(value)}\n\n`)
+function broadcastSse(value: unknown, userId?: string): void {
+  const chunk = encoder.encode(`data: ${JSON.stringify(redactSensitive(value))}\n\n`)
   for (const client of sseClients) {
+    if (!userId || client.userId !== userId) continue
     try { client.enqueue(chunk) } catch { client.close(); sseClients.delete(client) }
   }
 }
@@ -548,7 +549,7 @@ function filterValue(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')
 }
 
-async function resolveToolSessionContext(client: Awaited<ReturnType<typeof applicationDatabase>>, userId: string, sessionId: string, requestedAgent?: string, requestedPermission?: PermissionOverride) {
+async function resolveToolSessionContext(client: Awaited<ReturnType<typeof applicationDatabase>>, userId: string, sessionId: string, requestedAgent?: string) {
   const repository = createProjectSessionRepository(client)
   const resolver = createSessionContextResolver({
     sessions: {
@@ -582,11 +583,16 @@ async function resolveToolSessionContext(client: Awaited<ReturnType<typeof appli
       },
     },
   })
-  return resolver.resolve({ identity: userId, userId, sessionId, agentName: requestedAgent, permissionOverride: requestedPermission })
+  return resolver.resolve({ identity: userId, userId, sessionId, agentName: requestedAgent })
 }
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function requestedPermissionOverride(value: unknown): PermissionOverride | null | undefined {
+  if (value === undefined) return undefined
+  return value === 'ask' || value === 'none' || value === 'allow_all' ? value : null
 }
 
 function mapToolId(toolName: unknown): string {
@@ -601,7 +607,9 @@ function readProjectsFile(filePath: string, base: string): Project[] {
     const entries = object(source.projects ?? source)
     return Object.entries(entries).flatMap(([name, value]) => {
       const path = typeof value === 'string' ? value : object(value).path
-      return typeof path === 'string' ? [{ name, path: resolve(base, path) }] : []
+      if (typeof path !== 'string') return []
+      try { return [{ name, path: assertPathWithinWorkspace(resolve(base, path), projectsRoot) }] }
+      catch { return [] }
     })
   } catch {
     return []
@@ -621,6 +629,10 @@ function projects(): Project[] {
 function generalChatProject(): Project {
   mkdirSync(generalChatRoot, { recursive: true })
   return { name: 'General Chat', path: generalChatRoot }
+}
+
+function safeProjectPath(value: string): string {
+  return assertPathWithinWorkspace(value, projectsRoot)
 }
 
 function nativeSessionsDir(): string {
@@ -702,9 +714,10 @@ function nativeSessionRecords(): SessionRecord[] {
 }
 
 function syncNativeSessions(): void {
-  const current = new Map(sessions.map((session) => [session.id, session]))
   for (const native of nativeSessionRecords()) {
-    const stored = current.get(native.id)
+    const matches = sessions.filter((session) => session.id === native.id)
+    if (matches.length > 1) continue
+    const stored = matches.length === 1 ? matches[0] : undefined
     if (!stored) {
       sessions.push(native)
       continue
@@ -715,11 +728,6 @@ function syncNativeSessions(): void {
   }
 }
 
-function projectForSession(record: SessionRecord): Project | undefined {
-  if (record.project === 'General Chat') return generalChatProject()
-  return projects().find((project) => project.name === record.project)
-}
-
 function projectFor(name: string | undefined): Project {
   if (!name || name === '0' || name.toLocaleLowerCase() === 'general chat') return generalChatProject()
   const value = projects().find((project) => project.name === name)
@@ -727,28 +735,14 @@ function projectFor(name: string | undefined): Project {
   return value
 }
 
-function projectForId(id: number): Project {
-  if (id === 0) return generalChatProject()
-  const project = projects()[id - 1]
-  if (!project) throw new Error(`Unknown project id: ${id}`)
-  return project
-}
-
-function projectForDirectory(directory: string | undefined): Project {
-  if (directory) {
-    const value = projects().find((project) => project.path === resolve(directory))
-    if (value) return value
-  }
-  return generalChatProject()
-}
-
-
 type SkillRecord = { name: string; description: string; body: string; scope: 'global' | 'project'; path: string; repoId?: number }
 
 function skillDirectories(directory?: string): Array<{ scope: 'global' | 'project'; directory: string; repoId?: number }> {
   const result: Array<{ scope: 'global' | 'project'; directory: string; repoId?: number }> = []
-  const projectDirectory = directory ? resolve(directory) : undefined
-  if (projectDirectory) result.push({ scope: 'project', directory: join(projectDirectory, '.subpolar', 'skills') })
+  const projectDirectory = directory ? assertPathWithinWorkspace(directory, projectsRoot) : undefined
+  if (projectDirectory) {
+    result.push({ scope: 'project', directory: assertPathWithinWorkspace(join(projectDirectory, '.subpolar', 'skills'), projectsRoot) })
+  }
   else result.push({ scope: 'project', directory: join(root, '.subpolar', 'skills'), repoId: 1 })
   result.push({ scope: 'global', directory: join(homedir(), '.config', 'subpolar', 'skills') })
   result.push({ scope: 'global', directory: join(homedir(), '.pi', 'skills') })
@@ -761,8 +755,12 @@ function readSkills(directory?: string): SkillRecord[] {
     if (!existsSync(source.directory)) continue
     try {
       for (const entry of readdirSync(source.directory, { withFileTypes: true })) {
-        const file = entry.isDirectory() ? join(source.directory, entry.name, 'SKILL.md') : entry.name === 'SKILL.md' ? join(source.directory, entry.name) : ''
-        if (!file || !existsSync(file)) continue
+        const candidate = entry.isDirectory() ? join(source.directory, entry.name, 'SKILL.md') : entry.name === 'SKILL.md' ? join(source.directory, entry.name) : ''
+        if (!candidate || !existsSync(candidate)) continue
+        let file = candidate
+        if (source.scope === 'project') {
+          try { file = assertPathWithinWorkspace(candidate, projectsRoot) } catch { continue }
+        }
         const content = readFileSync(file, 'utf8')
         const heading = content.match(/^#\s+(.+)$/m)
         const description = content.match(/^(?:description|summary):\s*(.+)$/im)?.[1]?.trim() ?? heading?.[1]?.trim() ?? ''
@@ -787,13 +785,6 @@ function projectResponse(project: Project, id: number, isGeneralChat = false) {
   }
 }
 
-function projectResponses() {
-  return [
-    projectResponse(generalChatProject(), 0, true),
-    ...projects().map((project, index) => projectResponse(project, index + 1)),
-  ]
-}
-
 async function ownedProjectResponses(userId: string, client: Awaited<ReturnType<typeof applicationDatabase>>) {
   await ensureUserMetadata(userId)
   const owned = await createProjectSessionRepository(client).listProjects(userId)
@@ -803,9 +794,11 @@ async function ownedProjectResponses(userId: string, client: Awaited<ReturnType<
   ]
 }
 
-function storedSessionResponse(record: SessionRecord) {
-  const project = projectFor(record.project)
-  const projectId = project.name === 'General Chat' ? 0 : Math.max(1, projects().findIndex((item) => item.name === project.name) + 1)
+function storedSessionResponse(record: SessionRecord, ownedProjects: readonly Project[] = projects()) {
+  const project = record.project === 'General Chat'
+    ? generalChatProject()
+    : ownedProjects.find((item) => item.name === record.project) ?? { name: record.project, path: record.directory ?? '' }
+  const projectId = project.name === 'General Chat' ? 0 : Math.max(1, ownedProjects.findIndex((item) => item.name === project.name) + 1)
   return { ...record, archived: record.archived ?? false, projectId, directory: record.directory ?? project.path }
 }
 
@@ -821,8 +814,9 @@ function parseModelSelection(model: string | undefined): { providerID: string; m
   return providerID && modelID ? { providerID, modelID } : undefined
 }
 
-async function transcriptHistory(sessionId: string, selection?: Pick<SessionRecord, 'profile' | 'model'>) {
-  const payload = entriesPayload(await sendRpc(sessionId, { type: 'get_entries' }))
+async function transcriptHistory(sessionId: string, selection: SessionRecord) {
+  if (!selection.userId) throw new Error('Session owner is unavailable')
+  const payload = entriesPayload(await sendRpc(sessionId, { type: 'get_entries' }, selection))
   return { ...payload, messages: projectEntries(payload.entries, payload.leafId, sessionId, selection) }
 }
 
@@ -834,11 +828,7 @@ function json(value: unknown, status = 200): Response {
 }
 
 async function body(request: Request): Promise<Record<string, unknown>> {
-  try {
-    return object(await request.json())
-  } catch {
-    return {}
-  }
+  return readJsonBody(request)
 }
 
 function sessionMessageText(message: unknown): string {
@@ -890,15 +880,8 @@ class PiSdkSession {
             broadcastSse({
               type: 'permission.asked',
               directory: sessionCwd,
-              properties: {
-                id: approval.id,
-                sessionID: approval.session_id,
-                permission: approval.tool_id === 'bash' ? 'bash' : approval.tool_id,
-                patterns: [approval.tool_id],
-                metadata: { toolId: approval.tool_id, input: approval.input, reason: approval.reason },
-                always: [],
-              },
-            })
+              properties: permissionAskedProperties({ id: approval.id, sessionId: approval.session_id, toolId: approval.tool_id, input: approval.input, reason: approval.reason }),
+            }, userId)
           },
           listTools: () => listToolsForAgent(client, userId, runtime.agent.name),
           searchTools: (query) => searchToolsForAgent(client, userId, runtime.agent.name, query),
@@ -936,17 +919,17 @@ class PiSdkSession {
       this.record.updatedAt = Date.now()
       void saveState()
     }
-    const message = { ...event, sessionID: this.record.id } as RpcMessage
+    const message = redactSensitive({ ...event, sessionID: this.record.id }) as RpcMessage
     const sessionID = this.record.id
     if (event.type === 'agent_start' || event.type === 'turn_start') {
-      broadcastSse({ type: 'session.status', properties: { sessionID, status: { type: 'busy' } } })
+      broadcastSse({ type: 'session.status', properties: { sessionID, status: { type: 'busy' } } }, this.record.userId)
     }
     if (event.type === 'agent_end' || event.type === 'agent_settled') {
-      broadcastSse({ type: 'session.status', properties: { sessionID, status: { type: 'idle' } } })
+      broadcastSse({ type: 'session.status', properties: { sessionID, status: { type: 'idle' } } }, this.record.userId)
     }
     if (event.type !== 'agent_settled') {
       for (const listener of this.listeners) listener(message)
-      broadcastSse(message)
+      broadcastSse(message, this.record.userId)
     }
   }
 
@@ -1001,6 +984,10 @@ class PiSdkSession {
 
 const active = new Map<string, PiSdkSession>()
 
+function activeKey(userId: string, id: string): string {
+  return `${userId}:${id}`
+}
+
 function shutdown(): void {
   for (const session of active.values()) session.close()
   active.clear()
@@ -1010,30 +997,92 @@ function shutdown(): void {
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
-function recordFor(id: string): SessionRecord {
+function recordFor(id: string, userId: string): SessionRecord {
   syncNativeSessions()
-  const record = sessions.find((session) => session.id === id)
+  const record = sessions.find((session) => session.id === id && session.userId === userId)
   if (!record) throw new Error(`Unknown session: ${id}`)
   return record
 }
 
-function rpcSession(id: string): PiSdkSession {
-  const existing = active.get(id)
-  if (existing) return existing
-  const record = recordFor(id)
-  const session = new PiSdkSession(record, projectFor(record.project))
-  active.set(id, session)
+async function ownedSessionRecord(client: Awaited<ReturnType<typeof applicationDatabase>>, userId: string, id: string): Promise<SessionRecord | null> {
+  const stored = await createProjectSessionRepository(client).getSession(userId, id)
+  if (!stored) return null
+  const local = sessions.find((session) => session.id === id && session.userId === userId)
+  if (local) {
+    Object.assign(local, {
+      userId: stored.userId,
+      project: stored.project,
+      title: stored.title,
+      createdAt: stored.createdAt,
+      updatedAt: stored.updatedAt,
+      ...(stored.directory ? { directory: stored.directory } : {}),
+    })
+    return local
+  }
+  return {
+    id: stored.id,
+    project: stored.project,
+    title: stored.title,
+    createdAt: stored.createdAt,
+    updatedAt: stored.updatedAt,
+    userId: stored.userId,
+    ...(stored.archived ? { archived: true } : {}),
+    ...(stored.profile ? { profile: stored.profile } : {}),
+    ...(stored.model ? { model: stored.model } : {}),
+    ...(stored.directory ? { directory: stored.directory } : {}),
+    ...(stored.permissionOverride ? { permissionOverride: stored.permissionOverride } : {}),
+  }
+}
+
+async function ownedSessionProject(client: Awaited<ReturnType<typeof applicationDatabase>>, userId: string, record: SessionRecord): Promise<Project | null> {
+  if (record.project === 'General Chat') return generalChatProject()
+  const project = await createProjectSessionRepository(client).findProjectByName(userId, record.project)
+  if (!project) return null
+  let projectPath: string
+  try {
+    projectPath = assertPathWithinWorkspace(project.path)
+  } catch {
+    return null
+  }
+  if (record.directory && !isPathWithin(projectPath, record.directory)) return null
+  return { name: project.name, path: projectPath }
+}
+
+function rpcSession(id: string, userId: string, suppliedRecord?: SessionRecord, suppliedProject?: Project): PiSdkSession {
+  if (!userId.trim()) throw new Error('Session owner is unavailable')
+  const key = activeKey(userId, id)
+  const existing = active.get(key)
+  if (existing) {
+    if (existing.record.userId !== userId || (suppliedProject && !isPathWithin(suppliedProject.path, existing.record.directory ?? existing.project.path))) {
+      throw new Error('Session project mismatch')
+    }
+    return existing
+  }
+  const record = suppliedRecord ?? recordFor(id, userId)
+  if (record.userId !== userId) throw new Error('Session owner mismatch')
+  const configuredProject = suppliedProject ?? (suppliedRecord ? undefined : projectFor(record.project))
+  if (!configuredProject) throw new Error('Session project is unavailable')
+  if (record.directory && !isPathWithin(configuredProject.path, record.directory)) throw new Error('Session directory is outside its project')
+  const project = configuredProject
+  const session = new PiSdkSession(record, project)
+  active.set(key, session)
   return session
 }
 
-async function sendRpc(id: string, command: RpcCommand): Promise<unknown> {
+async function sendRpc(id: string, command: RpcCommand, owner: SessionRecord): Promise<unknown> {
   if (!allowedRpcCommands.has(command.type)) throw new Error(`Unsupported RPC command: ${command.type}`)
-  const session = rpcSession(id)
+  const userId = owner.userId
+  if (!userId) throw new Error('Session owner is unavailable')
+  const project = await ownedSessionProject(await applicationDatabase(), userId, owner)
+  if (!project) throw new Error('Session project is unavailable')
+  const session = rpcSession(id, userId, owner, project)
   const result = await session.send(command) as RpcMessage
-  const record = recordFor(id)
+  const record = session.record
   record.updatedAt = Date.now()
   await saveState()
-  return result
+  return command.type === 'get_entries' || command.type === 'get_messages' || command.type === 'get_state'
+    ? redactTranscriptPayload(result)
+    : redactSensitive(result)
 }
 
 function redactConfig(value: unknown): unknown {
@@ -1082,11 +1131,13 @@ async function runtimeProviders(userId: string): Promise<{ all: Record<string, u
 
 type DailyUsage = { date: string; input: number; output: number; cacheRead: number }
 
-async function dailyUsage(): Promise<{ days: DailyUsage[] }> {
+async function dailyUsage(userId: string, client: Awaited<ReturnType<typeof applicationDatabase>>): Promise<{ days: DailyUsage[] }> {
   const byDate = new Map<string, DailyUsage>()
   try {
+    const ownedIds = new Set((await createProjectSessionRepository(client).listSessions(userId, { includeArchived: true })).map((session) => session.id))
     const allSessions = await SessionManager.listAll(nativeSessionsDir())
     for (const session of allSessions) {
+      if (!ownedIds.has(session.id)) continue
       let entries
       try { entries = parseSessionEntries(readFileSync(session.path, 'utf8')) } catch { continue }
       for (const entry of entries) {
@@ -1109,6 +1160,79 @@ function proxyJson(value: unknown, status = 200): Response {
   return json(value, status)
 }
 
+function redactedDiagnostic(error: unknown): string {
+  return redactSensitiveText(error instanceof Error ? error.message : String(error))
+}
+
+function healthDiagnosticTimeoutMs(): number {
+  const configured = Number(process.env.SUBPOLAR_HEALTH_DIAGNOSTIC_TIMEOUT_MS)
+  return Number.isInteger(configured) && configured > 0 ? Math.min(configured, 5_000) : 1_500
+}
+
+function boundedHealthDiagnostic<T>(operation: Promise<T>, fallback: T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(fallback), healthDiagnosticTimeoutMs())
+    operation.then((value) => { clearTimeout(timer); resolve(value) }, (error) => { clearTimeout(timer); reject(error) })
+  })
+}
+
+async function diagnosticsComponents(): Promise<DiagnosticComponents> {
+  const pocketbase = await boundedHealthDiagnostic<DiagnosticComponents['pocketbase']>(
+    applicationDatabase()
+      .then(() => ({ state: 'available' as const }))
+      .catch(() => ({ state: 'unavailable' as const, reason: 'pocketbase_unavailable' })),
+    { state: 'unknown' as const, reason: 'pocketbase_check_timeout' },
+  )
+
+  let runtime: Awaited<typeof modelRuntimePromise> | undefined
+  const runtimeComponent = await boundedHealthDiagnostic<DiagnosticComponents['runtime']>(
+    modelRuntimePromise
+      .then((value) => {
+        runtime = value
+        return { state: 'available' as const, details: { modelCount: value.getModels().length } }
+      })
+      .catch(() => ({ state: 'unknown' as const, reason: 'runtime_not_observed' })),
+    { state: 'unknown' as const, reason: 'runtime_check_timeout' },
+  )
+
+  let providers: DiagnosticComponents['providers'] = { state: 'unknown', reason: 'runtime_not_observed' }
+  if (runtime) {
+    providers = await boundedHealthDiagnostic<DiagnosticComponents['providers']>(
+      createProviderCatalogAsync(runtime)
+        .then((catalog) => {
+          const configured = catalog.providers.filter((provider) => provider.authStatus.configured)
+          const hasProviderError = catalog.providers.some((provider) => provider.authStatus.state === 'error')
+          return {
+            state: hasProviderError ? 'degraded' as const : configured.length > 0 ? 'available' as const : 'unconfigured' as const,
+            details: {
+              configured: configured.length,
+              total: catalog.providers.length,
+              providers: catalog.providers.map((provider) => ({ id: provider.id, state: provider.authStatus.state })),
+            },
+          }
+        })
+        .catch(() => ({ state: 'unknown' as const, reason: 'provider_status_not_observed' })),
+      { state: 'unknown' as const, reason: 'provider_check_timeout' },
+    )
+  }
+
+  const filesystem = existsSync(projectsRoot)
+    ? { state: 'available' as const }
+    : { state: 'unavailable' as const, reason: 'project_root_unavailable' }
+  const clientOnly = { state: 'unknown' as const, reason: 'client_capability_not_observed' }
+
+  return {
+    bridge: { state: 'available', details: { transport: 'bun' } },
+    runtime: runtimeComponent,
+    pocketbase,
+    projectFilesystem: filesystem,
+    providers,
+    browser: clientOnly,
+    stt: clientOnly,
+    tts: clientOnly,
+  }
+}
+
 async function handleProxy(request: Request): Promise<Response> {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type' } })
   const credentials = loadProxyCredentials()
@@ -1126,7 +1250,7 @@ async function handleProxy(request: Request): Promise<Response> {
   if (request.method !== 'POST' || !request.url.endsWith('/v1/chat/completions')) return proxyJson({ error: { message: 'Not found', type: 'invalid_request_error' } }, 404)
 
   try {
-    const input = object(await request.json())
+    const input = await body(request)
     if (!Array.isArray(input.messages)) throw new Error('Request must contain a messages array')
     const runtime = await modelRuntimePromise
     const requested = typeof input.model === 'string' ? input.model.trim() : ''
@@ -1156,12 +1280,14 @@ async function handleProxy(request: Request): Promise<Response> {
       },
     })
   } catch (error) {
-    return proxyJson({ error: { message: error instanceof Error ? error.message : String(error), type: 'invalid_request_error' } }, 400)
+    console.warn(`Proxy request failed: ${redactedDiagnostic(error)}`)
+    return proxyJson({ error: { message: 'Proxy request failed', type: 'invalid_request_error' } }, 400)
   }
 }
 
 const TRANSCRIPT_FRAME_LIMIT = 192 * 1024
 const TRANSCRIPT_MESSAGE_LIMIT = 30
+const TRANSCRIPT_INPUT_LIMIT = 64 * 1024
 
 type TranscriptSocket = { data: SocketData; send: (value: string) => unknown; close: (code?: number, reason?: string) => void }
 
@@ -1197,8 +1323,20 @@ async function loadSocketHistory(socket: TranscriptSocket, session: PiSdkSession
 }
 
 async function handleSocketMessage(socket: TranscriptSocket, raw: unknown, session: PiSdkSession): Promise<void> {
+  const size = typeof raw === 'string'
+    ? new TextEncoder().encode(raw).byteLength
+    : raw instanceof ArrayBuffer ? raw.byteLength : raw instanceof Uint8Array ? raw.byteLength : 0
+  if (size > TRANSCRIPT_INPUT_LIMIT) {
+    socket.close(1009, 'Message too large')
+    return
+  }
+  const limited = requestRateLimiter.consume(`websocket-message:${socket.data.userId}:${socket.data.sessionId}`, REQUEST_LIMITS.read.limit, REQUEST_LIMITS.read.windowMs)
+  if (!limited.allowed) {
+    socket.close(1008, 'Message rate limit exceeded')
+    return
+  }
   try {
-    const request = object(typeof raw === 'string' ? JSON.parse(raw) : raw)
+    const request = object(typeof raw === 'string' ? JSON.parse(raw) : raw instanceof ArrayBuffer || raw instanceof Uint8Array ? JSON.parse(new TextDecoder().decode(raw)) : raw)
     if (request.type === 'history.load' || request.type === 'history.resume') {
       if (!socket.data.historyReady || request.type === 'history.resume') {
         socket.data.historyReady = false
@@ -1208,24 +1346,36 @@ async function handleSocketMessage(socket: TranscriptSocket, raw: unknown, sessi
       }
     }
   } catch (error) {
-    socket.send(JSON.stringify({ type: 'history.error', error: error instanceof Error ? error.message : String(error) }))
+    socket.send(JSON.stringify({ type: 'history.error', error: 'Unable to process session history request' }))
   }
 }
 
-async function handle(request: Request): Promise<Response> {
+async function handle(request: Request, correlationId = requestId(request)): Promise<Response> {
   const url = new URL(request.url)
   const path = url.pathname.split('/').filter(Boolean)
   if (request.method === 'OPTIONS') return new Response(null, { status: 204 })
   if (request.method === 'GET' && url.pathname === '/api/health') {
     try {
       await applicationDatabase()
-      return json({ status: 'healthy', timestamp: new Date().toISOString(), database: 'pocketbase', runtime: 'pi', pi: 'healthy', activeSessions: active.size })
+        return json(createLegacyHealthPayload(true, new Date().toISOString()))
     } catch (error) {
-      return json({ status: 'degraded', timestamp: new Date().toISOString(), database: 'pocketbase-unavailable', runtime: 'pi', pi: 'healthy', error: error instanceof Error ? error.message : 'PocketBase is unavailable' }, 503)
+      console.warn(`Health check degraded: ${redactedDiagnostic(error)}`)
+        return json(createLegacyHealthPayload(false, new Date().toISOString()), 503)
     }
   }
 
-  const publicApi = path[0] === 'api' && (path[1] === 'auth' || path[1] === 'auth-info')
+  if (request.method === 'GET' && url.pathname === '/api/v1/capabilities') {
+    return json(createCapabilitiesPayload(correlationId))
+  }
+  if (request.method === 'GET' && url.pathname === '/api/v1/health') {
+    return json(createHealthPayload(await diagnosticsComponents(), new Date().toISOString(), correlationId))
+  }
+
+  const publicApi = path[0] === 'api' && (
+    path[1] === 'auth'
+    || path[1] === 'auth-info'
+    || (path[1] === 'v1' && (path[2] === 'capabilities' || path[2] === 'health'))
+  )
   const internalRequest = request.headers.get('authorization') === `Bearer ${internalToken}`
   let authenticatedUser: PocketBaseUser | null = null
   if (path[0] === 'api' && !publicApi && !internalRequest) {
@@ -1239,7 +1389,7 @@ async function handle(request: Request): Promise<Response> {
       return json({ user: authenticatedUser, token: null })
     }
     if (path[2] === 'config' && request.method === 'GET') {
-      try { return json(await authConfig()) } catch (error) { return json({ message: error instanceof Error ? error.message : 'PocketBase is unavailable' }, 503) }
+      try { return json(await authConfig()) } catch (error) { console.warn(`Auth configuration unavailable: ${redactedDiagnostic(error)}`); return json({ message: 'PocketBase is unavailable' }, 503) }
     }
     if (path[2] === 'sign-out' && request.method === 'POST') {
       await signOut()
@@ -1256,7 +1406,7 @@ async function handle(request: Request): Promise<Response> {
         response.headers.set('set-cookie', result.cookie)
         return response
       } catch (error) {
-        return json({ message: error instanceof Error ? error.message : 'Invalid credentials' }, 401)
+        return json({ message: 'Invalid credentials' }, 401)
       }
     }
     if (path[2] === 'sign-up' && path[3] === 'email' && request.method === 'POST') {
@@ -1270,7 +1420,7 @@ async function handle(request: Request): Promise<Response> {
         response.headers.set('set-cookie', result.cookie)
         return response
       } catch (error) {
-        return json({ message: error instanceof Error ? error.message : 'Registration failed' }, 400)
+        return json({ message: 'Registration failed' }, 400)
       }
     }
     if (path[2] === 'change-password' && request.method === 'PUT') {
@@ -1282,14 +1432,14 @@ async function handle(request: Request): Promise<Response> {
         await changePassword(authenticatedUser.id, input.currentPassword, input.newPassword)
         return json({ success: true })
       } catch (error) {
-        return json({ message: error instanceof Error ? error.message : 'Failed to change password' }, 400)
+        return json({ message: 'Failed to change password' }, 400)
       }
     }
   }
 
   if (path[0] === 'api' && path[1] === 'auth-info') {
     if (path[2] === 'config' && request.method === 'GET') {
-      try { return json(await authConfig()) } catch (error) { return json({ message: error instanceof Error ? error.message : 'PocketBase is unavailable' }, 503) }
+      try { return json(await authConfig()) } catch (error) { console.warn(`Auth information unavailable: ${redactedDiagnostic(error)}`); return json({ message: 'PocketBase is unavailable' }, 503) }
     }
     if (path[2] === 'me' && request.method === 'GET') return json({ user: await authenticateRequest(request) })
   }
@@ -1342,7 +1492,8 @@ async function handle(request: Request): Promise<Response> {
         return json({ success: true })
       }
     } catch (error) {
-      return json({ message: error instanceof Error ? error.message : 'Agent store unavailable' }, 503)
+      console.warn(`Agent store request failed: ${redactedDiagnostic(error)}`)
+      return json({ message: 'Agent store unavailable' }, 503)
     }
   }
 
@@ -1351,47 +1502,44 @@ async function handle(request: Request): Promise<Response> {
       const userId = authenticatedUser.id
 
       if (path[2] === 'custom') {
-        const providers = loadCustomProviders()
-        if (path.length === 3 && request.method === 'GET') return json({ providers: providers.map(publicCustomProvider) })
+        const customProviders = createCustomProviderService(await applicationDatabase())
+        if (path.length === 3 && request.method === 'GET') return json({ providers: await customProviders.list(userId) })
         if (path.length === 3 && request.method === 'POST') {
           const input = object(await body(request))
           const id = typeof input.id === 'string' ? input.id.trim() : ''
           const name = typeof input.name === 'string' ? input.name.trim() : ''
-          const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim().replace(/\/$/, '') : ''
+          const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim() : ''
           if (!id || !/^[a-zA-Z0-9_-]+$/.test(id) || !name || !baseUrl) return json({ message: 'id, name, and baseUrl are required' }, 400)
-          const existing = providers.find((provider) => provider.id === id)
-          const provider: CustomProvider = {
-            id,
-            name,
-            baseUrl,
-            api: typeof input.api === 'string' ? input.api : 'openai-completions',
-            ...(typeof input.apiKey === 'string' && input.apiKey ? { apiKey: input.apiKey } : existing?.apiKey ? { apiKey: existing.apiKey } : {}),
-            ...(object(input.headers) && Object.keys(object(input.headers)).length > 0 ? { headers: object(input.headers) as Record<string, string> } : {}),
-            authHeader: input.authHeader === true,
-            models: Array.isArray(input.models) ? input.models.map((model) => object(model)) : [],
-            ...(object(input.modelOverrides) ? { modelOverrides: object(input.modelOverrides) } : {}),
-          }
-          saveCustomProviders([...providers.filter((item) => item.id !== id), provider])
-          return json({ provider: publicCustomProvider(provider) }, existing ? 200 : 201)
+          const saved = await customProviders.save(userId, input)
+          return json({ provider: saved.provider }, saved.created ? 201 : 200)
         }
         if (path.length === 4 && request.method === 'DELETE') {
           const id = decodeURIComponent(path[3] ?? '')
-          saveCustomProviders(providers.filter((provider) => provider.id !== id))
+          await customProviders.delete(userId, id)
           return json({ ok: true })
         }
         if (path.length === 4 && path[3] === 'discover-models' && request.method === 'POST') {
-          const input = object(await body(request))
-          const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim().replace(/\/$/, '') : ''
-          if (!baseUrl) return json({ message: 'baseUrl is required' }, 400)
-          const headers: Record<string, string> = { Accept: 'application/json' }
-          if (typeof input.apiKey === 'string' && input.apiKey) headers.Authorization = `Bearer ${input.apiKey}`
-          const response = await fetch(`${baseUrl}/v1/models`, { headers })
-          if (!response.ok) return json({ message: `Model discovery failed with HTTP ${response.status}` }, 502)
-          const payload = object(await response.json())
-          const models = Array.isArray(payload.data)
-            ? payload.data.map((model) => object(model)).map((model) => model.id).filter((id): id is string => typeof id === 'string')
-            : []
-          return json({ models })
+          try {
+            const input = object(await body(request))
+            const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim() : ''
+            if (!baseUrl) return json({ message: 'baseUrl is required' }, 400)
+            const discoveryUrl = customProviderDiscoveryUrl(baseUrl)
+            const headers: Record<string, string> = { Accept: 'application/json' }
+            if (typeof input.apiKey === 'string' && input.apiKey) headers.Authorization = `Bearer ${input.apiKey}`
+            const networkPolicy = networkPolicyFromMetadata(input)
+            const response = await fetchWithNetworkPolicy(discoveryUrl, { headers }, networkPolicy)
+            if (!response.ok) return json({ message: `Model discovery failed with HTTP ${response.status}` }, 502)
+            const payload = object(JSON.parse(await readBoundedResponse(response, networkPolicy.maxResponseBytes ?? 4 * 1024 * 1024)))
+            const models = Array.isArray(payload.data)
+              ? payload.data.map((model) => object(model)).map((model) => model.id).filter((id): id is string => typeof id === 'string')
+              : []
+            return json({ models })
+          } catch (error) {
+            if (error instanceof CustomProviderValidationError) return json({ message: error.message }, 400)
+            if (error instanceof RequestSecurityError) return json({ message: error.message }, error.status)
+            console.warn(`Custom provider discovery failed: ${redactedDiagnostic(error)}`)
+            return json({ message: 'Model discovery failed' }, 502)
+          }
         }
         return json({ message: 'Not found' }, 404)
       }
@@ -1418,7 +1566,7 @@ async function handle(request: Request): Promise<Response> {
               signal: AbortSignal.timeout(15_000),
             })
           } catch (error) {
-            console.warn(`Provider catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`)
+            console.warn(`Provider catalog refresh failed: ${redactedDiagnostic(error)}`)
           }
         }
 
@@ -1506,19 +1654,21 @@ async function handle(request: Request): Promise<Response> {
         }
       }
     } catch (error) {
+      if (error instanceof CustomProviderValidationError) return json({ message: error.message }, 400)
+      if (error instanceof RequestSecurityError) return json({ message: error.message }, error.status)
       if (error instanceof ProviderLoginFlowError) {
         const status = error.code === 'FLOW_NOT_FOUND' ? 404
           : error.code === 'FLOW_EXPIRED' ? 410
             : error.code === 'INVALID_INPUT' || error.code === 'INVALID_PROMPT_RESPONSE' ? 400 : 409
-        return json({ message: error.message, code: error.code }, status)
+        return json({ message: 'Provider login request failed', code: error.code }, status)
       }
       const storageError = providerLoginFlowStorageError(error)
-      console.error('Provider login flow request failed', storageError)
-      return json({ message: storageError.message, ...(storageError.data ? { details: storageError.data } : {}) }, 503)
+      console.error('Provider login flow request failed', redactSensitive(storageError))
+      return json({ message: 'Provider login storage unavailable' }, 503)
     }
   }
 
-  if (request.method === 'GET' && url.pathname === '/api/usage/daily') return json(await dailyUsage())
+  if (request.method === 'GET' && url.pathname === '/api/usage/daily') return json(await dailyUsage(authenticatedUser!.id, await applicationDatabase()))
   if (url.pathname === '/api/proxy/credentials' && request.method === 'GET') return json({ credentials: loadProxyCredentials().map(proxyCredentialResponse) })
   if (url.pathname === '/api/proxy/credentials' && request.method === 'POST') {
     const secret = `subpolar_${randomBytes(32).toString('base64url')}`
@@ -1546,14 +1696,22 @@ async function handle(request: Request): Promise<Response> {
     const input = await body(request)
     const name = typeof input.name === 'string' ? input.name.trim() : ''
     if (!name || name.toLocaleLowerCase() === 'general chat') return json({ error: 'A unique project name is required' }, 400)
-    const directory = typeof input.directory === 'string' && input.directory.trim()
-      ? resolve(input.directory)
-      : join(subpolarDataDir, 'projects', name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-'))
+    const directory = safeProjectPath(typeof input.directory === 'string' && input.directory.trim()
+      ? input.directory
+      : join(projectsRoot, 'projects', name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-')))
     const client = await applicationDatabase()
     await ensureUserMetadata(authenticatedUser!.id)
-    if (await createProjectSessionRepository(client).findProjectByName(authenticatedUser!.id, name)) return json({ error: 'Project already exists' }, 409)
-    mkdirSync(directory, { recursive: true })
-    const created = await createProjectSessionRepository(client).createProject(authenticatedUser!.id, { name, path: directory })
+    const repository = createProjectSessionRepository(client)
+    if (await repository.findProjectByName(authenticatedUser!.id, name)) return json({ error: 'Project already exists' }, 409)
+    let created
+    try {
+      await repository.assertProjectPathAvailable(authenticatedUser!.id, directory)
+      mkdirSync(directory, { recursive: true })
+      created = await repository.createProject(authenticatedUser!.id, { name, path: directory })
+    } catch (error) {
+      if (error instanceof ProjectPathConflictError) return json({ error: error.message, code: error.code }, 409)
+      throw error
+    }
     const definitions = loadProjectDefinitions().filter((project) => project.name !== name)
     saveProjectDefinitions([...definitions, { name: created.name, path: created.path }])
     const owned = await ownedProjectResponses(authenticatedUser!.id, client)
@@ -1569,9 +1727,16 @@ async function handle(request: Request): Promise<Response> {
     if (!current) return json({ error: 'Project not found' }, 404)
     const input = await body(request)
     const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name
-    const directory = typeof input.directory === 'string' && input.directory.trim() ? resolve(input.directory) : current.path
-    mkdirSync(directory, { recursive: true })
-    const updated = await createProjectSessionRepository(client).updateProject(authenticatedUser!.id, current.id, { name, path: directory })
+    const directory = typeof input.directory === 'string' && input.directory.trim() ? safeProjectPath(input.directory) : safeProjectPath(current.path)
+    let updated
+    try {
+      await createProjectSessionRepository(client).assertProjectPathAvailable(authenticatedUser!.id, directory, current.id)
+      mkdirSync(directory, { recursive: true })
+      updated = await createProjectSessionRepository(client).updateProject(authenticatedUser!.id, current.id, { name, path: directory })
+    } catch (error) {
+      if (error instanceof ProjectPathConflictError) return json({ error: error.message, code: error.code }, 409)
+      throw error
+    }
     if (!updated) return json({ error: 'Project not found' }, 404)
     const definitions = loadProjectDefinitions().filter((project) => project.name !== current.name && resolve(project.path) !== resolve(current.path))
     saveProjectDefinitions([...definitions, { name: updated.name, path: updated.path }])
@@ -1590,19 +1755,26 @@ async function handle(request: Request): Promise<Response> {
   }
   if (request.method === 'GET' && path[1] === 'projects' && path[2] === 'default-directory') {
     const name = url.searchParams.get('projectName')?.trim() || 'project'
-    const directory = join(subpolarDataDir, 'projects', name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-'))
+    const directory = join(projectsRoot, 'projects', name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-'))
     return json({ directory })
   }
   if (request.method === 'GET' && path[1] === 'projects' && path[2] === 'directories') {
     const requested = url.searchParams.get('path')
-    const currentPath = requested ? resolve(requested) : homedir()
+    const currentPath = requested ? safeProjectPath(requested) : canonicalProjectPath(projectsRoot)
     try {
+      const client = await applicationDatabase()
+      const ownedRoots = (await createProjectSessionRepository(client).listProjects(authenticatedUser!.id))
+        .map((project) => canonicalProjectPath(project.path))
+      if (currentPath !== canonicalProjectPath(projectsRoot) && !ownedRoots.some((projectRoot) => isPathWithin(projectRoot, currentPath))) {
+        return json({ error: 'Project path is not owned by the authenticated user' }, 403)
+      }
       const directories = readdirSync(currentPath, { withFileTypes: true })
         .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
         .map((entry) => ({ name: entry.name, path: join(currentPath, entry.name) }))
       return json({ currentPath, directories })
     } catch (error) {
-      return json({ error: error instanceof Error ? error.message : String(error) }, 400)
+      console.warn(`Directory listing failed: ${redactedDiagnostic(error)}`)
+      return json({ error: 'Unable to list project directories' }, 400)
     }
   }
   if (request.method === 'GET' && path[1] === 'projects' && path[2] === 'general-chat') {
@@ -1622,7 +1794,8 @@ async function handle(request: Request): Promise<Response> {
       const agents = await listAgents(await applicationDatabase(), authenticatedUser!.id)
       return json(agents.map((agent) => ({ name: agent.name, mode: agent.mode, description: agent.description, systemPrompt: agent.system_prompt })))
     } catch (error) {
-      return json({ error: error instanceof Error ? error.message : 'Agent store unavailable' }, 503)
+      console.warn(`Agent listing failed: ${redactedDiagnostic(error)}`)
+      return json({ error: 'Agent store unavailable' }, 503)
     }
   }
   if (request.method === 'GET' && url.pathname === '/api/provider') {
@@ -1634,8 +1807,8 @@ async function handle(request: Request): Promise<Response> {
   if (request.method === 'GET' && url.pathname === '/api/config') return json({ model: undefined, default_agent: 'master', default_permission: 'ask' })
   if (request.method === 'GET' && url.pathname === '/api/command') return json([])
   if (request.method === 'GET' && url.pathname === '/api/sessions/status') {
-    syncNativeSessions()
-    return json(Object.fromEntries(sessions.map((session) => [session.id, { type: 'idle' }])))
+    const owned = await createProjectSessionRepository(await applicationDatabase()).listSessions(authenticatedUser!.id, { includeArchived: true })
+    return json(Object.fromEntries(owned.map((session) => [session.id, { type: active.get(activeKey(authenticatedUser!.id, session.id))?.record.userId === authenticatedUser!.id ? 'busy' : 'idle' }])))
   }
   if (request.method === 'GET' && url.pathname === '/api/sse/stream') {
     let heartbeat: ReturnType<typeof setInterval> | undefined
@@ -1651,6 +1824,7 @@ async function handle(request: Request): Promise<Response> {
           try { controller.close() } catch { /* the consumer may already have cancelled the stream */ }
         }
         client = {
+          userId: authenticatedUser!.id,
           enqueue: (chunk) => {
             if (closed) return
             try { controller.enqueue(chunk) } catch { close() }
@@ -1658,7 +1832,8 @@ async function handle(request: Request): Promise<Response> {
           close,
         }
         sseClients.add(client)
-        client.enqueue(encoder.encode(`event: connected\ndata: ${JSON.stringify({ clientId: 'pi-local', connected: active.size, total: active.size })}\n\n`))
+        const connected = [...active.values()].filter((session) => session.record.userId === authenticatedUser!.id).length
+        client.enqueue(encoder.encode(`event: connected\ndata: ${JSON.stringify({ clientId: 'pi-local', connected, total: connected })}\n\n`))
         heartbeat = setInterval(() => client?.enqueue(encoder.encode('event: heartbeat\ndata: {}\n\n')), 30000)
       },
       cancel() {
@@ -1673,35 +1848,41 @@ async function handle(request: Request): Promise<Response> {
 
   if (path[1] === 'pi' && path[2] === 'tools' && path[3] === 'authorize' && request.method === 'POST') {
     const input = await body(request)
-    const userId = internalRequest && typeof input.userId === 'string' ? input.userId : authenticatedUser?.id
-    if (!userId) return json({ ok: false, decision: 'deny', message: 'A user identity is required' }, 401)
+    const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : ''
+    if (!sessionId) return json({ ok: false, decision: 'deny', message: 'An authenticated owned session is required' }, 401)
     try {
       const client = await applicationDatabase()
+      const session = await createProjectSessionRepository(client).getSessionById(sessionId)
+      // Internal Pi calls have no browser cookie, but ownership still comes
+      // from the durable PocketBase session record, never from process-local
+      // session state or a caller-supplied userId.
+      if (!session || (authenticatedUser && session.userId !== authenticatedUser.id)) return json({ ok: false, decision: 'deny', message: 'Session not found' }, 404)
+      const userId = session.userId
+      const requestedOverride = requestedPermissionOverride(input.permissionOverride)
+      if (requestedOverride === null) return json({ ok: false, decision: 'deny', message: 'Invalid permission override' }, 400)
+      const context = await resolveToolSessionContext(client, userId, sessionId, typeof input.agentName === 'string' ? input.agentName : undefined)
+      if (requestedOverride !== undefined && requestedOverride !== context.permissionOverride) {
+        return json({ ok: false, decision: 'deny', message: 'Permission override does not match the persisted session policy' }, 403)
+      }
       const result = await authorizePiToolCall(client, {
         userId,
-        agentName: typeof input.agentName === 'string' ? input.agentName : 'master',
-        sessionId: typeof input.sessionId === 'string' ? input.sessionId : '',
+        agentName: context.agentName,
+        sessionId,
         toolName: typeof input.toolName === 'string' ? input.toolName : '',
         input: input.input ?? {},
-        permissionOverride: input.permissionOverride === 'ask' || input.permissionOverride === 'none' || input.permissionOverride === 'allow_all' ? input.permissionOverride : undefined,
+        permissionOverride: context.permissionOverride,
       })
       if (result.decision !== 'approval') return json(result)
 
       broadcastSse({
         type: 'permission.asked',
         directory: typeof input.cwd === 'string' ? input.cwd : undefined,
-        properties: {
-          id: result.approvalId,
-          sessionID: input.sessionId,
-          permission: input.toolName === 'bash' ? 'bash' : input.toolName,
-          patterns: [input.toolName],
-          metadata: { toolId: mapToolId(input.toolName), input: input.input ?? {}, reason: result.message },
-          always: [],
-        },
-      })
+          properties: permissionAskedProperties({ id: result.approvalId ?? '', sessionId, toolId: mapToolId(input.toolName), input: input.input ?? {}, reason: result.message ?? 'Tool approval required' }),
+      }, userId)
       return json({ ok: false, decision: 'approval', approvalId: result.approvalId, message: result.message }, 202)
     } catch (error) {
-      return json({ ok: false, decision: 'deny', message: error instanceof Error ? error.message : 'Tool authorization failed' }, 503)
+      console.warn(`Tool authorization failed: ${redactedDiagnostic(error)}`)
+      return json({ ok: false, decision: 'deny', message: 'Tool authorization failed' }, 503)
     }
   }
 
@@ -1748,12 +1929,15 @@ async function handle(request: Request): Promise<Response> {
       if (path[3] === 'call' && typeof input.toolId === 'string') {
         const sessionId = typeof input.sessionId === 'string' && input.sessionId.trim() ? input.sessionId : undefined
         if (!sessionId || userId === 'system') return json({ error: 'A valid sessionId is required for tool execution' }, 400)
-        const localSession = recordFor(sessionId)
-        const executionUserId = authenticatedUser?.id ?? localSession.userId
-        if (!executionUserId) return json({ error: 'Session has no authenticated owner' }, 403)
+        const persistedSession = await createProjectSessionRepository(client).getSessionById(sessionId)
+        if (!persistedSession || persistedSession.userId !== userId) return json({ error: 'Session not found' }, 404)
+        const executionUserId = persistedSession.userId
+        if (authenticatedUser && authenticatedUser.id !== executionUserId) return json({ error: 'Session not found' }, 404)
         if (typeof input.userId === 'string' && input.userId !== executionUserId) return json({ error: 'Identity assertion does not match the session owner' }, 403)
-        const requestedOverride = input.permissionOverride === 'ask' || input.permissionOverride === 'none' || input.permissionOverride === 'allow_all' ? input.permissionOverride : undefined
-        const context = await resolveToolSessionContext(client, executionUserId, sessionId, typeof input.agentName === 'string' ? input.agentName : undefined, requestedOverride)
+        const requestedOverride = requestedPermissionOverride(input.permissionOverride)
+        if (requestedOverride === null) return json({ error: 'Invalid permission override' }, 400)
+        const context = await resolveToolSessionContext(client, executionUserId, sessionId, typeof input.agentName === 'string' ? input.agentName : undefined)
+        if (requestedOverride !== undefined && requestedOverride !== context.permissionOverride) return json({ error: 'Permission override does not match the persisted session policy' }, 403)
         const gateway = inProcessToolGateway ?? createToolGatewayFromCallTool(client, callTool)
         const result = await gateway.call(
           { toolId: input.toolId, input: input.input ?? {} },
@@ -1769,31 +1953,26 @@ async function handle(request: Request): Promise<Response> {
               broadcastSse({
                 type: 'permission.asked',
                 directory: context.cwd,
-                properties: {
-                  id: approval.id,
-                  sessionID: approval.session_id,
-                  permission: approval.tool_id === 'bash' ? 'bash' : approval.tool_id,
-                  patterns: [approval.tool_id],
-                  metadata: { toolId: approval.tool_id, input: approval.input, reason: approval.reason },
-                  always: [],
-                },
-              })
+                properties: permissionAskedProperties({ id: approval.id, sessionId: approval.session_id, toolId: approval.tool_id, input: approval.input, reason: approval.reason }),
+              }, context.identity.userId)
             },
           },
         )
-        return json(result, result.ok || !('approvalRequired' in result) ? 200 : 202)
+         return json(redactSensitive(result), result.ok || !('approvalRequired' in result) ? 200 : 202)
       }
       if (path[3] === 'continue' && typeof input.approvalId === 'string') {
         if (userId === 'system') return json({ error: 'An authenticated user is required' }, 401)
         const sessionId = typeof input.sessionId === 'string' ? input.sessionId : undefined
-        const session = sessionId ? await createProjectSessionRepository(client).getSession(userId, sessionId) : null
-        if (sessionId && !session) return json({ error: 'Session not found' }, 404)
-        const result = await continueApprovedTool(client, userId, input.approvalId, { sessionId, cwd: session?.directory, callId: typeof input.callId === 'string' ? input.callId : crypto.randomUUID() })
-        return json(result, 'approvalRequired' in result && result.approvalRequired ? 202 : 200)
+        const session = sessionId ? await createProjectSessionRepository(client).getSessionById(sessionId) : null
+        if (session && session.userId !== userId) return json({ error: 'Session not found' }, 404)
+        if (!sessionId || !session) return json({ error: 'An owned session is required' }, 404)
+        const result = await continueApprovedTool(client, session.userId, input.approvalId, { sessionId: session.id, cwd: session.directory, callId: typeof input.callId === 'string' ? input.callId : crypto.randomUUID() })
+         return json(redactSensitive(result), 'approvalRequired' in result && result.approvalRequired ? 202 : 200)
       }
       return json({ error: 'Unknown tool gateway operation' }, 404)
     } catch (error) {
-      return json({ error: error instanceof Error ? error.message : 'Tool gateway unavailable' }, 503)
+      console.warn(`Tool gateway request failed: ${redactedDiagnostic(error)}`)
+      return json({ error: 'Tool gateway unavailable' }, 503)
     }
   }
 
@@ -1807,19 +1986,26 @@ async function handle(request: Request): Promise<Response> {
     if (!authenticatedUser) return json({ message: 'Unauthorized' }, 401)
     try {
       const approvals = await listPendingApprovals(await applicationDatabase(), authenticatedUser.id)
-      return json(approvals.map((approval) => ({ id: approval.id, sessionID: approval.session_id, permission: approval.tool_id === 'bash' ? 'bash' : approval.tool_id, patterns: [approval.tool_id], metadata: { toolId: approval.tool_id, input: approval.input, reason: approval.reason }, always: [] })))
-    } catch (error) { return json({ message: error instanceof Error ? error.message : 'Approval store unavailable' }, 503) }
+      return json(approvals.map((approval) => permissionAskedProperties({ id: approval.id, sessionId: approval.session_id, toolId: approval.tool_id, input: approval.input, reason: approval.reason })))
+    } catch (error) { console.warn(`Approval store request failed: ${redactedDiagnostic(error)}`); return json({ message: 'Approval store unavailable' }, 503) }
   }
 
   if (path[1] === 'session' && path[3] === 'permissions' && path[4] && request.method === 'POST') {
     if (!authenticatedUser) return json({ message: 'Unauthorized' }, 401)
     const input = await body(request)
-    const approved = input.response !== 'reject'
+    const responseValue = input.response
+    if (responseValue !== 'approve' && responseValue !== 'approved' && responseValue !== 'once' && responseValue !== 'always' && responseValue !== 'reject' && responseValue !== 'rejected' && responseValue !== true && responseValue !== false) {
+      return json({ message: 'Approval response must be approve or reject' }, 400)
+    }
+    const decision = responseValue === 'once' || responseValue === 'always' ? 'approve' : responseValue
+    const approved = decision === true || decision === 'approve' || decision === 'approved'
+    const sessionId = decodeURIComponent(path[2] ?? '')
+    if (!sessionId) return json({ message: 'Session not found' }, 404)
     const client = await applicationDatabase()
-    const approval = await respondToApproval(client, authenticatedUser.id, decodeURIComponent(path[4]), approved)
+    const approval = await respondToApproval(client, authenticatedUser.id, decodeURIComponent(path[4]), decision, sessionId)
     if (!approval) return json({ message: 'Approval not found' }, 404)
     if (!approved) return json({ ok: true, approval })
-    const session = await createProjectSessionRepository(client).getSession(authenticatedUser.id, decodeURIComponent(path[2] ?? ''))
+    const session = await createProjectSessionRepository(client).getSession(authenticatedUser.id, sessionId)
     if (!session) return json({ ok: true, approval, result: { ok: false, error: { code: 'SESSION_NOT_FOUND', message: 'Session not found' } } }, 404)
     const result = await continueApprovedTool(client, authenticatedUser.id, approval.id, { sessionId: session.id, cwd: session.directory, callId: crypto.randomUUID() })
     return json({ ok: true, approval, result })
@@ -1852,7 +2038,8 @@ async function handle(request: Request): Promise<Response> {
         return json({ policies: saved })
       }
     } catch (error) {
-      return json({ message: error instanceof Error ? error.message : 'Agent policy store unavailable' }, 503)
+      console.warn(`Agent policy request failed: ${redactedDiagnostic(error)}`)
+      return json({ message: 'Agent policy store unavailable' }, 503)
     }
   }
 
@@ -1864,7 +2051,7 @@ async function handle(request: Request): Promise<Response> {
     try {
       const record = await getUserPreferences(await applicationDatabase(), authenticatedUser.id)
       return json({ preferences: { ...DEFAULT_SETTINGS, ...(record?.preferences ?? {}) }, updatedAt: record?.updated_at ?? Date.now() })
-    } catch (error) { return json({ message: error instanceof Error ? error.message : 'Settings store unavailable' }, 503) }
+    } catch (error) { console.warn(`Settings read failed: ${redactedDiagnostic(error)}`); return json({ message: 'Settings store unavailable' }, 503) }
   }
   if (path[1] === 'settings' && path.length === 2 && request.method === 'PATCH') {
     if (!authenticatedUser) return json({ message: 'Unauthorized' }, 401)
@@ -1875,7 +2062,7 @@ async function handle(request: Request): Promise<Response> {
       const existing = await getUserPreferences(client, authenticatedUser.id)
       const saved = await saveUserPreferences(client, authenticatedUser.id, { ...DEFAULT_SETTINGS, ...(existing?.preferences ?? {}), ...preferences })
       return json({ preferences: saved.preferences ?? {}, updatedAt: saved.updated_at ?? Date.now() })
-    } catch (error) { return json({ message: error instanceof Error ? error.message : 'Settings store unavailable' }, 503) }
+    } catch (error) { console.warn(`Settings update failed: ${redactedDiagnostic(error)}`); return json({ message: 'Settings store unavailable' }, 503) }
   }
   if (path[1] === 'settings' && path.length === 2 && request.method === 'DELETE') {
     if (!authenticatedUser) return json({ message: 'Unauthorized' }, 401)
@@ -1884,7 +2071,7 @@ async function handle(request: Request): Promise<Response> {
       const existing = await getUserPreferences(client, authenticatedUser.id)
       if (existing) await client.collection('user_preferences').delete(existing.id)
       return json({ preferences: DEFAULT_SETTINGS, updatedAt: Date.now() })
-    } catch (error) { return json({ message: error instanceof Error ? error.message : 'Settings store unavailable' }, 503) }
+    } catch (error) { console.warn(`Settings reset failed: ${redactedDiagnostic(error)}`); return json({ message: 'Settings store unavailable' }, 503) }
   }
   if (path[1] === 'settings' && path[2] === 'pi-settings' && request.method === 'GET') {
     // Pi's native config is not required for the bridge to operate. Return a
@@ -1908,28 +2095,62 @@ async function handle(request: Request): Promise<Response> {
     return json({ extensions })
   }
   if (path[1] === 'settings' && path[2] === 'skills' && request.method === 'GET') {
-    const directory = url.searchParams.get('directory') ?? undefined
+    const requestedDirectory = url.searchParams.get('directory')
+    let directory: string | undefined
     const repoId = url.searchParams.get('repoId')
-    const skills = readSkills(directory).filter((skill) => !repoId || String(skill.repoId ?? '') === repoId)
-    return json(skills)
+    if (requestedDirectory) {
+      try { directory = safeProjectPath(requestedDirectory) } catch { return json({ error: 'Project not found' }, 404) }
+      const ownedPaths = (await createProjectSessionRepository(await applicationDatabase()).listProjects(authenticatedUser!.id)).flatMap((project) => {
+        try { return [safeProjectPath(project.path)] } catch { return [] }
+      })
+      if (!ownedPaths.includes(directory) && directory !== safeProjectPath(generalChatRoot)) return json({ error: 'Project not found' }, 404)
+    }
+    try {
+      const skills = readSkills(directory).filter((skill) => !repoId || String(skill.repoId ?? '') === repoId)
+      return json(skills)
+    } catch {
+      return json({ error: 'Project skill path is outside the configured workspace' }, 400)
+    }
   }
   if (path[1] === 'settings' && path[2] === 'skills' && request.method === 'POST') {
     const input = await body(request)
     if (typeof input.name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.name)) return json({ error: 'Valid skill name is required' }, 400)
     const scope = input.scope === 'project' ? 'project' : 'global'
-    const base = scope === 'project' ? join(projectForDirectory(typeof input.directory === 'string' ? input.directory : undefined).path, '.subpolar', 'skills') : join(homedir(), '.config', 'subpolar', 'skills')
-    const file = join(base, input.name, 'SKILL.md')
-    mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, `# ${input.name}\n\n${typeof input.description === 'string' ? input.description : ''}\n\n${typeof input.body === 'string' ? input.body : ''}\n`, 'utf8')
-    return json(readSkills(scope === 'project' ? dirname(dirname(file)) : undefined).find((skill) => skill.name === input.name) ?? { name: input.name, scope, body: input.body ?? '' }, 201)
+    let base = join(homedir(), '.config', 'subpolar', 'skills')
+    let projectDirectory: string | undefined
+    if (scope === 'project') {
+      try { projectDirectory = safeProjectPath(typeof input.directory === 'string' ? input.directory : generalChatRoot) } catch { return json({ error: 'Project not found' }, 404) }
+      const owned = (await createProjectSessionRepository(await applicationDatabase()).listProjects(authenticatedUser!.id)).some((project) => {
+        try { return safeProjectPath(project.path) === projectDirectory } catch { return false }
+      })
+      if (!owned && projectDirectory !== safeProjectPath(generalChatRoot)) return json({ error: 'Project not found' }, 404)
+    }
+    let file: string
+    try {
+      if (scope === 'project') {
+        base = assertPathWithinWorkspace(base, projectsRoot)
+        file = assertPathWithinWorkspace(join(base, input.name, 'SKILL.md'), projectsRoot)
+      } else {
+        file = join(base, input.name, 'SKILL.md')
+      }
+      mkdirSync(dirname(file), { recursive: true })
+      if (scope === 'project') file = assertPathWithinWorkspace(file, projectsRoot)
+      writeFileSync(file, `# ${input.name}\n\n${typeof input.description === 'string' ? input.description : ''}\n\n${typeof input.body === 'string' ? input.body : ''}\n`, 'utf8')
+      const saved = readSkills(scope === 'project' ? projectDirectory : undefined).find((skill) => skill.name === input.name)
+      return json(saved ?? { name: input.name, scope, body: input.body ?? '' }, 201)
+    } catch {
+      return json({ error: 'Project skill path is outside the configured workspace' }, 400)
+    }
   }
 
   if (path[1] === 'sessions' && path.length === 2 && request.method === 'GET') {
     const client = await applicationDatabase()
     const project = url.searchParams.get('project') ?? undefined
-    const owned = await createProjectSessionRepository(client).listSessions(authenticatedUser!.id, { project, includeArchived: true })
+    const repository = createProjectSessionRepository(client)
+    const userProjects = await repository.listProjects(authenticatedUser!.id)
+    const owned = await repository.listSessions(authenticatedUser!.id, { project, includeArchived: true })
     const records = owned.map((session) => {
-      const local = sessions.find((item) => item.id === session.id)
+      const local = sessions.find((item) => item.id === session.id && item.userId === authenticatedUser!.id)
       const record: SessionRecord = {
         id: session.id,
         project: session.project,
@@ -1945,24 +2166,37 @@ async function handle(request: Request): Promise<Response> {
       }
       if (local) Object.assign(local, record)
       return record
-    }).filter((session) => !url.searchParams.get('directory') || (session.directory ?? projectForSession(session)?.path) === resolve(url.searchParams.get('directory')!))
-    return json({ sessions: records.map(storedSessionResponse).sort((a, b) => b.updatedAt - a.updatedAt) })
+    }).filter((session) => {
+      const requestedDirectory = url.searchParams.get('directory')
+      if (!requestedDirectory) return true
+      const project = session.project === 'General Chat' ? generalChatProject() : userProjects.find((candidate) => candidate.name === session.project)
+      return (session.directory ?? project?.path) === resolve(requestedDirectory)
+    })
+    return json({ sessions: records.map((record) => storedSessionResponse(record, userProjects)).sort((a, b) => b.updatedAt - a.updatedAt) })
   }
 
   if (path[1] === 'sessions' && path.length === 2 && request.method === 'POST') {
     const input = await body(request)
-    const project = typeof input.project === 'number'
-      ? projectForId(input.project)
-      : typeof input.project === 'string' && /^\d+$/.test(input.project)
-        ? projectForId(Number(input.project))
-        : typeof input.project === 'string'
-          ? projectFor(input.project)
-          : projectForDirectory(typeof input.directory === 'string' ? input.directory : undefined)
+    const client = await applicationDatabase()
+    const repository = createProjectSessionRepository(client)
+    const ownedProjects = await repository.listProjects(authenticatedUser!.id)
+    const requestedProjectId = typeof input.project === 'number'
+      ? input.project
+      : typeof input.project === 'string' && /^\d+$/.test(input.project) ? Number(input.project) : undefined
+    const requestedProjectName = typeof input.project === 'string' && !/^\d+$/.test(input.project) ? input.project : undefined
+    const selected = requestedProjectId !== undefined
+      ? requestedProjectId === 0 ? generalChatProject() : ownedProjects[requestedProjectId - 1] ? { name: ownedProjects[requestedProjectId - 1].name, path: ownedProjects[requestedProjectId - 1].path } : undefined
+      : requestedProjectName
+        ? requestedProjectName === 'General Chat' ? generalChatProject() : ownedProjects.find((item) => item.name === requestedProjectName)
+        : typeof input.directory === 'string'
+          ? ownedProjects.find((item) => resolve(item.path) === resolve(input.directory as string)) ?? generalChatProject()
+          : generalChatProject()
+    if (!selected) return json({ error: 'Project not found' }, 404)
+    const project: Project = selected
     const now = Date.now()
     const id = crypto.randomUUID()
     const directory = project.name === 'General Chat' ? sessionWorkspace(id) : project.path
     mkdirSync(directory, { recursive: true })
-    const client = await applicationDatabase()
     await ensureUserMetadata(authenticatedUser!.id)
     const stored = await createProjectSessionRepository(client).createSession(authenticatedUser!.id, {
       id,
@@ -1989,27 +2223,32 @@ async function handle(request: Request): Promise<Response> {
     }
     sessions.push(record)
     await saveState()
-    rpcSession(record.id)
-    return json({ session: storedSessionResponse(record) }, 201)
+    rpcSession(record.id, record.userId!, record, project)
+    return json({ session: storedSessionResponse(record, ownedProjects) }, 201)
   }
 
   if (path[1] === 'sessions' && path.length >= 3) {
     const id = decodeURIComponent(path[2] ?? '')
     try {
-      const ownedRecord = recordFor(id)
-      if (!internalRequest && ownedRecord.userId !== authenticatedUser?.id) return json({ error: 'Session not found' }, 404)
-      if (path.length === 3 && request.method === 'GET') return json(storedSessionResponse(ownedRecord))
+      const ownershipClient = await applicationDatabase()
+      const ownedRecord = internalRequest
+        ? await ownedSessionRecord(ownershipClient, (await createProjectSessionRepository(ownershipClient).getSessionById(id))?.userId ?? '', id)
+        : await ownedSessionRecord(ownershipClient, authenticatedUser!.id, id)
+      if (!ownedRecord) return json({ error: 'Session not found' }, 404)
+      const ownerId = ownedRecord.userId
+      if (!ownerId) return json({ error: 'Session not found' }, 404)
+      if (path.length === 3 && request.method === 'GET') return json(storedSessionResponse(ownedRecord, await createProjectSessionRepository(ownershipClient).listProjects(ownerId)))
       if (path.length === 3 && request.method === 'PATCH') {
         const input = await body(request)
         const title = typeof input.title === 'string' ? input.title.trim() : ''
-        const client = await applicationDatabase()
-        const record = recordFor(id)
+        const client = ownershipClient
+        const record = ownedRecord
         if (title) {
-          await sendRpc(id, { type: 'set_session_name', name: title })
+          await sendRpc(id, { type: 'set_session_name', name: title }, ownedRecord)
           record.title = title
         }
         if (typeof input.archived === 'boolean') record.archived = input.archived
-        const updated = await createProjectSessionRepository(client).updateSession(authenticatedUser!.id, id, {
+        const updated = await createProjectSessionRepository(client).updateSession(ownerId, id, {
           ...(title ? { title } : {}),
           ...(typeof input.archived === 'boolean' ? { archived: input.archived } : {}),
         })
@@ -2018,29 +2257,29 @@ async function handle(request: Request): Promise<Response> {
           record.title = updated.title
         }
         await saveState()
-        return json({ session: storedSessionResponse(record) })
+        return json({ session: storedSessionResponse(record, await createProjectSessionRepository(client).listProjects(ownerId)) })
       }
       if (path.length === 3 && request.method === 'DELETE') {
-        const client = await applicationDatabase()
-        await createProjectSessionRepository(client).deleteSession(authenticatedUser!.id, id)
-        active.get(id)?.close()
-        active.delete(id)
-        sessions = sessions.filter((session) => session.id !== id)
+        const client = ownershipClient
+        await createProjectSessionRepository(client).deleteSession(ownerId, id)
+        active.get(activeKey(ownerId, id))?.close()
+        active.delete(activeKey(ownerId, id))
+        sessions = sessions.filter((session) => session.id !== id || session.userId !== ownerId)
         await saveState()
         return json({ ok: true })
       }
       if (path.length === 4 && path[3] === 'messages' && request.method === 'GET') {
-        const record = recordFor(id)
+        const record = ownedRecord
         const history = await transcriptHistory(id, record)
         return json({ messages: history.messages })
       }
       if (path.length === 5 && path[3] === 'tool-calls' && request.method === 'GET') {
         const callID = decodeURIComponent(path[4] ?? '')
-        const payload = entriesPayload(await sendRpc(id, { type: 'get_entries' }))
+        const payload = entriesPayload(await sendRpc(id, { type: 'get_entries' }, ownedRecord))
         for (const entry of payload.entries) {
           const message = object(object(entry).message)
           if (message.role === 'toolResult' && message.toolCallId === callID) {
-            return json({ callID, tool: message.toolName ?? null, input: object(message.input), output: sessionMessageText(message), details: object(message.details), error: message.isError ? sessionMessageText(message) : null })
+            return json({ callID, tool: message.toolName ?? null, input: redactSensitive(object(message.input)), output: redactSensitiveText(sessionMessageText(message)), details: redactSensitive(object(message.details)), error: message.isError ? redactSensitiveText(sessionMessageText(message)) : null })
           }
         }
         return json({ callID, output: '', details: {}, error: null }, 404)
@@ -2048,7 +2287,7 @@ async function handle(request: Request): Promise<Response> {
       if (path.length === 4 && path[3] === 'messages' && request.method === 'POST') {
         const input = await body(request)
         const metadata = object(input.metadata)
-        const record = recordFor(id)
+        const record = ownedRecord
         const agent = typeof metadata.agent === 'string' && metadata.agent.trim() ? metadata.agent : 'master'
         const model = object(metadata.model)
         record.profile = agent
@@ -2070,38 +2309,42 @@ async function handle(request: Request): Promise<Response> {
         const metadata = prompt.metadata ?? {}
         const model = object(metadata.model)
         if (typeof model.providerID === 'string' && typeof model.modelID === 'string') {
-          await sendRpc(id, { type: 'set_model', provider: model.providerID, modelId: model.modelID })
+          await sendRpc(id, { type: 'set_model', provider: model.providerID, modelId: model.modelID }, ownedRecord)
         }
         // The session runtime was selected from PocketBase when the Pi session
         // was created; filesystem `/profile` commands are intentionally gone.
-        return json(await sendRpc(id, { type: 'prompt', message: prompt.content }))
+        return json(await sendRpc(id, { type: 'prompt', message: prompt.content }, ownedRecord))
       }
-      if (path.length === 4 && path[3] === 'state' && request.method === 'GET') return json(rpcData(await sendRpc(id, { type: 'get_state' })))
-      if (path.length === 4 && path[3] === 'stats' && request.method === 'GET') return json(rpcData(await sendRpc(id, { type: 'get_session_stats' })))
+      if (path.length === 4 && path[3] === 'state' && request.method === 'GET') return json(rpcData(await sendRpc(id, { type: 'get_state' }, ownedRecord)))
+      if (path.length === 4 && path[3] === 'stats' && request.method === 'GET') return json(rpcData(await sendRpc(id, { type: 'get_session_stats' }, ownedRecord)))
       if (path.length === 4 && path[3] === 'rpc' && request.method === 'POST') {
         const input = await body(request)
         if (typeof input.type !== 'string') return json({ error: 'RPC type is required' }, 400)
-        return json(await sendRpc(id, input as RpcCommand))
+        return json(await sendRpc(id, input as RpcCommand, ownedRecord))
       }
       if (path.length === 4 && path[3] === 'prompt' && request.method === 'POST') {
         const input = await body(request)
         if (typeof input.message !== 'string' || !input.message.trim()) return json({ error: 'Prompt message is required' }, 400)
-        return json(await sendRpc(id, { type: 'prompt', message: input.message, ...(typeof input.streamingBehavior === 'string' ? { streamingBehavior: input.streamingBehavior } : {}) }))
+        return json(await sendRpc(id, { type: 'prompt', message: input.message, ...(typeof input.streamingBehavior === 'string' ? { streamingBehavior: input.streamingBehavior } : {}) }, ownedRecord))
       }
-      if (path.length === 4 && path[3] === 'abort' && request.method === 'POST') return json(await sendRpc(id, { type: 'abort' }))
+      if (path.length === 4 && path[3] === 'abort' && request.method === 'POST') return json(await sendRpc(id, { type: 'abort' }, ownedRecord))
       return json({ error: 'Not found' }, 404)
     } catch (error) {
-      return json({ error: error instanceof Error ? error.message : String(error) }, 400)
+      console.warn(`Session request failed: ${redactedDiagnostic(error)}`)
+      return json({ error: 'Session request failed' }, 400)
     }
   }
 
   if (path[1] === 'extensions' && path[2] === 'projects') {
-    if (request.method === 'GET') return json({ projects: projectResponses() })
+    const client = await applicationDatabase()
+    if (request.method === 'GET') return json({ projects: await ownedProjectResponses(authenticatedUser!.id, client) })
     if (request.method === 'POST') {
       const input = await body(request)
       if (typeof input.sessionId !== 'string' || typeof input.project !== 'string') return json({ error: 'sessionId and project are required' }, 400)
-      projectFor(input.project)
-      return json(await sendRpc(input.sessionId, { type: 'prompt', message: `/project ${input.project}` }))
+      const session = await ownedSessionRecord(client, authenticatedUser!.id, input.sessionId)
+      if (!session) return json({ error: 'Session not found' }, 404)
+      if (input.project !== 'General Chat' && !(await createProjectSessionRepository(client).findProjectByName(authenticatedUser!.id, input.project))) return json({ error: 'Project not found' }, 404)
+      return json(await sendRpc(input.sessionId, { type: 'prompt', message: `/project ${input.project}` }, session))
     }
   }
 
@@ -2110,14 +2353,17 @@ async function handle(request: Request): Promise<Response> {
       const agents = await listAgents(await applicationDatabase(), authenticatedUser!.id)
       return json({ profiles: Object.fromEntries(agents.map((agent) => [agent.name, { systemPrompt: agent.system_prompt, tools: [] }])) })
     } catch (error) {
-      return json({ error: error instanceof Error ? error.message : 'Agent store unavailable' }, 503)
+      console.warn(`Agent profile request failed: ${redactedDiagnostic(error)}`)
+      return json({ error: 'Agent store unavailable' }, 503)
     }
   }
 
   if (path[1] === 'extensions' && (path[2] === 'profiles' || path[2] === 'agent-profiles') && path[3] === 'activate' && request.method === 'POST') {
     const input = await body(request)
     if (typeof input.sessionId !== 'string' || typeof input.profile !== 'string') return json({ error: 'sessionId and profile are required' }, 400)
-    return json(await sendRpc(input.sessionId, { type: 'prompt', message: `/profile ${input.profile}` }))
+    const session = await ownedSessionRecord(await applicationDatabase(), authenticatedUser!.id, input.sessionId)
+    if (!session) return json({ error: 'Session not found' }, 404)
+    return json(await sendRpc(input.sessionId, { type: 'prompt', message: `/profile ${input.profile}` }, session))
   }
 
   if (path[1] === 'extensions' && (path[2] === 'tools' || path[2] === 'list-tools') && request.method === 'GET') {
@@ -2125,30 +2371,40 @@ async function handle(request: Request): Promise<Response> {
     try {
       const tools = await listToolsForAgent(await applicationDatabase(), authenticatedUser.id, 'master')
       const sessionId = url.searchParams.get('sessionId')
-      return json({ tools, ...(sessionId ? { commands: await sendRpc(sessionId, { type: 'get_commands' }) } : {}) })
-    } catch (error) { return json({ message: error instanceof Error ? error.message : 'Tool registry unavailable' }, 503) }
+       const session = sessionId ? await ownedSessionRecord(await applicationDatabase(), authenticatedUser.id, sessionId) : null
+       if (sessionId && !session) return json({ message: 'Session not found' }, 404)
+        return json({ tools, ...(sessionId && session ? { commands: await sendRpc(sessionId, { type: 'get_commands' }, session) } : {}) })
+    } catch (error) { console.warn(`Tool registry request failed: ${redactedDiagnostic(error)}`); return json({ message: 'Tool registry unavailable' }, 503) }
   }
 
   if (path[1] === 'extensions' && path[2] === 'commands' && request.method === 'GET') {
     const sessionId = url.searchParams.get('sessionId')
     if (!sessionId) return json({ commands: [] })
-    return json(await sendRpc(sessionId, { type: 'get_commands' }))
+    const session = await ownedSessionRecord(await applicationDatabase(), authenticatedUser!.id, sessionId)
+    if (!session) return json({ error: 'Session not found' }, 404)
+    return json(await sendRpc(sessionId, { type: 'get_commands' }, session))
   }
 
   if (path[1] === 'extensions' && path[2] === 'command' && path[3] && request.method === 'POST') {
     const input = await body(request)
     if (typeof input.sessionId !== 'string') return json({ error: 'sessionId is required' }, 400)
+    const session = await ownedSessionRecord(await applicationDatabase(), authenticatedUser!.id, input.sessionId)
+    if (!session) return json({ error: 'Session not found' }, 404)
     const args = typeof input.args === 'string' && input.args.trim() ? ` ${input.args.trim()}` : ''
-    return json(await sendRpc(input.sessionId, { type: 'prompt', message: `/${decodeURIComponent(path[3])}${args}` }))
+    return json(await sendRpc(input.sessionId, { type: 'prompt', message: `/${decodeURIComponent(path[3])}${args}` }, session))
   }
 
   if (path[1] === 'extensions' && (path[2] === 'session-search' || path[2] === 'session-history-search') && request.method === 'GET') {
     const query = (url.searchParams.get('q') ?? '').toLocaleLowerCase().trim()
     if (!query) return json({ sessions: [] })
     const matches = []
-    for (const record of sessions) {
+    const ownedSessions = (await createProjectSessionRepository(await applicationDatabase()).listSessions(authenticatedUser!.id, { includeArchived: true }))
+    for (const stored of ownedSessions) {
+      const record = sessions.find((candidate) => candidate.id === stored.id && candidate.userId === authenticatedUser!.id) ?? {
+        id: stored.id, project: stored.project, title: stored.title, createdAt: stored.createdAt, updatedAt: stored.updatedAt, userId: stored.userId,
+      }
       try {
-        const response = await sendRpc(record.id, { type: 'get_messages' }) as RpcMessage
+        const response = await sendRpc(record.id, { type: 'get_messages' }, record) as RpcMessage
         const payload = entriesPayload(response)
         const text = projectEntries(payload.entries, payload.leafId, record.id).map((item) => sessionMessageText(item.info)).join('\n')
         if (`${record.title}\n${text}`.toLocaleLowerCase().includes(query)) matches.push(record)
@@ -2161,9 +2417,13 @@ async function handle(request: Request): Promise<Response> {
 
   if (path[1] === 'extensions' && path[2] === 'usage' && request.method === 'GET') {
     const values = []
-    for (const record of sessions) {
+    const ownedSessions = await createProjectSessionRepository(await applicationDatabase()).listSessions(authenticatedUser!.id, { includeArchived: true })
+    for (const stored of ownedSessions) {
+      const record = sessions.find((candidate) => candidate.id === stored.id && candidate.userId === authenticatedUser!.id) ?? {
+        id: stored.id, project: stored.project, title: stored.title, createdAt: stored.createdAt, updatedAt: stored.updatedAt, userId: stored.userId,
+      }
       try {
-        const response = await sendRpc(record.id, { type: 'get_session_stats' }) as RpcMessage
+        const response = await sendRpc(record.id, { type: 'get_session_stats' }, record) as RpcMessage
         values.push({ session: record, stats: response.data ?? null })
       } catch {
         values.push({ session: record, stats: null })
@@ -2175,13 +2435,16 @@ async function handle(request: Request): Promise<Response> {
   if (path[1] === 'extensions' && path[2] === 'session-title') {
     if (request.method === 'GET') {
       const sessionId = url.searchParams.get('sessionId')
-      return json({ title: sessionId ? recordFor(sessionId).title : null })
+      const record = sessionId ? await ownedSessionRecord(await applicationDatabase(), authenticatedUser!.id, sessionId) : null
+      return json({ title: record?.title ?? null })
     }
     if (request.method === 'POST') {
       const input = await body(request)
       if (typeof input.sessionId !== 'string' || typeof input.title !== 'string' || !input.title.trim()) return json({ error: 'sessionId and title are required' }, 400)
-      const response = await sendRpc(input.sessionId, { type: 'set_session_name', name: input.title.trim() })
-      const record = recordFor(input.sessionId)
+      const owned = await ownedSessionRecord(await applicationDatabase(), authenticatedUser!.id, input.sessionId)
+      if (!owned) return json({ error: 'Session not found' }, 404)
+      const response = await sendRpc(input.sessionId, { type: 'set_session_name', name: input.title.trim() }, owned)
+      const record = owned
       record.title = input.title.trim()
       await saveState()
       return json({ response, session: record })
@@ -2196,15 +2459,52 @@ const app = new Hono()
 app.all('*', async (context) => {
   const request = context.req.raw
   const origin = request.headers.get('origin')
-  if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return context.json({ error: 'Origin not allowed' }, 403)
-  const response = new URL(request.url).pathname.startsWith('/proxy/')
-    ? await handleProxy(request)
-    : await handle(request)
-  response.headers.set('access-control-allow-methods', 'GET,POST,PATCH,DELETE,OPTIONS')
-  response.headers.set('access-control-allow-headers', 'content-type, authorization')
-  if (request.url.includes('/proxy/')) response.headers.set('access-control-allow-origin', '*')
-  else if (origin) response.headers.set('access-control-allow-origin', origin)
-  return response
+  const id = requestId(request)
+  const pathname = new URL(request.url).pathname
+  if (origin && !isAllowedOrigin(request, { allowLoopbackDev: true })) {
+    const response = pathname.startsWith('/api/v1/')
+      ? context.json(errorEnvelope('ORIGIN_NOT_ALLOWED', 'Origin not allowed', undefined, id), 403)
+      : context.json({ error: 'Origin not allowed', requestId: id }, 403)
+    response.headers.set('x-request-id', id)
+    return response
+  }
+  try {
+    assertSafeBrowserMutation(request, { allowLoopbackDev: true })
+    const mutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)
+     const bucketName = pathname.includes('/auth/') ? 'auth' : mutation ? 'mutation' : 'read'
+     const kind = bucketName === 'auth' ? REQUEST_LIMITS.auth : mutation ? REQUEST_LIMITS.mutation : REQUEST_LIMITS.read
+     // Cookie headers are mutable and are not a client identity. Use the
+     // authenticated PocketBase user when available; unauthenticated auth
+     // attempts intentionally fall back to a route bucket.
+     const rateUser = await authenticateRequest(request).catch(() => null)
+     const rateKey = rateLimitKey(bucketName, pathname, rateUser?.id)
+    const limited = requestRateLimiter.consume(rateKey, kind.limit, kind.windowMs)
+    if (!limited.allowed) {
+      const response = pathname.startsWith('/api/v1/')
+        ? context.json(errorEnvelope('RATE_LIMITED', 'Too many requests', undefined, id), 429)
+        : context.json({ error: 'Too many requests', requestId: id }, 429)
+      response.headers.set('retry-after', String(Math.ceil(limited.retryAfterMs / 1000)))
+      response.headers.set('x-request-id', id)
+      return response
+    }
+      const response = pathname.startsWith('/proxy/')
+        ? await handleProxy(request)
+       : await handle(request, id)
+    response.headers.set('x-request-id', id)
+    response.headers.set('access-control-allow-methods', 'GET,POST,PATCH,DELETE,OPTIONS')
+    response.headers.set('access-control-allow-headers', 'content-type, authorization, x-request-id')
+    if (request.url.includes('/proxy/')) response.headers.set('access-control-allow-origin', '*')
+    else if (origin) response.headers.set('access-control-allow-origin', origin)
+    return response
+  } catch (error) {
+    const status = error instanceof RequestSecurityError ? error.status : 400
+    if (!(error instanceof RequestSecurityError)) console.warn(`Unhandled bridge request failure: ${redactedDiagnostic(error)}`)
+    const response = pathname.startsWith('/api/v1/')
+      ? json(errorEnvelope(error instanceof RequestSecurityError ? error.code : 'REQUEST_FAILED', error instanceof RequestSecurityError ? error.message : 'Request failed', undefined, id), status)
+      : json({ error: error instanceof RequestSecurityError ? error.message : 'Request failed', requestId: id }, status)
+    response.headers.set('x-request-id', id)
+    return response
+  }
 })
 
 const _server = Bun.serve<SocketData>({
@@ -2213,24 +2513,39 @@ const _server = Bun.serve<SocketData>({
   // Agent turns and transcript WebSockets can legitimately remain quiet for
   // longer than Bun's 10-second default while a model or tool is working.
   idleTimeout: 120,
-  async fetch(request, server) {
-    const url = new URL(request.url)
-    const match = url.pathname.match(/^\/api\/sessions\/([^/]+)\/events$/)
-    if (match) {
-      const user = await authenticateRequest(request)
-      if (!user) return json({ message: 'Unauthorized' }, 401)
-      const sessionId = decodeURIComponent(match[1] ?? '')
-      const record = recordFor(sessionId)
-      if (record.userId !== user.id) return json({ error: 'Session not found' }, 404)
-      if (server.upgrade(request, { data: { sessionId } })) return undefined
-      return json({ error: 'WebSocket upgrade failed' }, 400)
+    async fetch(request, server) {
+      const url = new URL(request.url)
+      const match = url.pathname.match(/^\/api\/sessions\/([^/]+)\/events$/)
+      if (match) {
+        const id = requestId(request)
+        if (!isAllowedOrigin(request, { allowLoopbackDev: true })) {
+          const response = json({ error: 'Origin not allowed', requestId: id }, 403)
+          response.headers.set('x-request-id', id)
+          return response
+        }
+        const user = await authenticateRequest(request)
+        if (!user) return json({ message: 'Unauthorized' }, 401)
+        const sessionId = decodeURIComponent(match[1] ?? '')
+        const limited = requestRateLimiter.consume(rateLimitKey('websocket', url.pathname, user.id), REQUEST_LIMITS.read.limit, REQUEST_LIMITS.read.windowMs)
+        if (!limited.allowed) {
+          const response = json({ error: 'Too many requests', requestId: id }, 429)
+          response.headers.set('retry-after', String(Math.ceil(limited.retryAfterMs / 1000)))
+          response.headers.set('x-request-id', id)
+          return response
+        }
+        const client = await applicationDatabase()
+        const record = await ownedSessionRecord(client, user.id, sessionId)
+        const project = record ? await ownedSessionProject(client, user.id, record) : null
+        if (!record || !project) return json({ error: 'Session not found' }, 404)
+        if (server.upgrade(request, { data: { sessionId, userId: user.id, record, project } })) return undefined
+        return json({ error: 'WebSocket upgrade failed' }, 400)
     }
     return app.fetch(request)
   },
   websocket: {
     open(socket) {
       try {
-        const session = rpcSession(socket.data.sessionId)
+        const session = rpcSession(socket.data.sessionId, socket.data.userId, socket.data.record, socket.data.project)
         socket.data.buffered = []
         // Subscribe before reading entries. Events generated during the read are replayed
         // after the authoritative snapshot, so a reconnect cannot lose a turn.
@@ -2249,7 +2564,7 @@ const _server = Bun.serve<SocketData>({
       socket.data.unsubscribe?.()
     },
     message(socket, raw) {
-      void handleSocketMessage(socket, raw, rpcSession(socket.data.sessionId))
+      void handleSocketMessage(socket, raw, rpcSession(socket.data.sessionId, socket.data.userId, socket.data.record, socket.data.project))
     },
   },
 })

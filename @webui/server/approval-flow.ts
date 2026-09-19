@@ -1,8 +1,9 @@
 import type PocketBase from 'pocketbase'
-import { escapeFilter } from './pocketbase'
+import { redactSensitive, redactSensitiveText } from './security-redaction.ts'
 
 export const APPROVAL_COLLECTION = 'tool_approvals'
 export const DEFAULT_APPROVAL_EXPIRATION_MS = 5 * 60 * 1000
+export const DEFAULT_APPROVAL_CLAIM_LEASE_MS = 30 * 1000
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired'
 
@@ -43,6 +44,10 @@ export type ApprovalFlowErrorCode =
   | 'APPROVAL_NOT_FOUND'
   | 'APPROVAL_FORBIDDEN'
   | 'APPROVAL_INVALID_DECISION'
+  | 'APPROVAL_ALREADY_RESOLVED'
+  | 'APPROVAL_ALREADY_CONTINUED'
+  | 'APPROVAL_INTERRUPTED'
+  | 'APPROVAL_UNKNOWN'
 
 export type ApprovalFlowError = {
   code: ApprovalFlowErrorCode
@@ -51,7 +56,7 @@ export type ApprovalFlowError = {
 
 export type ApprovalFlowFailure = {
   ok: false
-  state: 'not_found' | 'forbidden' | 'invalid'
+  state: 'not_found' | 'forbidden' | 'invalid' | 'interrupted'
   error: ApprovalFlowError
 }
 
@@ -89,6 +94,8 @@ export type ApprovalFlowOptions = {
    * value because the current collection stores `created_at`, not the TTL.
    */
   expirationMs?: number
+  /** How long a durable claim remains active after the claiming process stops responding. */
+  claimLeaseMs?: number
   now?: () => number
 }
 
@@ -101,6 +108,15 @@ export type ContinueApproval = <T>(
 type PocketBaseRecord = Record<string, unknown> & { id?: unknown }
 export type ApprovalDecision = boolean | 'approve' | 'approved' | 'reject' | 'rejected'
 type ExistingApproval = { record: PocketBaseRecord } | { record: null; state: 'not_found' | 'forbidden' }
+type ProcessApprovalState = { resolving?: boolean; resolved?: boolean; continuing?: boolean; continued?: boolean }
+type ClaimResult = true | false | 'interrupted' | 'unknown'
+const processApprovalStates = new WeakMap<object, Map<string, ProcessApprovalState>>()
+const CONTINUATION_COLLECTION = 'tool_approval_continuations'
+const RESOLUTION_COLLECTION = 'tool_approval_resolutions'
+
+function escapeFilter(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')
+}
 
 function recordObject(value: unknown): PocketBaseRecord {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -145,14 +161,30 @@ function failure(state: ApprovalFlowFailure['state'], code: ApprovalFlowErrorCod
   return { ok: false, state, error: { code, message } }
 }
 
+function stateFor(client: object, approvalId: string): ProcessApprovalState {
+  let states = processApprovalStates.get(client)
+  if (!states) {
+    states = new Map()
+    processApprovalStates.set(client, states)
+  }
+  const state = states.get(approvalId) ?? {}
+  states.set(approvalId, state)
+  return state
+}
+
 export class ApprovalFlowService {
   private readonly expirationMs: number
+  private readonly claimLeaseMs: number
   private readonly now: () => number
 
   constructor(private readonly client: PocketBase, options: ApprovalFlowOptions = {}) {
     this.expirationMs = options.expirationMs ?? DEFAULT_APPROVAL_EXPIRATION_MS
     if (!Number.isFinite(this.expirationMs) || this.expirationMs <= 0) {
       throw new RangeError('Approval expirationMs must be a positive finite number')
+    }
+    this.claimLeaseMs = options.claimLeaseMs ?? DEFAULT_APPROVAL_CLAIM_LEASE_MS
+    if (!Number.isFinite(this.claimLeaseMs) || this.claimLeaseMs <= 0) {
+      throw new RangeError('Approval claimLeaseMs must be a positive finite number')
     }
     this.now = options.now ?? Date.now
   }
@@ -169,9 +201,9 @@ export class ApprovalFlowService {
       agent_id: input.agentId,
       ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
       tool_id: input.toolId,
-      input: input.input,
+      input: redactSensitive(input.input),
       status: 'pending',
-      reason: input.reason,
+      reason: redactSensitive(input.reason),
       created_at: createdAt,
     }
     const record = await this.client.collection(APPROVAL_COLLECTION).create(data)
@@ -197,8 +229,10 @@ export class ApprovalFlowService {
       const record = recordObject(value)
       if (!recordBelongsToOwner(record, { ...owner, ...(sessionId === undefined ? {} : { sessionId }) })) continue
       if (this.isExpired(record)) {
-        const expired = await this.expire(record)
-        if (expired) continue
+        await this.expire(record)
+        // Expired records are never returned as pending, even if a concurrent
+        // resolver left the durable status temporarily unresolved.
+        continue
       }
       approvals.push(this.toApproval(record))
     }
@@ -211,21 +245,64 @@ export class ApprovalFlowService {
     const existing = await this.findOwned(owner, approvalId)
     if (!existing.record) return this.ownerFailure(existing.state)
 
-    const record = existing.record
-    const currentStatus = statusOf(record)
-    if (currentStatus !== 'pending') return this.terminalResult(record, currentStatus)
-    if (this.isExpired(record)) {
-      const expired = await this.expire(record)
-      return this.terminalResult(expired ?? record, 'expired')
-    }
-
     const approved = decisionValue(decision)
     if (approved === null) return failure('invalid', 'APPROVAL_INVALID_DECISION', 'Approval decision must be approve or reject')
 
-    const updated = await this.client.collection(APPROVAL_COLLECTION).update(String(record.id), {
-      status: approved ? 'approved' : 'rejected',
-      resolved_at: this.now(),
-    })
+    const record = existing.record
+    const currentStatus = statusOf(record)
+    if (currentStatus !== 'pending') return this.terminalResult(record, currentStatus)
+    const processState = stateFor(this.client as unknown as object, approvalId)
+    if (processState.resolving) return failure('invalid', 'APPROVAL_ALREADY_RESOLVED', 'Approval resolution is already in progress')
+    if (processState.resolved) return failure('invalid', 'APPROVAL_ALREADY_RESOLVED', 'Approval resolution has already completed')
+    processState.resolving = true
+    if (this.isExpired(record)) {
+      try {
+        const expired = await this.expire(record)
+        const finalRecord = expired ?? recordObject(await this.client.collection(APPROVAL_COLLECTION).getOne(String(record.id)))
+        const finalStatus = statusOf(finalRecord)
+        if (finalStatus === 'pending') {
+          processState.resolved = true
+          return failure('interrupted', 'APPROVAL_INTERRUPTED', 'Approval expiration was interrupted; create a new approval before retrying')
+        }
+        processState.resolved = true
+        return this.terminalResult(finalRecord, finalStatus)
+      } finally {
+        processState.resolving = false
+      }
+    }
+
+    let updated: PocketBaseRecord
+    try {
+       const claim = await this.claimResolution(owner, approvalId, approved ? 'approved' : 'rejected')
+       if (claim === 'interrupted' || claim === 'unknown') {
+         processState.resolved = true
+         if (claim === 'interrupted') await this.consumeInterruptedApproval(record)
+         return failure('interrupted', claim === 'interrupted' ? 'APPROVAL_INTERRUPTED' : 'APPROVAL_UNKNOWN', claim === 'interrupted'
+           ? 'Approval resolution was interrupted; create a new approval before retrying'
+           : 'Approval resolution state is unknown; create a new approval before retrying')
+       }
+       if (!claim) {
+        const current = await this.findOwned(owner, approvalId)
+        if (!current.record) return this.ownerFailure(current.state)
+        const currentStatus = statusOf(current.record)
+        if (currentStatus === 'pending') return failure('invalid', 'APPROVAL_ALREADY_RESOLVED', 'Approval resolution is already claimed')
+        return this.terminalResult(current.record, currentStatus)
+      }
+      updated = recordObject(await this.client.collection(APPROVAL_COLLECTION).update(String(record.id), {
+        status: approved ? 'approved' : 'rejected',
+        resolved_at: this.now(),
+      }))
+      const verified = await this.client.collection(APPROVAL_COLLECTION).getOne(String(record.id))
+      const expectedStatus = approved ? 'approved' : 'rejected'
+      if (statusOf(recordObject(verified)) !== expectedStatus) {
+        processState.resolved = true
+        return failure('invalid', 'APPROVAL_ALREADY_RESOLVED', 'Approval resolution was changed by another request')
+      }
+      updated = recordObject(verified)
+      processState.resolved = true
+    } finally {
+      processState.resolving = false
+    }
     return this.terminalResult(updated, approved ? 'approved' : 'rejected')
   }
 
@@ -249,6 +326,9 @@ export class ApprovalFlowService {
     if (currentStatus === 'pending') {
       if (this.isExpired(record)) {
         const expired = await this.expire(record)
+        if (!expired || statusOf(expired) === 'pending') {
+          return failure('interrupted', 'APPROVAL_INTERRUPTED', 'Approval expiration was interrupted; create a new approval before retrying')
+        }
         return { ok: true, state: 'expired', approval: this.toApproval(expired ?? record) }
       }
       return { ok: true, state: 'pending', approval: this.toApproval(record) }
@@ -257,8 +337,34 @@ export class ApprovalFlowService {
 
     const approval = this.toApproval(record)
     if (!resume) return { ok: true, state: 'approved', approval }
-    const result = await resume(approval)
-    return { ok: true, state: 'continued', approval, result }
+    const processState = stateFor(this.client as unknown as object, approvalId)
+    if (processState.continuing || processState.continued) return failure('invalid', 'APPROVAL_ALREADY_CONTINUED', 'Approval has already been continued')
+    processState.continuing = true
+    try {
+      // A unique durable claim closes the gap between two bridge processes.
+      // If the claim races or its result is ambiguous, do not execute.
+       const claim = await this.claimContinuation(owner, approvalId)
+        if (claim === 'interrupted' || claim === 'unknown') {
+          processState.continued = true
+          return failure('interrupted', claim === 'interrupted' ? 'APPROVAL_INTERRUPTED' : 'APPROVAL_UNKNOWN', claim === 'interrupted'
+            ? 'Approval continuation was interrupted; create a new approval before retrying'
+            : 'Approval continuation state is unknown; create a new approval before retrying')
+       }
+       if (!claim) {
+        processState.continued = true
+        return failure('invalid', 'APPROVAL_ALREADY_CONTINUED', 'Approval has already been continued')
+      }
+      const result = await resume(approval)
+      processState.continued = true
+      return { ok: true, state: 'continued', approval, result }
+    } catch (error) {
+      // A claimed approval is consumed even when the resumed operation fails.
+      // This is intentionally fail-closed instead of allowing a replay.
+      processState.continued = true
+      throw error
+    } finally {
+      processState.continuing = false
+    }
   }
 
   private assertOwner(owner: ApprovalOwner): void {
@@ -286,16 +392,104 @@ export class ApprovalFlowService {
 
   private async expire(record: PocketBaseRecord): Promise<PocketBaseRecord | null> {
     if (statusOf(record) !== 'pending') return record
+    const owner = { userId: String(record.user_id ?? ''), ...(typeof record.agent_id === 'string' ? { agentId: record.agent_id } : {}), ...(typeof record.session_id === 'string' ? { sessionId: record.session_id } : {}) }
+    const claim = await this.claimResolution(owner, String(record.id), 'expired')
+    if (claim === false || claim === 'unknown') {
+      return recordObject(await this.client.collection(APPROVAL_COLLECTION).getOne(String(record.id)))
+    }
     try {
-      return recordObject(await this.client.collection(APPROVAL_COLLECTION).update(String(record.id), {
+      recordObject(await this.client.collection(APPROVAL_COLLECTION).update(String(record.id), {
         status: 'expired',
         resolved_at: this.now(),
       }))
+      const verified = recordObject(await this.client.collection(APPROVAL_COLLECTION).getOne(String(record.id)))
+      const verifiedStatus = statusOf(verified)
+      if (verifiedStatus === 'pending') throw new Error('Approval resolution could not be verified')
+      return verified
     } catch (error) {
       // A concurrent resolver may have completed the record. Re-read it so
       // callers receive the durable terminal state rather than masking it.
       if (!isNotFoundError(error)) throw error
       return null
+    }
+  }
+
+  private async consumeInterruptedApproval(record: PocketBaseRecord): Promise<void> {
+    if (statusOf(record) !== 'pending') return
+    try {
+      await this.client.collection(APPROVAL_COLLECTION).update(String(record.id), {
+        status: 'expired',
+        resolved_at: this.now(),
+      })
+      const verified = recordObject(await this.client.collection(APPROVAL_COLLECTION).getOne(String(record.id)))
+      if (statusOf(verified) === 'pending') throw new Error('Interrupted approval could not be consumed')
+    } catch {
+      // The typed interrupted result remains fail-closed if consumption is ambiguous.
+    }
+  }
+
+  private async claimContinuation(owner: ApprovalOwner, approvalId: string): Promise<ClaimResult> {
+    const approvals = this.client.collection(CONTINUATION_COLLECTION) as unknown as {
+      create: (data: Record<string, unknown>) => Promise<unknown>
+      getFirstListItem: (filter: string) => Promise<unknown>
+      update: (id: string, data: Record<string, unknown>) => Promise<unknown>
+    }
+    try {
+      const claimedAt = this.now()
+      await approvals.create({ approval_id: approvalId, user_id: owner.userId, claimed_at: claimedAt, claim_expires_at: claimedAt + this.claimLeaseMs, claim_state: 'active' })
+      return true
+    } catch (error) {
+      // PocketBase's unique-index error can be returned with different status
+      // codes by versions/proxies. Confirm the durable row before classifying it
+      // as an already-consumed approval; otherwise propagate the error.
+      const existing = await approvals.getFirstListItem(`approval_id = "${escapeFilter(approvalId)}"`).catch(() => null)
+        if (existing) {
+          const claim = recordObject(existing)
+          const claimState = String(claim.claim_state ?? 'active')
+          if (claimState === 'interrupted') return 'interrupted'
+          const claimedAt = numberValue(claim.claimed_at, this.now())
+          const expiresAt = numberValue(claim.claim_expires_at, claimedAt + this.claimLeaseMs)
+          if (this.now() < expiresAt) return false
+          return this.interruptClaim(approvals, claim)
+        }
+      throw error
+    }
+  }
+
+  private async claimResolution(owner: ApprovalOwner, approvalId: string, state: 'approved' | 'rejected' | 'expired'): Promise<ClaimResult> {
+    const resolutions = this.client.collection(RESOLUTION_COLLECTION) as unknown as {
+      create: (data: Record<string, unknown>) => Promise<unknown>
+      getFirstListItem: (filter: string) => Promise<unknown>
+      update: (id: string, data: Record<string, unknown>) => Promise<unknown>
+    }
+    try {
+      const claimedAt = this.now()
+      await resolutions.create({ approval_id: approvalId, user_id: owner.userId, state, claimed_at: claimedAt, claim_expires_at: claimedAt + this.claimLeaseMs, claim_state: 'active' })
+      return true
+    } catch (error) {
+      const existing = await resolutions.getFirstListItem(`approval_id = "${escapeFilter(approvalId)}"`).catch(() => null)
+      if (existing) {
+        const claim = recordObject(existing)
+        const claimState = String(claim.claim_state ?? 'active')
+        if (claimState === 'interrupted') return 'interrupted'
+        const claimedAt = numberValue(claim.claimed_at, this.now())
+        const expiresAt = numberValue(claim.claim_expires_at, claimedAt + this.claimLeaseMs)
+        if (this.now() < expiresAt) return false
+        return this.interruptClaim(resolutions, claim)
+      }
+      throw error
+    }
+  }
+
+  private async interruptClaim(collection: { update: (id: string, data: Record<string, unknown>) => Promise<unknown> }, claim: PocketBaseRecord): Promise<'interrupted' | 'unknown'> {
+    const id = typeof claim.id === 'string' ? claim.id : ''
+    if (!id) return 'unknown'
+    try {
+      await collection.update(id, { claim_state: 'interrupted', interrupted_at: this.now() })
+      return 'interrupted'
+    } catch {
+      // An ambiguous stale-claim update must never be treated as permission to replay.
+      return 'unknown'
     }
   }
 
@@ -309,9 +503,9 @@ export class ApprovalFlowService {
       agent_id: String(record.agent_id ?? ''),
       ...(typeof record.session_id === 'string' ? { session_id: record.session_id } : {}),
       tool_id: String(record.tool_id ?? ''),
-      input: record.input,
+      input: redactSensitive(record.input),
       status: statusOf(record),
-      reason: String(record.reason ?? ''),
+      reason: redactSensitiveText(String(record.reason ?? '')),
       created_at: createdAt,
       ...(typeof record.resolved_at === 'number' ? { resolved_at: record.resolved_at } : {}),
       expires_at: Number.isFinite(persistedExpiry) ? persistedExpiry : createdAt + this.expirationMs,

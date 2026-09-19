@@ -1,9 +1,18 @@
+import { redactSensitive, redactSensitiveText } from '../server/security-redaction'
+
 export type TranscriptMessage = { info: Record<string, any>; parts: Record<string, any>[] }
 
 type Obj = Record<string, any>
 const obj = (v: unknown): Obj => v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {}
-const textOf = (v: unknown): string => typeof v === 'string' ? v : Array.isArray(v) ? v.map((p) => { const x = obj(p); return typeof x.text === 'string' ? x.text : typeof x.thinking === 'string' ? x.thinking : '' }).join('') : ''
+const textOf = (v: unknown): string => typeof v === 'string' ? redactSensitiveText(v) : Array.isArray(v) ? v.map((p) => { const x = obj(p); return typeof x.text === 'string' ? redactSensitiveText(x.text) : typeof x.thinking === 'string' ? redactSensitiveText(x.thinking) : '' }).join('') : ''
 const argumentsOf = (v: unknown): Obj => { if (typeof v === 'string') { try { return obj(JSON.parse(v)) } catch { return { value: v } } } return obj(v) }
+
+export function redactTranscriptPayload(value: unknown): unknown {
+  const safe = redactSensitive(value)
+  if (Array.isArray(safe)) return safe.map(redactTranscriptPayload)
+  if (safe && typeof safe === 'object') return Object.fromEntries(Object.entries(safe).map(([key, item]) => [key, redactTranscriptPayload(item)]))
+  return typeof safe === 'string' ? redactSensitiveText(safe) : safe
+}
 
 export function activeBranch(entries: unknown[], leafId: string | null | undefined): Obj[] {
   const map = new Map<string, Obj>()
@@ -17,13 +26,14 @@ export function activeBranch(entries: unknown[], leafId: string | null | undefin
 }
 
 function toolState(result: Obj | undefined, input: Obj, timestamp: number) {
-  if (!result) return { status: 'pending', input, raw: JSON.stringify(input) }
-  const output = textOf(result.content) || (typeof result.output === 'string' ? result.output : '')
-  const metadata = obj(result.details)
+  const safeInput = redactSensitive(input) as Obj
+  if (!result) return { status: 'pending', input: safeInput, raw: JSON.stringify(safeInput) }
+  const output = redactSensitiveText(textOf(result.content) || (typeof result.output === 'string' ? result.output : ''))
+  const metadata = redactSensitive(obj(result.details))
   const start = typeof result.startTime === 'number' ? result.startTime : timestamp
   const end = typeof result.endTime === 'number' ? result.endTime : timestamp
-  if (result.isError) return { status: 'error', input, error: output || 'Tool execution failed', metadata, time: { start, end } }
-  return { status: 'completed', input, output, title: typeof result.title === 'string' ? result.title : '', metadata, time: { start, end } }
+  if (result.isError) return { status: 'error', input: safeInput, error: output || 'Tool execution failed', metadata, time: { start, end } }
+  return { status: 'completed', input: safeInput, output, title: typeof result.title === 'string' ? redactSensitiveText(result.title) : '', metadata, time: { start, end } }
 }
 
 export function projectEntries(entries: unknown[], leafId: string | null | undefined, sessionId: string, selection?: { profile?: string; model?: string }): TranscriptMessage[] {
@@ -45,16 +55,16 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
     content.forEach((raw: unknown, index: number) => {
       const block = obj(raw); const partId = `${id}:content:${index}`
       if (block.type === 'text' && typeof block.text === 'string') {
-        parts.push({ id: partId, sessionID: sessionId, messageID: id, type: 'text', text: block.text })
+        parts.push({ id: partId, sessionID: sessionId, messageID: id, type: 'text', text: redactSensitiveText(block.text) })
       }
-      else if ((block.type === 'thinking' || block.type === 'reasoning') && typeof (block.thinking ?? block.text) === 'string') parts.push({ id: partId, sessionID: sessionId, messageID: id, type: 'reasoning', text: block.thinking ?? block.text, time: { start: created, end: created } })
+      else if ((block.type === 'thinking' || block.type === 'reasoning') && typeof (block.thinking ?? block.text) === 'string') parts.push({ id: partId, sessionID: sessionId, messageID: id, type: 'reasoning', text: redactSensitiveText(block.thinking ?? block.text), time: { start: created, end: created } })
       else if (block.type === 'toolCall') {
         const callID = typeof block.id === 'string' ? block.id : `${id}:tool:${index}`
         const input = argumentsOf(block.arguments)
-        parts.push({ id: partId, sessionID: sessionId, messageID: id, type: 'tool', callID, tool: typeof block.name === 'string' ? block.name : 'unknown', state: toolState(results.get(callID), input, created) })
+         parts.push({ id: partId, sessionID: sessionId, messageID: id, type: 'tool', callID, tool: typeof block.name === 'string' ? redactSensitiveText(block.name) : 'unknown', state: toolState(results.get(callID), input, created) })
       }
     })
-    const metadata = obj(message.metadata)
+    const metadata = redactSensitive(obj(message.metadata)) as Obj
     const info: Obj = { id, sessionID: sessionId, role, time: { created }, ...metadata }
     if (role === 'user' && branchIndex === latestUser) {
       if (selection?.profile && !info.agent) info.agent = selection.profile

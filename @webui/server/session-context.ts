@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { isAbsolute, relative, resolve, sep, dirname } from 'node:path'
+import { realpath } from 'node:fs/promises'
 
 export type PermissionOverride = 'ask' | 'none' | 'allow_all'
 
@@ -140,7 +141,7 @@ export class SessionContextResolver {
   private readonly defaultPermissionOverride: PermissionOverride
 
   constructor(private readonly dependencies: SessionContextDependencies) {
-    this.canonicalizePath = dependencies.canonicalizePath ?? ((value) => resolve(value))
+    this.canonicalizePath = dependencies.canonicalizePath ?? realpathAwarePath
     this.isAllowedCwd = dependencies.isAllowedCwd ?? ((projectDirectory, cwd) => isWithin(projectDirectory, cwd))
     this.defaultAgentName = nonBlank(dependencies.defaultAgentName) ?? DEFAULT_AGENT_NAME
     this.defaultPermissionOverride = dependencies.defaultPermissionOverride ?? DEFAULT_PERMISSION_OVERRIDE
@@ -264,6 +265,18 @@ export class SessionContextResolver {
     } catch {
       throw new SessionContextError(invalidCode, 'Context contains an invalid directory')
     }
+  }
+}
+
+async function realpathAwarePath(value: string): Promise<string> {
+  const absolute = resolve(value)
+  try {
+    return await realpath(absolute)
+  } catch {
+    const parent = dirname(absolute)
+    if (parent === absolute) return absolute
+    const remainder = parent === sep ? absolute.slice(1) : absolute.slice(parent.length + 1)
+    return resolve(await realpathAwarePath(parent), remainder)
   }
 }
 
