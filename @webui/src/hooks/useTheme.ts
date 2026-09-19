@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useSettings } from './useSettings'
-import { LIGHT_THEME_VALUES, MONKEYTYPE_THEME_PALETTES, type ThemePalette } from '@/lib/themes'
+import { LIGHT_THEME_VALUES, MONKEYTYPE_THEME_PALETTES, SEMANTIC_THEME_VARIABLES, type ThemePalette } from '@/lib/themes'
 
 const THEME_VARIABLES = [
   '--color-background',
@@ -40,10 +40,19 @@ function applyPalette(root: HTMLElement, palette: ThemePalette) {
   root.style.setProperty('--color-secondary', palette.subAlt)
   root.style.setProperty('--color-secondary-foreground', palette.text)
   root.style.setProperty('--color-accent-foreground', palette.text)
+  root.style.setProperty('--color-surface', palette.bg)
+  root.style.setProperty('--color-surface-raised', palette.subAlt)
+  root.style.setProperty('--color-surface-hover', palette.subAlt)
+  root.style.setProperty('--color-outline', palette.sub)
+  root.style.setProperty('--color-focus', palette.main)
+  root.style.setProperty('--color-on-accent', palette.bg)
+  root.style.setProperty('--color-danger', palette.error)
+  root.style.setProperty('--color-overlay', 'rgba(0, 0, 0, 0.55)')
 }
 
 function clearPalette(root: HTMLElement) {
   for (const variable of THEME_VARIABLES) root.style.removeProperty(variable)
+  for (const variable of SEMANTIC_THEME_VARIABLES) root.style.removeProperty(variable)
 }
 
 export function useTheme() {

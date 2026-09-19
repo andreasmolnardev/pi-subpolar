@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createBrowserRouter, RouterProvider, Outlet, useNavigate, useLocation, Navigate, useParams } from 'react-router-dom'
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { Toaster } from 'sonner'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
@@ -30,6 +30,8 @@ import { SwipeNavigationProvider, useSwipeNavigation } from '@/contexts/SwipeNav
 import { getSwipeBackTarget } from '@/lib/navigation'
 import { useAuth } from '@/hooks/useAuth'
 import { useServerHealth } from '@/hooks/useServerHealth'
+import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
+import { CommandPalette } from '@/components/navigation/CommandPalette'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -75,7 +77,13 @@ function AppShell() {
   const location = useLocation()
   const rootRef = useRef<HTMLDivElement>(null)
   const { openSheet, open } = useMobileTabBar()
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   useTheme()
+  useKeyboardShortcuts({
+    openCommandPalette: () => setCommandPaletteOpen(true),
+    newSession: () => navigate('/new'),
+    openSessions: () => navigate('/history'),
+  })
   const swipeNav = useSwipeNavigation()
 
   const getRouteSwipeBackTarget = useCallback(
@@ -128,6 +136,7 @@ function AppShell() {
       <MobileSheetHost />
       <HealthMonitor />
       <SettingsDialog />
+      <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
       <Toaster position="bottom-right" expand={false} richColors closeButton duration={2500} />
     </EventProvider>
   )

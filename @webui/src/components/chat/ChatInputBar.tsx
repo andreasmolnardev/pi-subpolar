@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Clipboard, FolderKanban, Send, X } from "lucide-react";
+import { AlertTriangle, Clipboard, FileText, FolderKanban, Image, Link, Paperclip, Send, X } from "lucide-react";
 import { GENERAL_CHAT_PROJECT_ID } from "@subpolar/shared/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,6 +25,8 @@ import { cn } from "@/lib/utils";
 import { MentionSuggestions, type MentionItem } from "@/components/message/MentionSuggestions";
 import { savePendingSessionPrompt } from "@/lib/pending-session-prompt";
 import { shouldBlockSessionCreation } from "@/lib/session-submit";
+import { createProjectMarkdown, loadProjectAttachment, loadWebsiteAttachment } from "@/api/attachments";
+import { attachmentToParts, ATTACHMENT_LIMITS, validateAttachmentLimits, validateProjectPath, validateWebsiteUrl, type ChatAttachment } from "@/lib/attachments";
 
 export interface ChatInputBarHandle {
   setPromptValue: (value: string) => void;
@@ -103,6 +105,8 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const [selectedMentions, setSelectedMentions] = useState<MentionContextItem[]>([]);
   const [pastedText, setPastedText] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const creatingSessionRef = useRef(false);
 
   const apiUrl = SUBPOLAR_API_BASE_URL;
@@ -189,6 +193,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       modelID: string;
       name: string;
       providerName: string;
+      imageInput: boolean;
     }[] = [];
 
     for (const provider of providers) {
@@ -212,6 +217,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
           modelID: key,
           name: model.name || key,
           providerName: provider.name,
+          imageInput: model.capabilities.input.image,
         });
       }
     }
@@ -228,6 +234,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     }
     return map;
   }, [models]);
+  const selectedModelSupportsImages = selectedModel === "__auto__" || models.find((model) => model.id === selectedModel)?.imageInput === true;
 
   const selectedAgentForRequest = selectedAgent === "__default__" || (!hideAgentSelect && !visibleAgents.some((agent) => agent.name === selectedAgent))
     ? undefined
@@ -281,20 +288,100 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       setHasPromptContent(false);
       onPromptChange?.(false);
     },
-    triggerFileUpload: () => {
-      // File service is intentionally not part of local Pi bridge.
-    },
+    triggerFileUpload: () => fileInputRef.current?.click(),
   }), [onPromptChange]);
 
   const handleTextareaPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const image = Array.from(e.clipboardData.items).find((item) => item.type.startsWith("image/"));
+    if (image) {
+      const file = image.getAsFile();
+      if (file) {
+        const error = validateAttachmentLimits({ size: file.size, mime: file.type }, attachments);
+        if (error) { showToast.error(error); return; }
+        const reader = new FileReader();
+        const id = `attachment_${Date.now()}_${Math.random()}`;
+        setAttachments((items) => [...items, { id, kind: "image", name: file.name || "pasted-image", status: "loading", size: file.size, mime: file.type }]);
+        reader.onload = () => setAttachments((items) => items.map((item) => item.id === id ? { ...item, status: "ready", dataUrl: String(reader.result) } : item));
+        reader.onerror = () => setAttachments((items) => items.map((item) => item.id === id ? { ...item, status: "error", error: "Unable to read image" } : item));
+        reader.readAsDataURL(file);
+        e.preventDefault();
+        onPromptChange?.(true);
+        return;
+      }
+    }
     const text = e.clipboardData.getData("text/plain");
     if (text.length < LARGE_PASTE_THRESHOLD) return;
 
     // Keep long snippets out of the editor so they do not make the composer unexpectedly grow.
     e.preventDefault();
-    setPastedText(text);
+    const id = `attachment_${Date.now()}_${Math.random()}`;
+    setAttachments((items) => [...items, { id, kind: "text", name: text.split("\n")[0].trim() || "Pasted context", status: "ready", size: text.length, content: text, contextOnly: true }]);
+    setPastedText(null);
     setHasPromptContent(true);
     onPromptChange?.(true);
+  }, [attachments, onPromptChange]);
+
+  const removeAttachment = useCallback((id: string) => setAttachments((items) => {
+    const next = items.filter((item) => item.id !== id);
+    const hasContent = Boolean(textareaRef.current?.value.trim()) || next.some((item) => item.status !== "error");
+    setHasPromptContent(hasContent);
+    onPromptChange?.(hasContent);
+    return next;
+  }), [onPromptChange]);
+
+  const addLocalFile = useCallback((file: File) => {
+    const error = validateAttachmentLimits({ size: file.size, mime: file.type }, attachments);
+    if (error) { showToast.error(error); return; }
+    if (file.type.startsWith("image/")) {
+      const id = `attachment_${Date.now()}_${Math.random()}`;
+      const reader = new FileReader();
+      setAttachments((items) => [...items, { id, kind: "image", name: file.name, status: "loading", size: file.size, mime: file.type }]);
+      reader.onload = () => setAttachments((items) => items.map((item) => item.id === id ? { ...item, status: "ready", dataUrl: String(reader.result) } : item));
+      reader.onerror = () => setAttachments((items) => items.map((item) => item.id === id ? { ...item, status: "error", error: "Unable to read file" } : item));
+      reader.readAsDataURL(file);
+      setHasPromptContent(true);
+      onPromptChange?.(true);
+      return;
+    }
+    const reader = new FileReader();
+    const id = `attachment_${Date.now()}_${Math.random()}`;
+    setAttachments((items) => [...items, { id, kind: "text", name: file.name, status: "loading", size: file.size, mime: file.type, contextOnly: true }]);
+    reader.onload = () => setAttachments((items) => items.map((item) => item.id === id ? { ...item, status: "ready", content: String(reader.result) } : item));
+    reader.onerror = () => setAttachments((items) => items.map((item) => item.id === id ? { ...item, status: "error", error: "Unable to read file" } : item));
+    reader.readAsText(file);
+    setHasPromptContent(true);
+    onPromptChange?.(true);
+  }, [attachments, onPromptChange]);
+
+  const addProjectFile = useCallback(async () => {
+    if (!selectedDirectory) return;
+    const path = window.prompt("Project-relative file path");
+    if (!path) return;
+    const safePath = validateProjectPath(path, selectedDirectory);
+    if (!safePath) { showToast.error("File path must stay inside the selected project"); return; }
+    const limitError = validateAttachmentLimits({ size: 0, mime: "text/plain" }, attachments);
+    if (limitError) { showToast.error(limitError); return; }
+    const id = `attachment_${Date.now()}_${Math.random()}`;
+    setAttachments((items) => [...items, { id, kind: "file", name: safePath.split("/").pop() ?? safePath, path: safePath, status: "loading" }]);
+    setHasPromptContent(true);
+    onPromptChange?.(true);
+    try {
+      const loaded = await loadProjectAttachment(selectedDirectory, safePath);
+      setAttachments((items) => items.map((item) => item.id === id ? { ...item, ...loaded, status: "ready" } : item));
+    } catch (error) { setAttachments((items) => items.map((item) => item.id === id ? { ...item, status: "error", error: error instanceof Error ? error.message : "Unable to load file" } : item)); }
+  }, [onPromptChange, selectedDirectory, attachments]);
+
+  const addWebsite = useCallback(async () => {
+    const url = window.prompt("Website URL");
+    if (!url) return;
+    const error = validateWebsiteUrl(url);
+    if (error) { showToast.error(error); return; }
+    const id = `attachment_${Date.now()}_${Math.random()}`;
+    setAttachments((items) => [...items, { id, kind: "website", name: url, url, status: "loading", contextOnly: true }]);
+    setHasPromptContent(true);
+    onPromptChange?.(true);
+    try { const loaded = await loadWebsiteAttachment(url); setAttachments((items) => items.map((item) => item.id === id ? { ...item, ...loaded, name: new URL(url).hostname, status: "ready" } : item)); }
+    catch (reason) { setAttachments((items) => items.map((item) => item.id === id ? { ...item, status: "error", error: reason instanceof Error ? reason.message : "Unable to load website" } : item)); }
   }, [onPromptChange]);
 
   const showPastedTextInField = useCallback(() => {
@@ -378,7 +465,9 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     if (shouldBlockSessionCreation(createSession.isPending, creatingSessionRef.current)) return;
 
     const typedPrompt = textareaRef.current?.value.trim() ?? "";
-    const rawPrompt = [typedPrompt, pastedText?.trim()].filter(Boolean).join("\n\n");
+    const attachmentParts = attachmentToParts(attachments);
+    const attachmentText = attachmentParts.filter((part): part is { type: "text"; content: string } => part.type === "text").map((part) => part.content);
+    const rawPrompt = [typedPrompt, pastedText?.trim(), ...attachmentText].filter(Boolean).join("\n\n") || (attachmentParts.length ? "Please review the attached context." : "");
     if (!rawPrompt) return;
     if (!sessionID && !selectedProject) {
       showToast.error(sendImmediately ? "Select a project before sending" : "General chat is still loading");
@@ -407,8 +496,9 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
         }
         sendPrompt.mutate(
           {
-            sessionID,
-            prompt,
+             sessionID,
+             prompt,
+             parts: attachmentParts.length ? [{ type: "text", content: prompt }, ...attachmentParts.filter((part) => part.type !== "text")] : undefined,
             messageID: clientId,
             model: selectedModel === "__auto__" ? undefined : selectedModel,
             agent: selectedAgentForRequest,
@@ -445,7 +535,8 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
         textareaRef.current!.style.height = "auto";
         setPastedText(null);
         setHasPromptContent(false);
-        setSelectedMentions([]);
+         setSelectedMentions([]);
+         setAttachments([]);
         onPromptChange?.(false);
         navigate(`/projects/${targetProjectId}/sessions/${session.id}`, {
           state: {
@@ -470,7 +561,8 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       textareaRef.current!.style.height = "auto";
       setPastedText(null);
       setHasPromptContent(false);
-      setSelectedMentions([]);
+       setSelectedMentions([]);
+       setAttachments([]);
       onPromptChange?.(false);
       navigate(`/projects/${targetProjectId}/sessions/${session.id}`, {
         state: {
@@ -500,7 +592,8 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     selectedPermissionForRequest,
     selectedProject,
     selectedDirectory,
-    selectedMentions,
+     selectedMentions,
+     attachments,
     pastedText,
     sendImmediately,
     sendPrompt,
@@ -545,6 +638,34 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   return (
     <div className="w-full max-w-3xl mx-auto">
       <div className="relative backdrop-blur-md bg-muted/50 rounded-xl p-4 shadow-lg">
+        {attachments.length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-2" aria-label="Attachments">
+            {attachments.map((attachment) => (
+              <div key={attachment.id} className="flex max-w-full items-center gap-2 rounded-lg border border-border bg-background/60 px-3 py-2 text-sm">
+                {attachment.kind === "image" ? <Image className="h-4 w-4 text-primary" /> : attachment.kind === "website" ? <Link className="h-4 w-4 text-primary" /> : <FileText className="h-4 w-4 text-primary" />}
+                <span className="max-w-48 truncate">{attachment.name}</span>
+                {attachment.status === "loading" && <span className="text-muted-foreground">Loading...</span>}
+                {attachment.status === "error" && <span title={attachment.error} className="flex items-center gap-1 text-destructive"><AlertTriangle className="h-3.5 w-3.5" /> Failed</span>}
+                {attachment.kind === "text" && attachment.status === "ready" && selectedDirectory && (
+                  <button type="button" className="text-xs text-muted-foreground underline" onClick={async () => {
+                    const name = window.prompt("Markdown filename", `${attachment.name.replace(/\.txt$/i, "")}.md`);
+                    if (!name) return;
+                    try {
+                      const created = await createProjectMarkdown(selectedDirectory, name, attachment.content ?? "");
+                      setAttachments((items) => items.map((item) => item.id === attachment.id ? { ...item, kind: "file", name: created.name, path: created.path, content: undefined, contextOnly: false } : item));
+                    } catch (reason) { showToast.error(reason instanceof Error ? reason.message : "Unable to create Markdown file"); }
+                  }}>Create .md</button>
+                )}
+                <button type="button" onClick={() => removeAttachment(attachment.id)} aria-label={`Remove ${attachment.name}`} className="rounded-full text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        {attachments.some((attachment) => attachment.kind === "image" && attachment.status === "ready") && !selectedModelSupportsImages && (
+          <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300" role="status">
+            <AlertTriangle className="h-4 w-4" /> The selected model may not support images. Your prompt will still be sent.
+          </div>
+        )}
         {pastedText !== null && (
           <div className="mb-3 flex max-w-full items-center gap-3 rounded-2xl border border-border bg-background/40 px-4 py-3">
             <Clipboard className="h-6 w-6 flex-shrink-0 text-primary" aria-hidden="true" />
@@ -590,7 +711,11 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
           style={{ height: "auto", overflow: "hidden" }}
             className="w-full bg-transparent text-[18px] text-foreground placeholder-muted-foreground focus:outline-none resize-none rounded-lg"
           />
+        <input ref={fileInputRef} type="file" className="hidden" accept="image/*,text/*,.md,.json,.csv,.xml,.js,.ts,.tsx,.jsx" onChange={(event) => { const file = event.target.files?.[0]; if (file) addLocalFile(file); event.target.value = ""; }} />
         <div className="flex mt-3 items-center">
+          <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => fileInputRef.current?.click()} aria-label="Attach file"><Paperclip className="h-4 w-4" /></Button>
+          <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => void addProjectFile()} aria-label="Attach project file" disabled={!selectedDirectory}><FileText className="h-4 w-4" /></Button>
+          <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => void addWebsite()} aria-label="Add website context"><Link className="h-4 w-4" /></Button>
           {!sessionID && (
           <Select
             value={selectedProjectId ?? undefined}
@@ -695,7 +820,8 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
                 textareaRef.current.value = "";
                 textareaRef.current.style.height = "auto";
                 textareaRef.current.focus();
-                setPastedText(null);
+                 setPastedText(null);
+                 setAttachments([]);
                 setHasPromptContent(false);
                 onPromptChange?.(false);
               }}

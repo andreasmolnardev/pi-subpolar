@@ -54,6 +54,7 @@ interface ShortcutActions {
   compact?: () => void
   fork?: () => void
   openSettings?: () => void
+  openCommandPalette?: () => void
 }
 
 export function useKeyboardShortcuts(actions: ShortcutActions = {}) {
@@ -117,6 +118,9 @@ export function useKeyboardShortcuts(actions: ShortcutActions = {}) {
       case 'settings':
         currentActions.openSettings?.()
         break
+      case 'commandPalette':
+        currentActions.openCommandPalette?.()
+        break
     }
   }, [])
 
@@ -125,9 +129,11 @@ export function useKeyboardShortcuts(actions: ShortcutActions = {}) {
     if (!shortcut) return
 
     const prefs = preferencesRef.current
-    const shortcuts = prefs?.keyboardShortcuts || {}
+    const shortcuts = { commandPalette: 'Cmd+K', ...(prefs?.keyboardShortcuts || {}) }
     const leaderKey = normalizeShortcut(prefs?.leaderKey || DEFAULT_LEADER_KEY)
-    const directShortcuts = prefs?.directShortcuts ?? DEFAULT_DIRECT_SHORTCUTS
+    const directShortcuts = prefs?.directShortcuts
+      ? [...new Set([...prefs.directShortcuts, ...(prefs.keyboardShortcuts?.commandPalette ? [] : ['commandPalette'])])]
+      : [...DEFAULT_DIRECT_SHORTCUTS, 'commandPalette']
     
     const activeFileEditor = document.querySelector('[data-file-editor="true"]')
     if (activeFileEditor && document.activeElement === activeFileEditor) {

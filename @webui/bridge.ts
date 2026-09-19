@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 
 import { homedir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
@@ -2062,6 +2062,46 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     await createProjectSessionRepository(client).deleteProject(authenticatedUser!.id, current.id)
     saveProjectDefinitions(loadProjectDefinitions().filter((project) => project.name !== current.name && resolve(project.path) !== resolve(current.path)))
     return json({ ok: true })
+  }
+  if (request.method === 'POST' && path[1] === 'attachments' && path[2] === 'project') {
+    const input = await body(request)
+    if (typeof input.directory !== 'string' || typeof input.path !== 'string') return json({ error: 'directory and path are required' }, 400)
+    const directory = input.directory
+    const requestedPath = input.path
+    const client = await applicationDatabase()
+    const owned = await createProjectSessionRepository(client).listProjects(authenticatedUser!.id)
+    const project = owned.find((item) => canonicalProjectPath(item.path) === canonicalProjectPath(directory))
+    if (!project) return json({ error: 'Project path is not owned by the authenticated user' }, 403)
+    const file = assertPathWithinWorkspace(requestedPath, project.path)
+    const info = statSync(file)
+    if (!info.isFile()) return json({ error: 'Attachment is not a file' }, 400)
+    if (!/\.(md|mdx|txt|json|csv|xml|ya?ml|js|jsx|ts|tsx|css|html|pdf|png|jpe?g|gif|webp)$/i.test(file)) return json({ error: 'File type is not supported' }, 415)
+    if (info.size > 10 * 1024 * 1024) return json({ error: 'Attachment exceeds the 10 MB limit' }, 413)
+    return json({ path: file, name: file.split('/').pop() ?? file, size: info.size, mime: 'text/plain' })
+  }
+  if (request.method === 'POST' && path[1] === 'attachments' && path[2] === 'markdown') {
+    const input = await body(request)
+    if (typeof input.directory !== 'string' || typeof input.name !== 'string' || typeof input.content !== 'string') return json({ error: 'directory, name, and content are required' }, 400)
+    const directory = input.directory
+    const name = input.name
+    const content = input.content
+    if (!/^[a-zA-Z0-9._-]+\.md$/i.test(input.name) || input.content.length > 10 * 1024 * 1024) return json({ error: 'Invalid Markdown attachment' }, 400)
+    const client = await applicationDatabase()
+    const owned = await createProjectSessionRepository(client).listProjects(authenticatedUser!.id)
+    const project = owned.find((item) => canonicalProjectPath(item.path) === canonicalProjectPath(directory))
+    if (!project) return json({ error: 'Project path is not owned by the authenticated user' }, 403)
+    const file = assertPathWithinWorkspace(join(project.path, name), project.path)
+    writeFileSync(file, content, 'utf8')
+    return json({ path: file, name }, 201)
+  }
+  if (request.method === 'POST' && path[1] === 'attachments' && path[2] === 'website') {
+    const input = await body(request)
+    if (typeof input.url !== 'string') return json({ error: 'url is required' }, 400)
+    const target = new URL(input.url)
+    const response = await fetchWithNetworkPolicy(target, {}, { allowedHosts: [target.hostname], maxResponseBytes: 1024 * 1024, maxRedirects: 3 })
+    if (!response.ok) return json({ error: `Website returned HTTP ${response.status}` }, 400)
+    const content = await readBoundedResponse(response, 1024 * 1024)
+    return json({ url: target.href, content, size: new TextEncoder().encode(content).byteLength })
   }
   if (request.method === 'GET' && path[1] === 'projects' && path[2] === 'default-directory') {
     const name = url.searchParams.get('projectName')?.trim() || 'project'

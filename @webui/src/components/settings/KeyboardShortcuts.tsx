@@ -11,7 +11,7 @@ const normalizeShortcut = (shortcut: string): string => {
   return shortcut.replace(/Cmd/g, CMD_KEY)
 }
 
-const DEFAULT_DIRECT_SHORTCUTS = ['submit', 'abort']
+const DEFAULT_DIRECT_SHORTCUTS = ['submit', 'abort', 'commandPalette']
 
 export function KeyboardShortcuts() {
   const { preferences, isLoading, updateSettings } = useSettings()

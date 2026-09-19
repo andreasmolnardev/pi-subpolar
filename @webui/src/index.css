@@ -18,6 +18,14 @@
   --color-secondary: #27272a;
   --color-secondary-foreground: #fafafa;
   --color-accent-foreground: #fafafa;
+  --color-surface: var(--color-background);
+  --color-surface-raised: var(--color-card);
+  --color-surface-hover: var(--color-card-hover);
+  --color-outline: var(--color-border);
+  --color-focus: var(--color-primary);
+  --color-on-accent: var(--color-primary-foreground);
+  --color-danger: var(--color-destructive);
+  --color-overlay: rgba(0, 0, 0, 0.55);
 }
 
 [data-dialog-content] {
@@ -46,6 +54,14 @@
   --color-secondary: #f4f4f5;
   --color-secondary-foreground: #111827;
   --color-accent-foreground: #111827;
+  --color-surface: var(--color-background);
+  --color-surface-raised: var(--color-card);
+  --color-surface-hover: var(--color-card-hover);
+  --color-outline: var(--color-border);
+  --color-focus: var(--color-primary);
+  --color-on-accent: var(--color-primary-foreground);
+  --color-danger: var(--color-destructive);
+  --color-overlay: rgba(0, 0, 0, 0.35);
 }
 
 :root:not(.dark) [data-dialog-content],
@@ -73,6 +89,15 @@ body {
   position: fixed;
   width: 100%;
   overscroll-behavior-x: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 #root {

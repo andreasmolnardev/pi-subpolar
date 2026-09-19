@@ -69,6 +69,21 @@ export type ThemePalette = {
   error: string
 }
 
+export const SEMANTIC_THEME_VARIABLES = [
+  '--color-surface',
+  '--color-surface-raised',
+  '--color-surface-hover',
+  '--color-outline',
+  '--color-focus',
+  '--color-on-accent',
+  '--color-danger',
+  '--color-overlay',
+] as const
+
+export function themeIsLight(theme: string): boolean {
+  return LIGHT_THEME_VALUES.has(theme)
+}
+
 export const MONKEYTYPE_THEME_PALETTES: Record<string, ThemePalette> = {
   "9009": {"bg":"#eeebe2","main":"#080909","sub":"#99947f","subAlt":"#d3cfc1","text":"#080909","error":"#c87e74"},
   "aether": {"bg":"#101820","main":"#eedaea","sub":"#cf6bdd","subAlt":"#292136","text":"#eedaea","error":"#ff5253"},

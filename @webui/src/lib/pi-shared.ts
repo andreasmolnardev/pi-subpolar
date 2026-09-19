@@ -41,6 +41,7 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: Record<string, string> = {
   toggleSidebar: 'B',
   selectModel: 'M',
   variantCycle: 'Cmd+T',
+  commandPalette: 'Cmd+K',
 }
 
 export const DEFAULT_LEADER_KEY = 'Cmd+O'
@@ -63,7 +64,7 @@ export const DEFAULT_USER_PREFERENCES = {
   hiddenSidebarAgents: ['auto', 'compaction', 'summary', 'title'],
   hiddenChatInputAgents: ['compaction', 'summary', 'title'],
   leaderKey: DEFAULT_LEADER_KEY,
-  directShortcuts: ['submit', 'abort'],
+  directShortcuts: ['submit', 'abort', 'commandPalette'],
   keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
   customCommands: [],
   gitCredentials: [],

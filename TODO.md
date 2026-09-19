@@ -8,7 +8,7 @@ Current branch: main
 Last completed commit: pending — cursor replay and scoped gateway credentials checkpoint
 Last verified commit: working tree — cursor/gateway checkpoint independently verified with notes
 Current blockers: full WebUI dependencies are unavailable; the local CLI is still a fixture executor rather than Pi-backed; no disposable E2E harness exists; scoped remote gateway credentials are not implemented
-Next recommended action: commit cursor/gateway checkpoint, then implement attachments and theme/productivity foundations
+Next recommended action: commit attachment/appearance checkpoint, then implement authoritative agent profiles and capability context modes
 
 ## Architecture Decisions
 
@@ -180,6 +180,9 @@ Requirements:
 | impl-e2e-harness | P16 disposable WebUI/PocketBase harness | main test-infra scope | COMPLETE - VERIFIED WITH NOTES | Contract smoke/harness scaffolding; live E2E not run |
 | impl-cursor-replay | P0 durable event cursor replay/reconnect | main bridge/event scope | COMPLETE - VERIFIED WITH NOTES | Cursor/replay tests; live reconnect E2E not run |
 | impl-gateway-credentials | P14 scoped remote gateway credentials | main auth/tools scope | COMPLETE - VERIFIED WITH NOTES | 96 server + 19 CLI tests; live remote auth not run |
+| impl-attachments | P1 chat context attachments | main composer/attachment scope | COMPLETE - VERIFIED WITH NOTES | Attachment helper tests, type/build checks; live uploads unverified |
+| impl-appearance | P2 themes and productivity foundation | main appearance/navigation scope | COMPLETE - VERIFIED WITH NOTES | Theme/reduced-motion/command palette tests; full dependency suite limited |
+| audit-next-roadmap | Re-audit remaining P1/P2/P4-P13 gaps | main read-only | IN PROGRESS | Prioritized next implementation batch |
 | impl-cursor-replay | P0 durable event cursor replay/reconnect | main bridge/event scope | IN PROGRESS | SSE cursor store, Last-Event-ID, replay tests |
 | impl-gateway-credentials | P14 scoped remote gateway credentials | main auth/tools scope | IN PROGRESS | Credential lifecycle, scoped tool CLI auth, tests |
 
@@ -197,6 +200,7 @@ Requirements:
 - Queue/Pi/E2E checkpoint independently verified: 40 package tests, 9 queue/bridge/E2E contract tests, atomic queue corrections, and source/build checks pass; live services unavailable.
 - 1b4019a committed and verified as the queue/Pi/E2E checkpoint.
 - Cursor/gateway checkpoint independently verified: 27 focused cursor/credential/CLI tests and 37 package tests pass; live service/E2E unavailable.
+- Attachment/appearance checkpoint verified: 6 focused tests, bridge build, and diff checks pass; live upload/vision/website and full WebUI typecheck remain environment-limited.
 
 ## Known Bugs
 
@@ -234,6 +238,6 @@ Requirements:
 
 ## Next Actions
 
-1. Commit this cursor/gateway checkpoint and record its SHA.
-2. Implement attachments and theme/productivity foundations.
+1. Commit the attachment/appearance checkpoint and record its SHA.
+2. Implement authoritative agent profiles and tool/skill context modes.
 3. Continue Git/worktrees, tasks, subagents, memory, browser, voice, and automations in dependency order.
