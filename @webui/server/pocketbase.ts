@@ -1,4 +1,5 @@
 import PocketBase, { type RecordModel } from 'pocketbase'
+import { ensureBrowserSessionCollections } from './browser/schema.ts'
 
 export type PocketBaseUser = RecordModel & {
   email?: string
@@ -169,6 +170,8 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('preferences', 'json'),
     field('updated_at', 'number', { required: true }),
   ], ['CREATE UNIQUE INDEX idx_user_preferences_user ON user_preferences (user_id)'])
+
+  await ensureBrowserSessionCollections(client)
 
   await ensureCollection(client, 'agents', [
     field('user_id', 'text', { required: true }),

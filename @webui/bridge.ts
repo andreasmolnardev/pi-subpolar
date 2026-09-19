@@ -99,6 +99,8 @@ import {
   SubagentController,
   PocketBaseWorktreeStore,
   WorktreeController,
+  BrowserSessionService,
+  BrowserRuntimeError,
 } from './server/index.ts'
 import { effectiveAgentConfiguration } from './server/tools.ts'
 import {
@@ -1996,6 +1998,32 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
       if (error instanceof TaskRequestError) return json({ error: { code: error.code, message: error.message } }, error.status)
       if (error instanceof TaskControlError) return json({ error: { code: error.code, message: error.message } }, error.code === 'TASK_NOT_FOUND' ? 404 : 409)
       throw error
+    }
+  }
+
+  if (path[1] === 'browser' && path[2] === 'sessions' && authenticatedUser) {
+    const browser = new BrowserSessionService(await applicationDatabase())
+    const browserContext = (input: Record<string, unknown> = {}) => ({ ownerId: authenticatedUser!.id, ...(typeof input.projectId === 'string' && input.projectId.trim() ? { projectId: input.projectId.trim() } : {}), ...(typeof input.sessionId === 'string' && input.sessionId.trim() ? { sessionId: input.sessionId.trim() } : {}), ...(typeof input.taskId === 'string' && input.taskId.trim() ? { taskId: input.taskId.trim() } : {}) })
+    try {
+      if (path.length === 3 && request.method === 'POST') {
+        const input = object(await body(request))
+        return json({ session: await browser.create(browserContext(input), object(input.limits)) }, 201)
+      }
+      if (path.length === 3 && request.method === 'GET') return json({ sessions: await browser.list(browserContext({ projectId: url.searchParams.get('projectId') ?? undefined, sessionId: url.searchParams.get('sessionId') ?? undefined, taskId: url.searchParams.get('taskId') ?? undefined })) })
+      const browserId = decodeURIComponent(path[3] ?? '')
+      const context = browserContext({ projectId: url.searchParams.get('projectId') ?? undefined, sessionId: url.searchParams.get('sessionId') ?? undefined, taskId: url.searchParams.get('taskId') ?? undefined })
+      if (path.length === 4 && request.method === 'GET') return json({ session: await browser.get(context, browserId) })
+      if (path.length === 5 && path[4] === 'close' && request.method === 'POST') return json({ session: await browser.close(context, browserId) })
+      if (path.length === 5 && path[4] === 'audit' && request.method === 'GET') {
+        const owned = await browser.get(context, browserId)
+        const audit = await (await applicationDatabase()).collection('browser_audit').getFullList({ filter: `owner_id = "${escapeFilter(authenticatedUser.id)}" && browser_session_id = "${escapeFilter(owned.id)}"`, sort: '-created_at' })
+        return json({ audit })
+      }
+      return json({ error: 'Browser session route not found' }, 404)
+    } catch (error) {
+      if (error instanceof BrowserRuntimeError) return json({ error: { code: error.code, message: error.message } }, error.code === 'BROWSER_SESSION_NOT_FOUND' ? 404 : 409)
+      console.warn(`Browser session request failed: ${redactedDiagnostic(error)}`)
+      return json({ error: { code: 'BROWSER_UNAVAILABLE', message: 'Browser session store unavailable' } }, 503)
     }
   }
 

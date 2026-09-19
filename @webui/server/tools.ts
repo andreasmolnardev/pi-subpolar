@@ -18,6 +18,7 @@ import { assertPathWithinWorkspace, configuredWorkspaceRoot } from './project-fi
 import { discardPendingApprovalInput, retainPendingApprovalInput, takePendingApprovalInput } from './approval-execution.ts'
 import type { ToolGatewayContext } from './tool-gateway.ts'
 import { PocketBaseMemoryService, type MemoryContext, type MemoryScope } from './memory.ts'
+import { BrowserSessionService, BrowserRuntimeError, browserProfileAllows, type BrowserContext } from './browser/index.ts'
 
 export type ToolAdapter = 'internal' | 'http' | 'openapi' | 'mcp'
 export type ToolEffect = 'allow' | 'deny' | 'approval'
@@ -31,6 +32,7 @@ export const TOOL_CONTEXT_MODES: readonly ToolContextMode[] = ['always', 'discov
 export const SKILL_CONTEXT_MODES: readonly SkillContextMode[] = ['always-loaded', 'discoverable', 'explicit-only', 'disabled']
 export const DECLARED_CAPABILITIES = ['subagent/run', 'read', 'write', 'bash'] as const
 const memoryMutationTools = new Set(['memory/write', 'memory/update', 'memory/delete'])
+const browserMutationGroups = new Set(['form-interaction', 'upload', 'download', 'submit', 'destructive'])
 export function memoryPolicyAllows(agent: { policies: Pick<AgentPolicySet, 'memory'>; template?: AgentDefinition['template'] }, toolId: string): boolean {
   return agent.policies.memory === true && !(memoryMutationTools.has(toolId) && (agent.template === 'plan' || agent.template === 'reviewer'))
 }
@@ -142,6 +144,7 @@ const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>>
   { tool_id: 'memory/write', namespace: 'builtin', description: 'Write an explicitly scoped memory record', adapter: 'internal', target: 'memory', operation: 'write', input_schema: { type: 'object', properties: { scope: { type: 'string', enum: ['user', 'agent', 'project'] }, content: { type: 'string' }, metadata: { type: 'object' }, idempotencyKey: { type: 'string' } }, required: ['scope', 'content'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'memory/write' } },
   { tool_id: 'memory/update', namespace: 'builtin', description: 'Update an explicitly scoped memory record by version', adapter: 'internal', target: 'memory', operation: 'update', input_schema: { type: 'object', properties: { id: { type: 'string' }, content: { type: 'string' }, metadata: { type: 'object' }, version: { type: 'number' } }, required: ['id', 'version'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'memory/update' } },
   { tool_id: 'memory/delete', namespace: 'builtin', description: 'Tombstone an explicitly scoped memory record by version', adapter: 'internal', target: 'memory', operation: 'delete', input_schema: { type: 'object', properties: { id: { type: 'string' }, version: { type: 'number' } }, required: ['id', 'version'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'delete', requires_approval: true, enabled: true, metadata: { capability: 'memory/delete' } },
+  ...(['open', 'navigate', 'back', 'forward', 'tabs', 'read', 'find', 'screenshot', 'wait'] as const).map((operation) => ({ tool_id: `browser/${operation}`, namespace: 'builtin', description: `Browser ${operation} capability (read/navigation only)`, adapter: 'internal' as const, target: 'browser', operation, input_schema: { type: 'object', properties: { browserSessionId: { type: 'string', minLength: 1 }, url: { type: 'string' }, tabId: { type: 'string' }, query: { type: 'string' }, milliseconds: { type: 'number' } }, required: ['browserSessionId'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read' as const, requires_approval: false, enabled: true, metadata: { policyGroup: operation === 'open' || operation === 'navigate' || operation === 'back' || operation === 'forward' ? 'navigation' : 'read' } })),
 ]
 
 function recordObject(value: unknown): Record<string, unknown> {
@@ -430,6 +433,7 @@ export async function listToolsForAgent(client: PocketBase, userId: string, agen
   return tools.flatMap((record) => {
     const tool = toTool(record)
     if (tool.tool_id.startsWith('memory/') && !memoryPolicyAllows(agent, tool.tool_id)) return []
+    if (tool.tool_id.startsWith('browser/') && agent.policies.browser !== true) return []
     const contextMode = toolContextMode(agent, tool.tool_id)
     const effect = policyMap.get(tool.tool_id)
     if (contextMode === 'disabled' || contextMode === 'on-demand' || effect === 'deny' || (!effect && !agent.name.startsWith('master'))) return []
@@ -491,6 +495,14 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     if (tool.operation === 'write') return service.write(scoped, { scope: args.scope as MemoryScope, content: String(args.content ?? ''), metadata: recordObject(args.metadata), idempotencyKey: typeof args.idempotencyKey === 'string' ? args.idempotencyKey : undefined })
     if (tool.operation === 'update') return service.update(scoped, String(args.id), { content: typeof args.content === 'string' ? args.content : undefined, metadata: args.metadata === undefined ? undefined : recordObject(args.metadata), version: Number(args.version) })
     if (tool.operation === 'delete') return service.tombstone(scoped, String(args.id), Number(args.version))
+  }
+  if (tool.target === 'browser') {
+    if (!context?.userId || !context.sessionId) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Browser tools require an owned tool session')
+    const args = recordObject(input)
+    const browserSessionId = typeof args.browserSessionId === 'string' ? args.browserSessionId : ''
+    const browser = new BrowserSessionService(client)
+    const browserContext: BrowserContext = { ownerId: context.userId, projectId: context.projectId, sessionId: context.sessionId, agentName: context.agentName, readOnly: context.agentName === 'plan' || context.agentName === 'reviewer' }
+    return browser.execute(browserContext, tool.operation, { ...args, browserSessionId })
   }
   const definitions = {
     read: createReadToolDefinition(cwd),
@@ -612,6 +624,14 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
   if (canonicalId.startsWith('memory/') && effective.policies.memory !== true) {
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MEMORY_DISABLED' })
     return { ok: false as const, toolId: canonicalId, error: { code: 'MEMORY_DISABLED', message: 'Memory is disabled for this agent' } }
+  }
+  if (canonicalId.startsWith('browser/') && effective.policies.browser !== true) {
+    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'BROWSER_DISABLED' })
+    return { ok: false as const, toolId: canonicalId, error: { code: 'BROWSER_DISABLED', message: 'Browser capability is disabled for this agent' } }
+  }
+  if (canonicalId.startsWith('browser/') && browserMutationGroups.has(String(tool.metadata.policyGroup)) && !browserProfileAllows(String(tool.metadata.policyGroup), agent.template === 'plan' || agent.template === 'reviewer')) {
+    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'READ_ONLY_PROFILE' })
+    return { ok: false as const, toolId: canonicalId, error: { code: 'READ_ONLY_PROFILE', message: 'This profile cannot mutate browser state' } }
   }
   if (memoryMutationTools.has(canonicalId) && (agent.template === 'plan' || agent.template === 'reviewer')) {
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MEMORY_QUERY_ONLY' })

@@ -8,7 +8,7 @@ Current branch: main
 Last completed commit: pending — memory capability checkpoint
 Last verified commit: working tree — memory checkpoint independently verified with notes
 Current blockers: full WebUI dependencies are unavailable; the local CLI is still a fixture executor rather than Pi-backed; no disposable E2E harness exists; scoped remote gateway credentials are not implemented
-Next recommended action: commit memory checkpoint, then implement browser session foundations
+Next recommended action: commit browser checkpoint, then implement local-first voice backend seam
 
 ## Architecture Decisions
 
@@ -189,6 +189,7 @@ Requirements:
 | verify-git-read | Independent Git security verification | main read-only | COMPLETE - FINDINGS CORRECTED | Ownership/path/argv/output/parser findings corrected |
 | impl-tasks-subagents | P4 durable Tasks/subagent/run/worktree metadata | main task/agent scope | COMPLETE - VERIFIED WITH NOTES | 20 focused tests, ownership/ceiling/approval/worktree checks |
 | impl-memory | P7 explicit scoped memory capability | main memory/tool scope | COMPLETE - VERIFIED WITH NOTES | 119 server + 63 package tests; live persistence service unverified |
+| impl-browser | P8 owned browser session/read tools foundation | main browser scope | COMPLETE - VERIFIED WITH NOTES | 32 focused tests; live browser engine unavailable |
 | audit-general-capabilities | P7-P13 memory/browser/voice/automation audit | main read-only | IN PROGRESS | Dependency map and independent implementation slices |
 
 ## Completed Work
@@ -213,6 +214,8 @@ Requirements:
 - Tasks/subagent/worktree checkpoint independently verified: 20 focused tests, bridge typecheck/build, fail-closed capability ceiling, approval resume, ownership, atomic transitions, and custom-root worktree checks pass; live PocketBase unavailable.
 - 61f32e1 committed and verified as the Tasks/subagent/worktree checkpoint.
 - Memory checkpoint independently verified: 5 focused memory tests, 119 server tests, 63 package tests, typechecks, atomic idempotency/ownership, persistence validation, redaction, and no-injection checks pass.
+- Browser checkpoint independently verified: 32 browser/network/gateway/server tests, bridge typecheck, bidirectional scope, byte limits, URL redaction, approval, and unavailable-runtime checks pass; live engine unavailable.
+- 9ac0462 committed and verified as the memory checkpoint.
 - 1671cb3 committed and verified as the agent profile/context checkpoint.
 
 ## Known Bugs
@@ -251,6 +254,6 @@ Requirements:
 
 ## Next Actions
 
-1. Commit the verified memory checkpoint.
-2. Implement browser session foundations with network policy and normal gateway approvals.
-3. Continue voice and automations in dependency order.
+1. Commit the verified browser checkpoint.
+2. Implement local-first voice backend seam.
+3. Continue durable automations/inbox and integration/skills convergence.
