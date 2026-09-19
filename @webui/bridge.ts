@@ -117,6 +117,16 @@ import {
   withDeliveryMetadata,
   type MessageDelivery,
 } from './server/message-delivery.ts'
+import {
+  QueueEntryConflictError,
+  QueueEntryTransitionError,
+  claimQueueEntry,
+  clearQueue,
+  listQueueEntries,
+  reorderQueueEntry,
+  reserveQueueEntry,
+  updateQueueEntry,
+} from './server/message-queue.ts'
 
 type Project = { id?: string | number; name: string; path: string; agentNames?: readonly string[]; hasAgentOverride?: boolean }
 type SessionRecord = {
@@ -373,6 +383,21 @@ database.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_message_deliveries_pending
     ON message_deliveries (owner_id, session_id, state, updated_at);
+  CREATE TABLE IF NOT EXISTS message_queue (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    error TEXT,
+    PRIMARY KEY (owner_id, session_id, client_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_message_queue_ready
+    ON message_queue (owner_id, session_id, state, position, created_at);
 `)
 try { database.exec('ALTER TABLE sessions ADD COLUMN user_id TEXT') } catch { /* already migrated */ }
 try { database.exec('ALTER TABLE sessions ADD COLUMN permission_override TEXT') } catch { /* already migrated */ }
@@ -579,6 +604,11 @@ function interruptMessageDelivery(delivery: MessageDelivery): void {
   database.query(
     'UPDATE message_deliveries SET state = ?, updated_at = ? WHERE owner_id = ? AND session_id = ? AND message_id = ? AND state = ?',
   ).run('interrupted', Date.now(), delivery.ownerId, delivery.sessionId, delivery.messageId, 'running')
+}
+
+function queueClientId(input: unknown): string {
+  if (typeof input !== 'string' || input.trim() === '' || input.length > 256) throw new Error('Invalid clientId')
+  return input.trim()
 }
 
 function broadcastSse(value: unknown, userId?: string): void {
@@ -1123,6 +1153,7 @@ class PiSdkSession {
     if (event.type === 'agent_end' || event.type === 'agent_settled') {
       broadcastSse({ type: 'session.status', properties: { sessionID, status: { type: 'idle' } } }, this.record.userId)
     }
+    if (event.type === 'agent_settled') void deliverNextQueuedFollowUp(this)
     if (event.type !== 'agent_settled') {
       for (const listener of this.listeners) listener(message)
       broadcastSse(message, this.record.userId)
@@ -1178,6 +1209,22 @@ class PiSdkSession {
   close(): void {
     this.session?.dispose()
   }
+}
+
+async function deliverNextQueuedFollowUp(session: PiSdkSession): Promise<void> {
+  const ownerId = session.record.userId
+  if (!ownerId) return
+  const entry = listQueueEntries(database, ownerId, session.record.id).find((item) => item.kind === 'follow_up' && item.state === 'enqueued')
+  if (!entry) return
+  const claimed = claimQueueEntry(database, ownerId, session.record.id, entry.clientId)
+  if (!claimed) return
+  try {
+    await session.send({ type: 'follow_up', message: entry.content, id: entry.clientId })
+    updateQueueEntry(database, ownerId, session.record.id, entry.clientId, 'delivered')
+  } catch (error) {
+    updateQueueEntry(database, ownerId, session.record.id, entry.clientId, 'failed', error instanceof Error ? error.message : 'Follow-up delivery failed')
+  }
+  broadcastSse({ type: 'message.queue.updated', properties: { sessionID: session.record.id } }, ownerId)
 }
 
 const active = new Map<string, PiSdkSession>()
@@ -2596,6 +2643,91 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
         record.permissionOverride = updated.permissionOverride
         await saveState()
         return json(messageDeliveryResponse(reservation.delivery), 201)
+      }
+      if (path.length === 4 && path[3] === 'steer' && request.method === 'POST') {
+        const input = await body(request)
+        const content = typeof input.content === 'string' ? input.content.trim() : typeof input.message === 'string' ? input.message.trim() : ''
+        if (!content) return json({ error: 'Steering content is required' }, 400)
+        const clientId = queueClientId(input.clientId ?? input.messageID)
+        let reservation
+        try { reservation = reserveQueueEntry(database, ownerId, id, clientId, content, 'steering') }
+        catch (error) {
+          if (error instanceof QueueEntryConflictError) return json({ error: error.message, code: error.code }, 409)
+          throw error
+        }
+        if (!reservation.created) return json({ entry: reservation.entry }, 200)
+        try {
+          await sendRpc(id, { type: 'steer', message: content, id: clientId }, ownedRecord)
+          const entry = updateQueueEntry(database, ownerId, id, clientId, 'delivered')
+          broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
+          return json({ entry }, 201)
+        } catch (error) {
+          const entry = updateQueueEntry(database, ownerId, id, clientId, 'failed', error instanceof Error ? error.message : 'Steering failed')
+          broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
+          return json({ entry }, 200)
+        }
+      }
+      if (path.length === 4 && path[3] === 'queue' && request.method === 'GET') {
+        return json({ entries: listQueueEntries(database, ownerId, id) })
+      }
+      if (path.length === 4 && path[3] === 'queue' && request.method === 'POST') {
+        const input = await body(request)
+        const content = typeof input.content === 'string' ? input.content.trim() : typeof input.message === 'string' ? input.message.trim() : ''
+        if (!content) return json({ error: 'Queue content is required' }, 400)
+        const clientId = queueClientId(input.clientId ?? input.messageID)
+        let reservation
+        try { reservation = reserveQueueEntry(database, ownerId, id, clientId, content, 'follow_up') }
+        catch (error) {
+          if (error instanceof QueueEntryConflictError) return json({ error: error.message, code: error.code }, 409)
+          throw error
+        }
+        broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
+        return json({ entry: reservation.entry }, reservation.created ? 201 : 200)
+      }
+      if (path.length === 5 && path[3] === 'queue') {
+        const clientId = decodeURIComponent(path[4] ?? '')
+        if (clientId === 'clear' && request.method === 'POST') {
+          clearQueue(database, ownerId, id)
+          broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
+          return json({ entries: listQueueEntries(database, ownerId, id) })
+        }
+        if (request.method === 'DELETE') {
+          let entry
+          try { entry = updateQueueEntry(database, ownerId, id, clientId, 'cancelled') }
+          catch (error) {
+            if (error instanceof QueueEntryTransitionError) return json({ error: error.message, code: error.code }, 409)
+            throw error
+          }
+          broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
+          return entry ? json({ entry }) : json({ error: 'Queue entry not found' }, 404)
+        }
+        if (request.method === 'POST') {
+          let entry
+          try { entry = updateQueueEntry(database, ownerId, id, clientId, 'enqueued') }
+          catch (error) {
+            if (error instanceof QueueEntryTransitionError) return json({ error: error.message, code: error.code }, 409)
+            throw error
+          }
+          if (entry?.kind === 'steering') {
+            try {
+              entry = updateQueueEntry(database, ownerId, id, clientId, 'steering')
+              if (!entry) return json({ error: 'Queue entry not found' }, 404)
+              await sendRpc(id, { type: 'steer', message: entry.content, id: entry.clientId }, ownedRecord)
+              entry = updateQueueEntry(database, ownerId, id, clientId, 'delivered')
+            } catch (error) {
+              entry = updateQueueEntry(database, ownerId, id, clientId, 'failed', error instanceof Error ? error.message : 'Steering failed')
+            }
+          }
+          broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
+          return entry ? json({ entry }) : json({ error: 'Queue entry not found' }, 404)
+        }
+        if (request.method === 'PATCH') {
+          const input = await body(request)
+          if (typeof input.position !== 'number' || !Number.isFinite(input.position)) return json({ error: 'Queue position is required' }, 400)
+          const entry = reorderQueueEntry(database, ownerId, id, clientId, input.position)
+          broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
+          return entry ? json({ entry }) : json({ error: 'Queue entry not found' }, 404)
+        }
       }
       if (path.length === 4 && path[3] === 'runs' && request.method === 'POST') {
         const input = await body(request)

@@ -23,4 +23,14 @@ describe('bridge model delivery ordering', () => {
       .toBeLessThan(run.indexOf('await persistSessionModel('))
     expect(run).toContain('interruptMessageDelivery(claimedDelivery)')
   })
+
+  it('keeps queue routes behind the owned session lookup and separates steer from follow-up', () => {
+    const sessionRoutes = section("if (path[1] === 'sessions' && path.length >= 3)", "if (path[1] === 'extensions'")
+    expect(sessionRoutes.indexOf('const ownedRecord =')).toBeLessThan(sessionRoutes.indexOf("path[3] === 'steer'"))
+    expect(sessionRoutes).toContain("type: 'steer'")
+    expect(bridge).toContain('claimQueueEntry(database')
+    expect(sessionRoutes).toContain("updateQueueEntry(database, ownerId, id, clientId, 'steering')")
+    expect(sessionRoutes).toContain("'follow_up'")
+    expect(sessionRoutes).toContain("clientId === 'clear'")
+  })
 })

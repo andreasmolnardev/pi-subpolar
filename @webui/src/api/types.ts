@@ -197,6 +197,11 @@ export interface SSESSHHostKeyRequestEvent {
   properties: SSHHostKeyRequest
 }
 
+export interface SSEMessageQueueUpdatedEvent {
+  type: 'message.queue.updated'
+  properties: { sessionID: string }
+}
+
 export type SSEEvent =
   | SSEMessagePartUpdatedEvent
   | SSEMessagePartDeltaEvent
@@ -220,6 +225,7 @@ export type SSEEvent =
   | SSEInstallationUpdateAvailableEvent
   | SSELspUpdatedEvent
   | SSESSHHostKeyRequestEvent
+  | SSEMessageQueueUpdatedEvent
 
 export type ContentPart = 
   | { type: 'text', content: string }

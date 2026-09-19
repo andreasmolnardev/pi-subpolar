@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ContextUsageIndicator } from "@/components/session/ContextUsageIndicator";
-import { useSession, useAbortSession, useSendPrompt } from "@/hooks/usePiHarness";
+import { useSession, useAbortSession, useSendPrompt, useSessionQueue, useRemoveQueueEntry, useRetryQueueEntry, useReorderQueueEntry, useClearQueue } from "@/hooks/usePiHarness";
 import { useProjectActivity } from "@/hooks/useProjectActivity";
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { useSSE } from "@/hooks/useSSE";
@@ -210,6 +210,12 @@ export function SessionDetail() {
   });
   const abortSession = useAbortSession(apiUrl, repoDirectory, sessionId);
   const sendPendingPrompt = useSendPrompt(apiUrl, repoDirectory);
+  const queue = useSessionQueue(apiUrl, sessionId, repoDirectory);
+  const removeQueueEntry = useRemoveQueueEntry(apiUrl, repoDirectory);
+  const retryQueueEntry = useRetryQueueEntry(apiUrl, repoDirectory);
+  const reorderQueueEntry = useReorderQueueEntry(apiUrl, repoDirectory);
+  const clearQueue = useClearQueue(apiUrl, repoDirectory);
+  const queuedEntries = queue.data ?? [];
   const { model, modelString } = useModelSelection(apiUrl, repoDirectory);
   const sessionAgent = useSessionAgent(apiUrl, sessionId, repoDirectory);
   const isEditingMessage = useUIState((state) => state.isEditingMessage);
@@ -712,6 +718,25 @@ export function SessionDetail() {
                     >
                       Discard
                     </Button>
+                  </div>
+                </div>
+              )}
+              {(queue.data?.length ?? 0) > 0 && (
+                <div className="mb-2 rounded-xl border border-border bg-muted/60 px-3 py-2" data-testid="enqueued-card">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-sm font-medium">Enqueued</span>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => clearQueue.mutate({ sessionID: sessionId! })}>Clear</Button>
+                  </div>
+                  <div className="space-y-1">
+                    {queuedEntries.map((entry, index) => (
+                      <div key={entry.clientId} className="flex items-center gap-2 rounded-lg bg-background/60 px-2 py-1.5 text-sm">
+                        <span className="min-w-0 flex-1 truncate">{entry.content}</span>
+                        {entry.state === 'failed' && <Button type="button" variant="ghost" size="sm" onClick={() => retryQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId })}>Retry</Button>}
+                        <Button type="button" variant="ghost" size="sm" aria-label="Move queued message up" disabled={index === 0} onClick={() => reorderQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId, position: index - 1 })}>Up</Button>
+                        <Button type="button" variant="ghost" size="sm" aria-label="Move queued message down" disabled={index === queuedEntries.length - 1} onClick={() => reorderQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId, position: index + 1 })}>Down</Button>
+                        <Button type="button" variant="ghost" size="sm" onClick={() => removeQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId })}>Remove</Button>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}

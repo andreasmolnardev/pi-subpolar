@@ -139,6 +139,12 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
         break
       }
 
+      case 'message.queue.updated': {
+        if (!('sessionID' in event.properties)) break
+        queryClient.invalidateQueries({ queryKey: ['subpolar', 'queue', apiUrl, event.properties.sessionID, cacheDirectory] })
+        break
+      }
+
       case 'message.part.updated':
       case 'messagev2.part.updated': {
         if (!('part' in event.properties)) break
@@ -397,6 +403,9 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
     })
     queryClient.invalidateQueries({
       queryKey: ['subpolar', 'pending-actions', apiUrl, sessionId, primaryDirectory],
+    })
+    queryClient.invalidateQueries({
+      queryKey: ['subpolar', 'queue', apiUrl, sessionId, primaryDirectory],
     })
   }, [queryClient, apiUrl, primaryDirectory])
 

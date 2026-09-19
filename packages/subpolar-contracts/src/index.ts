@@ -25,7 +25,10 @@ export interface RunContext {
   requestId: string;
   principal: Principal;
   sessionId?: string;
+  projectId?: string;
   agentId?: string;
+  model?: string;
+  permission?: string;
   cwd?: string;
   metadata?: Record<string, string>;
 }
@@ -34,6 +37,7 @@ export type RunState = "idle" | "running" | "completed" | "failed" | "interrupte
 
 export type RunEventType =
   | "run.started"
+  | "run.progress"
   | "run.completed"
   | "run.failed"
   | "run.interrupted"
@@ -58,6 +62,7 @@ export interface RunEvent<T = JsonValue> {
 }
 
 export type RunEventSink = (event: RunEvent) => void | Promise<void>;
+export type RunProgressEmitter = (data: JsonValue) => void | Promise<void>;
 
 export interface RunError {
   code: string;
@@ -108,10 +113,10 @@ export interface EventReplayPort {
   replay(runId: string): Promise<readonly RunEvent[]>;
 }
 
-export type AgentExecutor = (request: RunRequest) => unknown | Promise<unknown>;
+export type AgentExecutor = (request: RunRequest, emit?: RunProgressEmitter) => unknown | Promise<unknown>;
 
 export interface AgentRunPort {
-  run(request: RunRequest): unknown | Promise<unknown>;
+  run(request: RunRequest, emit?: RunProgressEmitter): unknown | Promise<unknown>;
 }
 
 export interface ToolDefinition {

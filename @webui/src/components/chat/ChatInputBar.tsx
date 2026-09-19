@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Clipboard, FolderKanban, Send, Square, X } from "lucide-react";
+import { Clipboard, FolderKanban, Send, X } from "lucide-react";
 import { GENERAL_CHAT_PROJECT_ID } from "@subpolar/shared/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useAgents, useAbortSession, useConfig, useCreateSession, useSendPrompt } from "@/hooks/usePiHarness";
+import { useAgents, useAbortSession, useConfig, useCreateSession, useSendPrompt, useSteer, useEnqueueFollowUp } from "@/hooks/usePiHarness";
 import { getProviders } from "@/api/providers";
 import { DEFAULT_USER_PREFERENCES } from "@/api/types/settings";
 import { getProject, listProjectMentions, listProjects, loadMentionContext, type MentionContextItem, type Project } from "@/api/projects";
@@ -238,6 +238,8 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
 
   const createSession = useCreateSession(apiUrl, selectedDirectory);
   const sendPrompt = useSendPrompt(apiUrl, selectedDirectory);
+  const steer = useSteer(apiUrl, selectedDirectory);
+  const enqueueFollowUp = useEnqueueFollowUp(apiUrl, selectedDirectory);
   const abortSession = useAbortSession(apiUrl, selectedDirectory, sessionID ?? activeSessionId);
   const isGeneratingMessage = isSessionActive;
   const isWaitingForAnswer = isGeneratingMessage || sendPrompt.isPending;
@@ -364,10 +366,10 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     }
   }, []);
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(async (delivery?: 'steer' | 'queue') => {
     const targetSessionId = sessionID ?? activeSessionId;
 
-    if (isGeneratingMessage && targetSessionId) {
+    if (isGeneratingMessage && targetSessionId && !delivery) {
       abortSession.mutate(targetSessionId);
       return;
     }
@@ -388,20 +390,26 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
 
     try {
       const prompt = await buildPromptWithMentionContext(rawPrompt, selectedDirectory, selectedMentions);
-      if (!prompt) return;
+       if (!prompt) return;
 
-      if (sessionID) {
+       if (sessionID) {
         textareaRef.current!.value = "";
         textareaRef.current!.style.height = "auto";
         setPastedText(null);
         setHasPromptContent(false);
         setSelectedMentions([]);
-        onPromptChange?.(false);
+         onPromptChange?.(false);
+        const clientId = createClientMessageID();
+        if (isGeneratingMessage && (delivery === 'steer' || delivery === 'queue')) {
+          const mutation = delivery === 'steer' ? steer : enqueueFollowUp;
+          mutation.mutate({ sessionID, content: prompt, clientId }, { onSuccess: onSend });
+          return;
+        }
         sendPrompt.mutate(
           {
             sessionID,
             prompt,
-            messageID: createClientMessageID(),
+            messageID: clientId,
             model: selectedModel === "__auto__" ? undefined : selectedModel,
             agent: selectedAgentForRequest,
             permission: selectedPermissionForRequest,
@@ -496,6 +504,8 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     pastedText,
     sendImmediately,
     sendPrompt,
+    steer,
+    enqueueFollowUp,
     targetProjectId,
   ]);
 
@@ -698,14 +708,36 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
             </Button>
           )}
 
-          <Button
-            onClick={handleSubmit}
-            disabled={disabled || createSession.isPending || abortSession.isPending || (sendPrompt.isPending && !isGeneratingMessage)}
-            size="icon"
-            className="h-8 w-8 flex-shrink-0"
-          >
-            {isGeneratingMessage ? <Square className="h-4 w-4" /> : <Send className="h-4 w-4" />}
-          </Button>
+          {isGeneratingMessage ? (
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={() => handleSubmit('steer')}
+                disabled={disabled || !hasPromptContent || steer.isPending}
+                size="sm"
+                className="h-8"
+              >
+                Steer
+              </Button>
+              <Button
+                onClick={() => handleSubmit('queue')}
+                disabled={disabled || !hasPromptContent || enqueueFollowUp.isPending}
+                size="sm"
+                variant="secondary"
+                className="h-8"
+              >
+                Queue
+              </Button>
+            </div>
+          ) : (
+            <Button
+              onClick={() => handleSubmit()}
+              disabled={disabled || createSession.isPending || abortSession.isPending || (sendPrompt.isPending && !isGeneratingMessage)}
+              size="icon"
+              className="h-8 w-8 flex-shrink-0"
+            >
+              <Send className="h-4 w-4" />
+            </Button>
+          )}
         </div>
       </div>
     </div>

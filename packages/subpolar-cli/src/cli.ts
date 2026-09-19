@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { createLocalAdapter } from "../../subpolar-adapter-local/src/index.ts";
+import { createPiRunPort, resolvePiExecutorFactory, type PiExecutorFactory, type PiExecutorModule } from "../../subpolar-adapter-pi/src/index.ts";
 import type { AgentExecutor, RunContext, ToolDefinition, ToolExecutor } from "../../subpolar-contracts/src/index.ts";
 import { createPolicyGateway, createRunService, redactAuditValue } from "../../subpolar-core/src/index.ts";
 
@@ -29,6 +30,7 @@ export interface CliIo {
 
 export interface CliOptions {
   executor?: ToolExecutor;
+  pi?: { factory?: PiExecutorFactory; module?: string | PiExecutorModule; config?: unknown };
   sessionFile?: string;
   now?: () => Date;
 }
@@ -100,14 +102,25 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
       principal: { id: "local-cli", kind: "local", displayName: "Subpolar CLI" },
       sessionId,
     };
-    const agentExecutor: AgentExecutor = async (request) => {
+    let agentExecutor: AgentExecutor;
+    let executorName = LOCAL_FIXTURE_EXECUTOR;
+    if (options.pi?.factory || options.pi?.module) {
+      const factory = options.pi.factory ?? await resolvePiExecutorFactory(
+        typeof options.pi.module === "string" ? await import(options.pi.module) : options.pi.module!,
+      );
+      const piPort = createPiRunPort(factory, options.pi.config);
+      agentExecutor = (request, emit) => piPort.run(request, emit);
+      executorName = "pi";
+    } else {
+      agentExecutor = async (request) => {
       const result = await gateway.call(
         { callId: `call-${request.runId}`, toolId: fixtureTool.id, input: { prompt: request.prompt } },
         { ...request.context, runId: request.runId },
       );
       if (!result.ok) throw result.error;
       return result.value;
-    };
+      };
+    }
     const run = createRunService({ executor: agentExecutor, sessionStore: adapter.sessions, now: options.now });
     const result = await run.run({ runId: `run-${sessionId}`, prompt: parsed.prompt, context });
     if (result.state !== "completed") {
@@ -121,7 +134,7 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
       command: "run",
       sessionId,
       resumed: result.resumed,
-      executor: value.executor ?? LOCAL_FIXTURE_EXECUTOR,
+      executor: value.executor ?? executorName,
       result: value,
     };
     (parsed.json ? stdout : stdout)(`${parsed.json ? JSON.stringify(output) : `${output.result.text}\n(session ${sessionId}; ${output.executor})\n`}\n`);

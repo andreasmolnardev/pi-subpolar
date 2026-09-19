@@ -5,10 +5,10 @@
 Current phase: Phase 0A / Phase 0 foundation
 Current milestone: Milestone A - Dependable Subpolar
 Current branch: main
-Last completed commit: pending — Phase 1 WebUI routing and delivery checkpoint
-Last verified commit: working tree — Phase 1 independently verified with notes
+Last completed commit: pending — queue, Pi adapter, and E2E contract checkpoint
+Last verified commit: working tree — queue/Pi/E2E checkpoint independently verified with notes
 Current blockers: full WebUI dependencies are unavailable; the local CLI is still a fixture executor rather than Pi-backed; no disposable E2E harness exists; scoped remote gateway credentials are not implemented
-Next recommended action: commit Phase 1 checkpoint, then implement durable queue/steering and cursor replay
+Next recommended action: commit queue/Pi/E2E checkpoint, then implement cursor replay and scoped gateway credentials
 
 ## Architecture Decisions
 
@@ -175,6 +175,9 @@ Requirements:
 | fix-delivery-bridge | P1 delivery replay/profile/idempotency corrections | main bridge scope | COMPLETE - VERIFIED WITH NOTES | 81+ server tests, ownership/idempotency/replay checks |
 | fix-delivery-ux | P1 interrupted handoff retry UX | main SessionDetail scope | COMPLETE - VERIFIED WITH NOTES | Retry/discard/in-flight tests |
 | fix-session-agent-tests | P1 persisted session-agent test/runtime boundary | main session-agent scope | COMPLETE - VERIFIED WITH NOTES | 18 focused hook tests |
+| impl-queue | P1 durable steering/follow-up queue controls | main composer/bridge scope | COMPLETE - VERIFIED WITH NOTES | Atomic claims, legal transitions, UI/API tests |
+| impl-pi-executor | P0A Pi-backed executor composition | main package scope | COMPLETE - VERIFIED WITH NOTES | 40 package tests; host Pi integration remains open |
+| impl-e2e-harness | P16 disposable WebUI/PocketBase harness | main test-infra scope | COMPLETE - VERIFIED WITH NOTES | Contract smoke/harness scaffolding; live E2E not run |
 
 ## Completed Work
 
@@ -185,13 +188,15 @@ Requirements:
 - Checkpoint committed as bfe4ee5 and independently verified with notes.
 - Run/adapter checkpoint independently verified: 54 package tests, all entrypoint builds, recovery/ownership/atomicity/redaction probes pass; WebUI production build remains blocked by existing settings-component type errors.
 - f2c19bc committed and verified as the run/adapter checkpoint.
+- 8b40180 committed and independently verified as the canonical routing/first-send checkpoint.
 - Phase 1 focused checkpoint independently verified: 87 Vitest tests, 81 Bun server tests, bridge/app typechecks, and direct Vite build passed; full build remains blocked by unrelated settings errors.
+- Queue/Pi/E2E checkpoint independently verified: 40 package tests, 9 queue/bridge/E2E contract tests, atomic queue corrections, and source/build checks pass; live services unavailable.
 
 ## Known Bugs
 
 - WebUI still has legacy process-global session metadata and Pi lifecycle outside the new package run seam; durable cross-process run recovery is not implemented.
 - WebUI production build has existing TypeScript failures in `IntegrationsSettings.tsx`, `STTSettings.tsx`, and `TTSSettings.tsx`.
-- Durable queue/steering, cursor replay, attachments, suggestions, and session pagination remain incomplete.
+- Cursor replay, attachments, suggestions, and session pagination remain incomplete.
 - Git API/UI and several hooks/tests are orphaned.
 - No disposable WebUI/PocketBase E2E harness exists.
 - `subpolar-cli` currently runs only the explicitly documented local echo fixture; it is not yet a Pi-backed complete headless runtime.
@@ -222,8 +227,7 @@ Requirements:
 
 ## Next Actions
 
-1. Commit the verified Phase 1 routing/delivery checkpoint.
-2. Implement durable queue/steering controls and cursor replay.
-3. Implement a real Pi-backed executor adapter and compose it in standalone `subpolar-cli` without WebUI/PocketBase.
-4. Wire the WebUI bridge to the shared core/adapter boundaries incrementally, preserving compatibility routes.
-5. Build the disposable PocketBase/WebUI E2E harness and implement scoped remote gateway credentials.
+1. Commit this queue/Pi/E2E checkpoint and record its SHA.
+2. Implement durable cursor replay and reconnect recovery.
+3. Implement scoped remote gateway credentials and server-side `subpolar-tools add` authorization.
+4. Continue attachments, suggestions, themes, Git/worktrees, tasks, subagents, memory, browser, voice, and automations in dependency order.

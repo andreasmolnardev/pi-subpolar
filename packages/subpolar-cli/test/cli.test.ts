@@ -35,4 +35,28 @@ describe("subpolar-cli", () => {
     expect(result).toMatchObject({ ok: false, error: { code: "EXECUTION_FAILED", message: "Tool execution failed" } });
     expect(output.join("")).not.toContain("cli-secret");
   });
+
+  test("uses an explicitly configured Pi factory and passes its config", async () => {
+    const output: string[] = [];
+    const exitCode = await runCli(
+      ["run", "hello", "pi", "--json", "--session", "pi-smoke"],
+      {
+        pi: {
+          config: { provider: "fake" },
+          factory: async (config) => ({
+            async execute({ prompt, context, emit }) {
+              expect(config).toEqual({ provider: "fake" });
+              expect(context.sessionId).toBe("pi-smoke");
+              await emit({ type: "status", data: { phase: "started" } });
+              return { executor: "pi-fake", text: `Pi: ${prompt}` };
+            },
+          }),
+        },
+      },
+      { stdout: (text) => output.push(text) },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(output.join(""))).toMatchObject({ ok: true, executor: "pi-fake", result: { text: "Pi: hello pi" } });
+  });
 });

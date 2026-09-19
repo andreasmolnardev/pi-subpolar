@@ -29,6 +29,7 @@ import type {
   RunResultBase,
   RunStore,
   RunState,
+  RunProgressEmitter,
   SessionStore,
 } from "../../subpolar-contracts/src/index.ts";
 import { UnsupportedRecoveryError } from "../../subpolar-contracts/src/index.ts";
@@ -386,7 +387,10 @@ function validateRunContext(context: RunContext): void {
   if (!context.principal || !validIdentifier(context.principal.id)) throw new RunValidationError("Run context requires a principal ID");
   if (!["user", "service", "local"].includes(context.principal.kind)) throw new RunValidationError("Run context has an invalid principal kind");
   if (context.sessionId !== undefined && !validIdentifier(context.sessionId)) throw new RunValidationError("Run context has an invalid session ID");
+  if (context.projectId !== undefined && !validIdentifier(context.projectId)) throw new RunValidationError("Run context has an invalid project ID");
   if (context.agentId !== undefined && !validIdentifier(context.agentId)) throw new RunValidationError("Run context has an invalid agent ID");
+  if (context.model !== undefined && !validIdentifier(context.model)) throw new RunValidationError("Run context has an invalid model");
+  if (context.permission !== undefined && !validIdentifier(context.permission)) throw new RunValidationError("Run context has an invalid permission");
   if (context.cwd !== undefined && typeof context.cwd !== "string") throw new RunValidationError("Run context has an invalid working directory");
   if (context.metadata !== undefined && (!context.metadata || typeof context.metadata !== "object" || Array.isArray(context.metadata) || Object.values(context.metadata).some((value) => typeof value !== "string"))) {
     throw new RunValidationError("Run context metadata must contain strings");
@@ -418,7 +422,7 @@ export function createRunService(options: RunServiceOptions): RunService {
   let executor = options.executor;
   if (!executor && options.runPort) {
     const runPort = options.runPort;
-    executor = (request: RunRequest) => runPort.run(request);
+    executor = (request: RunRequest, emit) => runPort.run(request, emit);
   }
   if (!executor) throw new Error("A run executor or run port is required");
 
@@ -430,6 +434,7 @@ export function createRunService(options: RunServiceOptions): RunService {
     state: RunState,
     type: RunEvent["type"],
     error?: { code: string; message: string },
+    data?: JsonValue,
   ): Promise<boolean> {
     const eventSink = options.eventSink ?? options.emitEvent;
     eventSequence += 1;
@@ -441,7 +446,7 @@ export function createRunService(options: RunServiceOptions): RunService {
       requestId: request.context.requestId,
       sessionId: request.context.sessionId,
       state,
-      data: runEventData(state, error),
+      data: data ?? runEventData(state, error),
     };
     if (eventSink) {
       try {
@@ -548,7 +553,10 @@ export function createRunService(options: RunServiceOptions): RunService {
 
     let output: unknown;
     try {
-      output = await executor(request);
+      const emitProgress: RunProgressEmitter = async (data) => {
+        await emit(request, "running", "run.progress", undefined, data);
+      };
+      output = await executor(request, emitProgress);
     } catch (error) {
       if (request.signal?.aborted) {
         const interrupted = { code: "RUN_INTERRUPTED", message: "Run was cancelled during execution" };

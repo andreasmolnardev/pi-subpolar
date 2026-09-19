@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@subpolar/adapter-local": "workspace:*",
+    "@subpolar/adapter-pi": "workspace:*",
     "@subpolar/contracts": "workspace:*",
     "@subpolar/core": "workspace:*"
   }

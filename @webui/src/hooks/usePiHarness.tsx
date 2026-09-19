@@ -586,6 +586,38 @@ export const useSendPrompt = (apiUrl: string | null | undefined, directory?: str
   });
 };
 
+export const useSessionQueue = (apiUrl: string | null | undefined, sessionID: string | undefined, directory?: string) => {
+  const client = useSubpolarClient(apiUrl, directory)
+  return useQuery({
+    queryKey: ['subpolar', 'queue', apiUrl, sessionID, directory],
+    queryFn: () => client!.listQueue(sessionID!),
+    enabled: Boolean(client && sessionID),
+    refetchOnReconnect: true,
+    refetchOnWindowFocus: true,
+  })
+}
+
+const useQueueMutation = (apiUrl: string | null | undefined, directory: string | undefined, action: (client: SubpolarClient, sessionID: string, variables: any) => Promise<unknown>) => {
+  const client = useSubpolarClient(apiUrl, directory)
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (variables: any) => {
+      if (!client) throw new Error('No client available')
+      return action(client, variables.sessionID, variables)
+    },
+    onSettled: (_data, _error, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['subpolar', 'queue', apiUrl, variables.sessionID, directory] })
+    },
+  })
+}
+
+export const useSteer = (apiUrl: string | null | undefined, directory?: string) => useQueueMutation(apiUrl, directory, (client, sessionID, variables) => client.steer(sessionID, { content: variables.content, clientId: variables.clientId }))
+export const useEnqueueFollowUp = (apiUrl: string | null | undefined, directory?: string) => useQueueMutation(apiUrl, directory, (client, sessionID, variables) => client.enqueueFollowUp(sessionID, { content: variables.content, clientId: variables.clientId }))
+export const useRemoveQueueEntry = (apiUrl: string | null | undefined, directory?: string) => useQueueMutation(apiUrl, directory, (client, sessionID, variables) => client.removeQueueEntry(sessionID, variables.clientId))
+export const useRetryQueueEntry = (apiUrl: string | null | undefined, directory?: string) => useQueueMutation(apiUrl, directory, (client, sessionID, variables) => client.retryQueueEntry(sessionID, variables.clientId))
+export const useReorderQueueEntry = (apiUrl: string | null | undefined, directory?: string) => useQueueMutation(apiUrl, directory, (client, sessionID, variables) => client.reorderQueueEntry(sessionID, variables.clientId, variables.position))
+export const useClearQueue = (apiUrl: string | null | undefined, directory?: string) => useQueueMutation(apiUrl, directory, (client, sessionID) => client.clearQueue(sessionID))
+
 const ABORT_RETRY_INTERVAL_MS = 3000;
 const MAX_ABORT_RETRIES = 10;
 

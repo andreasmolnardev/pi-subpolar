@@ -20,6 +20,11 @@ vi.mock('@/hooks/usePiHarness', () => ({
   })),
   useAbortSession: vi.fn(() => ({ mutate: vi.fn() })),
   useSendPrompt: vi.fn(() => ({ mutate: mocks.sendPrompt, isPending: false })),
+  useSessionQueue: vi.fn(() => ({ data: [] })),
+  useRemoveQueueEntry: vi.fn(() => ({ mutate: vi.fn() })),
+  useRetryQueueEntry: vi.fn(() => ({ mutate: vi.fn() })),
+  useReorderQueueEntry: vi.fn(() => ({ mutate: vi.fn() })),
+  useClearQueue: vi.fn(() => ({ mutate: vi.fn() })),
 }))
 
 vi.mock('@/api/projects', () => ({

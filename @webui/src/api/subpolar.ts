@@ -40,6 +40,18 @@ type SessionPage = { items: LegacySession[]; nextCursor?: string }
 
 export type { SendPromptResponse, SendCommandResponse, LspStatus }
 
+export type QueueEntry = {
+  clientId: string
+  sessionId: string
+  content: string
+  kind: 'steering' | 'follow_up'
+  state: 'steering' | 'enqueued' | 'delivered' | 'failed' | 'cancelled'
+  position: number
+  createdAt: number
+  updatedAt: number
+  error?: string
+}
+
 function getUserMessageMetadata(metadata: Record<string, unknown> | undefined) {
   const model = metadata?.model && typeof metadata.model === 'object'
     ? metadata.model as { providerID?: unknown; modelID?: unknown }
@@ -302,6 +314,41 @@ export class SubpolarClient {
 
   async sendPromptAsync(sessionID: string, data: SendPromptAsyncRequest): Promise<void> {
     await this.createNativeMessageAndRun(sessionID, data)
+  }
+
+  async steer(sessionID: string, data: { content: string; clientId: string }) {
+    return fetchWrapper<{ entry: QueueEntry }>(`${this.nativeBaseURL}/sessions/${sessionID}/steer`, {
+      method: 'POST', params: this.getParams(), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data), timeout: 0,
+    })
+  }
+
+  async listQueue(sessionID: string) {
+    const response = await fetchWrapper<{ entries: QueueEntry[] }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue`, { params: this.getParams() })
+    return response.entries
+  }
+
+  async enqueueFollowUp(sessionID: string, data: { content: string; clientId: string }) {
+    return fetchWrapper<{ entry: QueueEntry }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue`, {
+      method: 'POST', params: this.getParams(), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data), timeout: 0,
+    })
+  }
+
+  async removeQueueEntry(sessionID: string, clientId: string) {
+    return fetchWrapper<{ entry: QueueEntry }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue/${encodeURIComponent(clientId)}`, { method: 'DELETE', params: this.getParams() })
+  }
+
+  async retryQueueEntry(sessionID: string, clientId: string) {
+    return fetchWrapper<{ entry: QueueEntry }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue/${encodeURIComponent(clientId)}`, { method: 'POST', params: this.getParams() })
+  }
+
+  async reorderQueueEntry(sessionID: string, clientId: string, position: number) {
+    return fetchWrapper<{ entry: QueueEntry }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue/${encodeURIComponent(clientId)}`, {
+      method: 'PATCH', params: this.getParams(), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ position }),
+    })
+  }
+
+  async clearQueue(sessionID: string) {
+    return fetchWrapper<{ entries: QueueEntry[] }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue/clear`, { method: 'POST', params: this.getParams() })
   }
 
   private async createNativeMessageAndRun(sessionID: string, data: SendPromptRequest | SendPromptAsyncRequest): Promise<{ messageID: string; state: string }> {
