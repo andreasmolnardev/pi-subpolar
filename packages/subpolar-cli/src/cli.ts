@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { createLocalAdapter } from "../../subpolar-adapter-local/src/index.ts";
-import type { ExecutionContext, ToolDefinition, ToolExecutor } from "../../subpolar-contracts/src/index.ts";
-import { createPolicyGateway, redactAuditValue } from "../../subpolar-core/src/index.ts";
+import type { AgentExecutor, RunContext, ToolDefinition, ToolExecutor } from "../../subpolar-contracts/src/index.ts";
+import { createPolicyGateway, createRunService, redactAuditValue } from "../../subpolar-core/src/index.ts";
 
 export const LOCAL_FIXTURE_EXECUTOR = "local-fixture-echo";
 
@@ -95,29 +95,32 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
       resolvePolicy: (definition) => definition.id === fixtureTool.id ? { allow: true, reason: "Explicit local fixture policy" } : { deny: true },
       execute: executor,
     });
-    const context: ExecutionContext = {
+    const context: RunContext = {
       requestId: `request-${sessionId}`,
       principal: { id: "local-cli", kind: "local", displayName: "Subpolar CLI" },
       sessionId,
     };
-    const startedAt = (options.now ?? (() => new Date()))().toISOString();
-    const existing = await adapter.sessions.load(sessionId);
-    const result = await gateway.call({ callId: `call-${sessionId}`, toolId: fixtureTool.id, input: { prompt: parsed.prompt } }, context);
-    if (!result.ok) {
+    const agentExecutor: AgentExecutor = async (request) => {
+      const result = await gateway.call(
+        { callId: `call-${request.runId}`, toolId: fixtureTool.id, input: { prompt: request.prompt } },
+        { ...request.context, runId: request.runId },
+      );
+      if (!result.ok) throw result.error;
+      return result.value;
+    };
+    const run = createRunService({ executor: agentExecutor, sessionStore: adapter.sessions, now: options.now });
+    const result = await run.run({ runId: `run-${sessionId}`, prompt: parsed.prompt, context });
+    if (result.state !== "completed") {
       const output = envelopeError(result.error);
       (parsed.json ? stdout : stderr)(`${parsed.json ? JSON.stringify(output) : `Error [${output.error.code}]: ${output.error.message}`}\n`);
       return 1;
     }
-    const value = result.value as { executor?: string; text?: string };
-    await adapter.sessions.append(sessionId, [
-      { role: "user", content: parsed.prompt, occurredAt: startedAt },
-      { role: "assistant", content: value.text ?? "", occurredAt: (options.now ?? (() => new Date()))().toISOString() },
-    ]);
+    const value = result.output as { executor?: string; text?: string };
     const output = {
       ok: true,
       command: "run",
       sessionId,
-      resumed: Boolean(existing),
+      resumed: result.resumed,
       executor: value.executor ?? LOCAL_FIXTURE_EXECUTOR,
       result: value,
     };

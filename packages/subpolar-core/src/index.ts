@@ -1,9 +1,12 @@
 import type {
   ApprovalCallback,
+  AgentExecutor,
+  AgentRunPort,
   AuditEvent,
+  AuditEventSink,
   AuditRecord,
   DomainEvent,
-  EventSink,
+  EventReplayPort,
   ExecutionContext,
   InputValidator,
   JsonValue,
@@ -16,7 +19,19 @@ import type {
   ToolResult,
   ToolSuccess,
   ToolCall,
+  RunContext,
+  RunEvent,
+  RunError,
+  RunEventSink,
+  RunOutcome,
+  RunRequest,
+  RunResult,
+  RunResultBase,
+  RunStore,
+  RunState,
+  SessionStore,
 } from "../../subpolar-contracts/src/index.ts";
+import { UnsupportedRecoveryError } from "../../subpolar-contracts/src/index.ts";
 
 export interface GatewayOptions {
   tools: readonly ToolDefinition[];
@@ -24,7 +39,7 @@ export interface GatewayOptions {
   resolvePolicy: PolicyResolver;
   execute: ToolExecutor;
   approve?: ApprovalCallback;
-  emitEvent?: EventSink;
+  emitEvent?: AuditEventSink;
   redact?: (value: unknown) => JsonValue;
   now?: () => Date;
 }
@@ -190,7 +205,7 @@ export function createPolicyGateway(options: GatewayOptions): ToolGateway {
         occurredAt,
         data: record,
       };
-      await options.emitEvent(event as DomainEvent);
+      await options.emitEvent(event);
       return true;
     } catch {
       return false;
@@ -340,3 +355,245 @@ export function createPolicyGateway(options: GatewayOptions): ToolGateway {
 }
 
 export type { ToolFailure, ToolSuccess };
+
+export interface RunServiceOptions {
+  executor?: AgentExecutor;
+  runPort?: AgentRunPort;
+  sessionStore?: SessionStore;
+  runStore?: RunStore;
+  eventReplayPort?: EventReplayPort;
+  eventSink?: RunEventSink;
+  emitEvent?: RunEventSink;
+  now?: () => Date;
+}
+
+export class RunValidationError extends Error {
+  readonly code = "INVALID_RUN_CONTEXT";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "RunValidationError";
+  }
+}
+
+function validIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 256;
+}
+
+function validateRunContext(context: RunContext): void {
+  if (!context || typeof context !== "object") throw new RunValidationError("Run context is required");
+  if (!validIdentifier(context.requestId)) throw new RunValidationError("Run context requires a request ID");
+  if (!context.principal || !validIdentifier(context.principal.id)) throw new RunValidationError("Run context requires a principal ID");
+  if (!["user", "service", "local"].includes(context.principal.kind)) throw new RunValidationError("Run context has an invalid principal kind");
+  if (context.sessionId !== undefined && !validIdentifier(context.sessionId)) throw new RunValidationError("Run context has an invalid session ID");
+  if (context.agentId !== undefined && !validIdentifier(context.agentId)) throw new RunValidationError("Run context has an invalid agent ID");
+  if (context.cwd !== undefined && typeof context.cwd !== "string") throw new RunValidationError("Run context has an invalid working directory");
+  if (context.metadata !== undefined && (!context.metadata || typeof context.metadata !== "object" || Array.isArray(context.metadata) || Object.values(context.metadata).some((value) => typeof value !== "string"))) {
+    throw new RunValidationError("Run context metadata must contain strings");
+  }
+}
+
+function assistantText(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (output && typeof output === "object" && typeof (output as { text?: unknown }).text === "string") {
+    return (output as { text: string }).text;
+  }
+  try {
+    const serialized = JSON.stringify(output);
+    return serialized === undefined ? "" : serialized;
+  } catch {
+    return "";
+  }
+}
+
+function runEventData(state: RunState, error?: { code: string; message: string }): JsonValue {
+  return error ? { state, error: { code: error.code, message: error.message } } : { state };
+}
+
+export interface RunService {
+  run(request: RunRequest): Promise<RunResult>;
+}
+
+export function createRunService(options: RunServiceOptions): RunService {
+  let executor = options.executor;
+  if (!executor && options.runPort) {
+    const runPort = options.runPort;
+    executor = (request: RunRequest) => runPort.run(request);
+  }
+  if (!executor) throw new Error("A run executor or run port is required");
+
+  const now = options.now ?? (() => new Date());
+  let eventSequence = 0;
+
+  async function emit(
+    request: RunRequest,
+    state: RunState,
+    type: RunEvent["type"],
+    error?: { code: string; message: string },
+  ): Promise<boolean> {
+    const eventSink = options.eventSink ?? options.emitEvent;
+    eventSequence += 1;
+    const event: RunEvent = {
+      eventId: `event-${request.runId}-${eventSequence}`,
+      type,
+      occurredAt: now().toISOString(),
+      runId: request.runId,
+      requestId: request.context.requestId,
+      sessionId: request.context.sessionId,
+      state,
+      data: runEventData(state, error),
+    };
+    if (eventSink) {
+      try {
+        await eventSink(event);
+      } catch {
+        // An event sink is observational; it must not change executor semantics.
+      }
+    }
+    if (options.eventReplayPort?.capabilities.supports["event.replay"] !== true) return false;
+    try {
+      await options.eventReplayPort.append(event);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function baseResult(request: RunRequest, resumed: boolean): RunResultBase {
+    return {
+      runId: request.runId,
+      requestId: request.context.requestId,
+      sessionId: request.context.sessionId,
+      resumed,
+      recoverable: false,
+    };
+  }
+
+  function failure(
+    request: RunRequest,
+    state: "failed" | "interrupted" | "unknown",
+    resumed: boolean,
+    error: RunError,
+    recoverable = false,
+  ): RunResult {
+    return { ...baseResult(request, resumed), state, error, recoverable };
+  }
+
+  async function persistOutcome(
+    request: RunRequest,
+    state: RunOutcome["state"],
+    output: unknown,
+    error: RunError | undefined,
+    replayed: boolean,
+  ): Promise<boolean> {
+    const runStore = options.runStore;
+    if (runStore?.capabilities.supports["run.outcome.persistence"] !== true) return false;
+    const recoverable = replayed && options.eventReplayPort?.capabilities.supports["event.replay"] === true;
+    try {
+      await runStore.save({
+        runId: request.runId,
+        requestId: request.context.requestId,
+        sessionId: request.context.sessionId,
+        state,
+        ...(output === undefined ? {} : { output }),
+        ...(error === undefined ? {} : { error }),
+        recoverable,
+        occurredAt: now().toISOString(),
+      });
+      return recoverable;
+    } catch {
+      return false;
+    }
+  }
+
+  function unsupportedRecoveryError(): RunError {
+    const adapter = options.runStore?.capabilities.adapter ?? "run-service";
+    const error = new UnsupportedRecoveryError(adapter, "Run completion is unknown because durable recovery is unavailable");
+    return { code: error.code, message: error.message };
+  }
+
+  async function run(request: RunRequest): Promise<RunResult> {
+    if (!request || typeof request !== "object" || !validIdentifier(request.runId)) {
+      throw new RunValidationError("Run request requires a run ID");
+    }
+    if (typeof request.prompt !== "string" || request.prompt.trim().length === 0) {
+      throw new RunValidationError("Run request requires a non-empty prompt");
+    }
+    validateRunContext(request.context);
+
+    const persistent = options.sessionStore?.capabilities.supports["session.persistence"] === true;
+    let resumed = false;
+    if (persistent && request.context.sessionId) {
+      resumed = Boolean(await options.sessionStore?.load(request.context.sessionId));
+    }
+
+    await emit(request, "running", "run.started");
+    if (request.signal?.aborted) {
+      const error = { code: "RUN_INTERRUPTED", message: "Run was cancelled before execution" };
+      const replayed = await emit(request, "interrupted", "run.interrupted", error);
+      const recoverable = await persistOutcome(request, "interrupted", undefined, error, replayed);
+      return failure(request, "interrupted", resumed, error, recoverable);
+    }
+
+    if (persistent && request.context.sessionId) {
+      try {
+        await options.sessionStore?.append(request.context.sessionId, [{ role: "user", content: request.prompt, occurredAt: now().toISOString() }]);
+      } catch {
+        const error = { code: "SESSION_PERSISTENCE_FAILED", message: "Run session could not be persisted" };
+        const replayed = await emit(request, "unknown", "run.unknown", error);
+        const recoverable = await persistOutcome(request, "unknown", undefined, error, replayed);
+        return failure(request, "unknown", resumed, error, recoverable);
+      }
+    }
+
+    let output: unknown;
+    try {
+      output = await executor(request);
+    } catch (error) {
+      if (request.signal?.aborted) {
+        const interrupted = { code: "RUN_INTERRUPTED", message: "Run was cancelled during execution" };
+        const replayed = await emit(request, "interrupted", "run.interrupted", interrupted);
+        const recoverable = await persistOutcome(request, "interrupted", undefined, interrupted, replayed);
+        return failure(request, "interrupted", resumed, interrupted, recoverable);
+      }
+      const candidate = error as { code?: unknown; message?: unknown; details?: unknown } | null;
+      const sanitized = candidate && typeof candidate === "object" && typeof candidate.code === "string"
+        ? sanitizeExecutorError(candidate)
+        : { code: "EXECUTION_FAILED", message: "Agent execution failed" };
+      const replayed = await emit(request, "failed", "run.failed", sanitized);
+      const recoverable = await persistOutcome(request, "failed", undefined, sanitized, replayed);
+      return failure(request, "failed", resumed, sanitized, recoverable);
+    }
+
+    if (request.signal?.aborted) {
+      const durableOutcome = options.runStore?.capabilities.supports["run.outcome.persistence"] === true;
+      const durableReplay = options.eventReplayPort?.capabilities.supports["event.replay"] === true;
+      const state = durableOutcome && durableReplay ? "interrupted" : "unknown";
+      const error = state === "interrupted"
+        ? { code: "RUN_INTERRUPTED", message: "Run was cancelled during execution" }
+        : unsupportedRecoveryError();
+      const replayed = await emit(request, state, state === "interrupted" ? "run.interrupted" : "run.unknown", error);
+      const recoverable = await persistOutcome(request, state, undefined, error, replayed);
+      return failure(request, state, resumed, error, recoverable);
+    }
+
+    if (persistent && request.context.sessionId) {
+      try {
+        await options.sessionStore?.append(request.context.sessionId, [{ role: "assistant", content: assistantText(output), occurredAt: now().toISOString() }]);
+      } catch {
+        const error = { code: "SESSION_PERSISTENCE_FAILED", message: "Run result could not be persisted" };
+        const replayed = await emit(request, "unknown", "run.unknown", error);
+        const recoverable = await persistOutcome(request, "unknown", undefined, error, replayed);
+        return failure(request, "unknown", resumed, error, recoverable);
+      }
+    }
+
+    const replayed = await emit(request, "completed", "run.completed");
+    const recoverable = await persistOutcome(request, "completed", output, undefined, replayed);
+    return { ...baseResult(request, resumed), state: "completed", output, recoverable };
+  }
+
+  return { run };
+}
+
+export const createExecutionService = createRunService;

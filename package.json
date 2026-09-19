@@ -12,6 +12,6 @@
     "tools:cli": "bun packages/subpolar-tools-cli/src/cli.ts",
     "typecheck": "npm --prefix @webui run typecheck",
     "build": "npm --prefix @webui run build",
-    "test:core": "bun test packages/subpolar-contracts packages/subpolar-core packages/subpolar-adapter-local packages/subpolar-cli"
+    "test:core": "bun test packages/subpolar-contracts packages/subpolar-core packages/subpolar-adapter-local packages/subpolar-adapter-pocketbase packages/subpolar-cli"
   }
 }

@@ -5,10 +5,10 @@
 Current phase: Phase 0A / Phase 0 foundation
 Current milestone: Milestone A - Dependable Subpolar
 Current branch: main
-Last completed commit: pending checkpoint commit
-Last verified commit: working tree checkpoint, pending commit
-Current blockers: full WebUI dependencies are unavailable; the local CLI is still a fixture executor rather than Pi-backed; no PocketBase parity or disposable E2E harness exists; scoped remote gateway credentials are not implemented
-Next recommended action: complete P0A-001/P0A-004 and P0-010/P0-013, then independently verify both slices
+Last completed commit: bfe4ee5 — feat(core): add shared foundation and security contracts
+Last verified commit: bfe4ee5 — bounded checkpoint verified with notes
+Current blockers: full WebUI dependencies are unavailable; the local CLI is still a fixture executor rather than Pi-backed; no disposable E2E harness exists; scoped remote gateway credentials are not implemented
+Next recommended action: wire a real Pi executor into the shared run seam, then build disposable WebUI/PocketBase E2E coverage
 
 ## Architecture Decisions
 
@@ -31,28 +31,31 @@ Requirements:
 - [x] P0A-002 Implement shared policy/approval decision primitives without PocketBase imports.
 - [x] P0A-003 Add local/ephemeral adapter and explicit unsupported-durability errors.
 - [x] P0A-004 Add minimal `subpolar-cli run` using the shared core in-process.
-- [ ] P0A-005 Define PocketBase composition seam and parity fixtures.
-- [ ] P0A-006 Extract session/run/task/event persistence boundaries incrementally.
+- [x] P0A-005 Define PocketBase composition seam and parity fixtures (package-level fake-client parity; WebUI wiring remains open).
+- [x] P0A-006 Add an injected run/executor seam with explicit non-recoverable cancellation semantics; durable WebUI run recovery remains open.
 
 Implementation tasks:
 - [ ] P0A-001 Create `packages/subpolar-contracts` package and tests.
 - [ ] P0A-002 Create `packages/subpolar-core` policy gateway and tests.
 - [ ] P0A-003 Create `packages/subpolar-adapter-local` ephemeral store.
 - [ ] P0A-004 Create `packages/subpolar-cli` command surface and JSON output.
-- [ ] P0A-005 Add root test/typecheck scripts and package documentation.
+- [x] P0A-005 Add root test/typecheck scripts and package documentation.
 
 Verification:
 - [ ] Unit tests for policy precedence, approval decisions, redaction, and unsupported capabilities.
-- [ ] Identical fixture decisions through local and PocketBase compositions.
-- [ ] CLI starts with PocketBase, WebUI, HTTP, and Docker unavailable.
-- [ ] Independent architecture verification.
+- [x] Identical fixture decisions through local and PocketBase compositions (package/fake-client scope).
+- [x] CLI starts with PocketBase, WebUI, HTTP, and Docker unavailable (fixture executor scope).
+- [x] Independent architecture verification for the bounded slice.
 
 Commits:
-- none yet
+- bfe4ee5 — feat(core): add shared foundation and security contracts (bounded checkpoint)
+- pending — feat(core): add run seam and PocketBase adapter foundation
 
 Remaining problems:
 - Current bridge still owns Pi lifecycle and process-global state.
 - Current tool implementation is PocketBase-bound and remains the WebUI authority until migrated.
+- Pi-backed executor composition and a concrete PocketBase adapter are still required for the Phase 0A exit criteria.
+- Package-level run seam and PocketBase adapter now exist, but WebUI still uses its legacy bridge lifecycle and the CLI still uses the explicit fixture executor.
 
 ### Phase 0 - Contracts, Runtime, Security, and Recovery
 
@@ -81,7 +84,7 @@ Verification:
 - [ ] Independent security review.
 
 Commits:
-- none yet
+- bfe4ee5 — feat(core): add shared foundation and security contracts (security/contract slice)
 
 ### Phase 1-3 - WebUI, Personalization, Git, and Review
 
@@ -157,14 +160,16 @@ Requirements:
 | audit-webui | Phase 1-3 WebUI audit | main read-only | COMPLETE | Lifecycle/UI gap report |
 | audit-capabilities | Phase 4-13/security audit | main read-only | COMPLETE | Security and capability gap report |
 | audit-cli | Phase 14-16 audit | main read-only | COMPLETE | CLI/verification gap report |
-| impl-core | P0A contracts/core/local adapter/CLI smoke path | main isolated file scope | COMPLETE - VERIFYING | Implemented packages, tests, and limitations |
-| impl-security | P0 request/network security primitives and bridge hardening | main serialized bridge/server scope | COMPLETE - VERIFYING | Security modules, ownership fixes, and regression tests |
+| impl-core | P0A contracts/core/local adapter/CLI smoke path | main isolated file scope | COMPLETE - VERIFIED WITH NOTES | Implemented packages, tests, and limitations |
+| impl-security | P0 request/network security primitives and bridge hardening | main serialized bridge/server scope | COMPLETE - VERIFIED WITH NOTES | Security modules, ownership fixes, and regression tests |
 | verify-core | Independent P0A/CLI review | main read-only | COMPLETE - FAIL FINDINGS CORRECTED | Initial 17-test review and correction requirements |
 | verify-security | Independent P0 security review | main read-only | COMPLETE - FAIL FINDINGS CORRECTED | Initial security review and correction requirements |
 | impl-security-followup | DNS, custom-provider, approval, internal ownership fixes | main serialized server scope | COMPLETE - VERIFIED WITH NOTES | Focused security corrections |
 | verify-foundation | Reverify corrected core/security slices | main read-only | COMPLETE - VERIFIED WITH NOTES | Focused tests/builds pass; full WebUI suite remains environment-blocked |
 | impl-tools-cli | P14 remote-only tools gateway CLI | main new-package scope | COMPLETE - VERIFIED WITH NOTES | 19 CLI tests/build; server registration credentials remain open |
 | impl-contracts | P0 versioned capability/health/error contract | main server-contract scope | COMPLETE - VERIFIED WITH NOTES | v1 contract/health tests; full dependency suite unavailable |
+| impl-run-seam | P0A shared run/executor contract and core service | main package scope | COMPLETE - VERIFIED WITH NOTES | 54 aggregate package tests; Pi executor wiring remains open |
+| impl-pocketbase-adapter | P0A PocketBase adapter contract/parity fixture | main new-package scope | COMPLETE - VERIFIED WITH NOTES | Owner-scoped adapter/parity tests; WebUI wiring remains open |
 
 ## Completed Work
 
@@ -172,18 +177,16 @@ Requirements:
 - Existing tool gateway, approval flow, agent runtime, session context, transcript projection, and provider flow tests identified as characterization coverage.
 - Added and corrected the dependency-free shared core/local adapter/CLI foundation and the first WebUI security hardening slice; independent verification is pending.
 - Verified bounded checkpoint after independent review: 37 focused server/transcript tests, 36 package tests, 8 Bun-native server tests, 2 frontend security tests, and successful Bun bridge/package builds.
+- Checkpoint committed as bfe4ee5 and independently verified with notes.
+- Run/adapter checkpoint independently verified: 54 package tests, all entrypoint builds, recovery/ownership/atomicity/redaction probes pass; WebUI production build remains blocked by existing settings-component type errors.
 
 ## Known Bugs
 
-- Global SSE/session status/search and several extension routes can expose cross-user state.
-- Project and filesystem routes are vulnerable to symlink/path-boundary escapes.
-- External HTTP/MCP/provider requests lack complete SSRF, redirect, timeout, and response-size controls.
-- Approval HTTP routes bypass the stronger approval service and lack atomic/idempotent resolution.
-- Tool audit/approval records can contain raw sensitive inputs/results.
-- Markdown raw HTML and Mermaid loose rendering are not XSS-safe.
+- WebUI still has legacy process-global session metadata and Pi lifecycle outside the new package run seam; durable cross-process run recovery is not implemented.
+- WebUI production build has existing TypeScript failures in `IntegrationsSettings.tsx`, `STTSettings.tsx`, and `TTSSettings.tsx`.
 - Canonical `/new` routes, durable queues, first-send semantics, and session pagination are incomplete.
 - Git API/UI and several hooks/tests are orphaned.
-- No standalone CLI, tools CLI, extracted core, local adapter, contract suite, or E2E harness exists.
+- No disposable WebUI/PocketBase E2E harness exists.
 - `subpolar-cli` currently runs only the explicitly documented local echo fixture; it is not yet a Pi-backed complete headless runtime.
 - Full Vitest/WebUI verification remains blocked/red due unavailable dependencies and pre-existing unrelated module/settings failures; this is not represented as product verification.
 
@@ -208,11 +211,12 @@ Requirements:
 - Automated tests/typechecks could not be executed during audit because installed JS/Bun dependencies were unavailable (`tsc`/Vitest modules missing).
 - No roadmap requirement is currently independently verified against a disposable deployment.
 - Bounded checkpoint verification after implementation: dependency-free tests/builds pass; full WebUI Vitest/typecheck/build remains unavailable or has unrelated existing failures.
+- Run/adapter checkpoint verification: 54 package tests, all package entrypoint builds, and independent recovery/ownership/atomicity/redaction probes pass.
 
 ## Next Actions
 
-1. Commit this verified bounded checkpoint and record its SHA.
-2. Extract a Pi-backed execution seam into the shared core and compose it from WebUI and `subpolar-cli` without PocketBase imports.
-3. Add a concrete PocketBase adapter/parity fixture suite and disposable isolated deployment harness.
+1. Commit this run/adapter checkpoint and record its SHA.
+2. Implement a real Pi-backed executor adapter and compose it in standalone `subpolar-cli` without WebUI/PocketBase.
+3. Wire the WebUI bridge to the shared core/adapter boundaries incrementally, preserving compatibility routes.
 4. Implement scoped remote gateway credentials and server-side `subpolar-tools add` authorization.
-5. Continue with durable run/queue/event recovery and canonical WebUI session lifecycle before P1 capabilities.
+5. Build the disposable PocketBase/WebUI E2E harness, then continue durable run/queue/event recovery and canonical WebUI session lifecycle.

@@ -21,6 +21,99 @@ export interface ExecutionContext {
   metadata?: Record<string, string>;
 }
 
+export interface RunContext {
+  requestId: string;
+  principal: Principal;
+  sessionId?: string;
+  agentId?: string;
+  cwd?: string;
+  metadata?: Record<string, string>;
+}
+
+export type RunState = "idle" | "running" | "completed" | "failed" | "interrupted" | "unknown";
+
+export type RunEventType =
+  | "run.started"
+  | "run.completed"
+  | "run.failed"
+  | "run.interrupted"
+  | "run.unknown";
+
+export interface RunRequest {
+  runId: string;
+  prompt: string;
+  context: RunContext;
+  signal?: AbortSignal;
+}
+
+export interface RunEvent<T = JsonValue> {
+  eventId: string;
+  type: RunEventType;
+  occurredAt: string;
+  runId: string;
+  requestId: string;
+  sessionId?: string;
+  state: RunState;
+  data: T;
+}
+
+export type RunEventSink = (event: RunEvent) => void | Promise<void>;
+
+export interface RunError {
+  code: string;
+  message: string;
+  details?: JsonValue;
+}
+
+export interface RunResultBase {
+  runId: string;
+  requestId: string;
+  sessionId?: string;
+  resumed: boolean;
+  recoverable: boolean;
+}
+
+export interface RunSuccess extends RunResultBase {
+  state: "completed";
+  output: unknown;
+}
+
+export interface RunFailure extends RunResultBase {
+  state: "failed" | "interrupted" | "unknown";
+  error: RunError;
+}
+
+export type RunResult = RunSuccess | RunFailure;
+
+export interface RunOutcome {
+  runId: string;
+  requestId: string;
+  sessionId?: string;
+  state: "completed" | "failed" | "interrupted" | "unknown";
+  output?: unknown;
+  error?: RunError;
+  recoverable: boolean;
+  occurredAt: string;
+}
+
+export interface RunStore {
+  readonly capabilities: AdapterCapabilities;
+  load(runId: string): Promise<RunOutcome | undefined>;
+  save(outcome: RunOutcome): Promise<void>;
+}
+
+export interface EventReplayPort {
+  readonly capabilities: AdapterCapabilities;
+  append(event: RunEvent): Promise<void>;
+  replay(runId: string): Promise<readonly RunEvent[]>;
+}
+
+export type AgentExecutor = (request: RunRequest) => unknown | Promise<unknown>;
+
+export interface AgentRunPort {
+  run(request: RunRequest): unknown | Promise<unknown>;
+}
+
 export interface ToolDefinition {
   id: string;
   namespace: string;
@@ -139,18 +232,20 @@ export interface DomainEvent<T = JsonValue> {
 }
 
 export type AuditEvent = DomainEvent<AuditRecord> & { type: "tool.audit" };
+export type AuditEventSink = (event: AuditEvent) => void | Promise<void>;
 export type EventSink = (event: DomainEvent) => void | Promise<void>;
 
 export type AdapterCapability =
   | "session.persistence"
+  | "run.outcome.persistence"
   | "event.replay"
   | "multi-process-concurrency"
   | "durable-approvals";
 
 export interface AdapterCapabilities {
   adapter: string;
-  durability: "ephemeral" | "json-file";
-  supports: Readonly<Record<AdapterCapability, boolean>>;
+  durability: "ephemeral" | "json-file" | "remote";
+  supports: Readonly<Partial<Record<AdapterCapability, boolean>>>;
 }
 
 export class UnsupportedCapabilityError extends Error {
@@ -166,11 +261,24 @@ export class UnsupportedCapabilityError extends Error {
   }
 }
 
-export interface SessionTranscriptEntry {
+export class UnsupportedRecoveryError extends Error {
+  readonly code = "UNSUPPORTED_RECOVERY";
+  readonly adapter: string;
+
+  constructor(adapter: string, message?: string) {
+    super(message ?? `${adapter} cannot durably recover an interrupted run`);
+    this.name = "UnsupportedRecoveryError";
+    this.adapter = adapter;
+  }
+}
+
+export interface RunMessage {
   role: "user" | "assistant" | "tool";
   content: string;
   occurredAt: string;
 }
+
+export type SessionTranscriptEntry = RunMessage;
 
 export interface SessionRecord {
   sessionId: string;
