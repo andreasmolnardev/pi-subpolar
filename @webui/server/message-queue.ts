@@ -115,3 +115,9 @@ export function reorderQueueEntry(database: QueueDatabase, ownerId: string, sess
 export function clearQueue(database: QueueDatabase, ownerId: string, sessionId: string): void {
   database.query('UPDATE message_queue SET state = ?, updated_at = ? WHERE owner_id = ? AND session_id = ? AND state IN (?, ?)').run('cancelled', Date.now(), ownerId, sessionId, 'enqueued', 'failed')
 }
+
+/** A bridge restart cannot know whether a claimed steering message reached Pi. */
+export function reconcileInterruptedSteering(database: QueueDatabase, now = Date.now()): void {
+  database.query('UPDATE message_queue SET state = ?, error = ?, updated_at = ? WHERE kind = ? AND state = ?')
+    .run('failed', 'QUEUE_INTERRUPTED', now, 'steering', 'steering')
+}

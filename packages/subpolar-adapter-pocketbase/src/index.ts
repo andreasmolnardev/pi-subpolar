@@ -11,10 +11,6 @@ import type {
   MemoryScope,
   Skill,
   SkillRepository,
-  CreateSkillInput,
-  UpdateSkillInput,
-  ListSkillsInput,
-  GetSkillInput,
   EffectiveSkill,
 } from "../../subpolar-contracts/src/index.ts";
 import { SkillConflictError, SkillNotFoundError, SkillValidationError, createSkill, updateSkill, listSkills, resolveEffectiveSkills, assertValidSkill } from "../../subpolar-contracts/src/index.ts";

@@ -105,3 +105,13 @@ describe('session pagination route', () => {
     expect(sessionRoutes.indexOf('updateSession(ownerId, id')).toBeLessThan(sessionRoutes.indexOf('record.tags = updated.tags'))
   })
 })
+
+describe('durable skill routes', () => {
+  it('does not write skill CRUD data to the filesystem', () => {
+    const routes = section("if (path[1] === 'settings' && path[2] === 'skills' && authenticatedUser)", "if (path[1] === 'sessions'")
+    expect(routes).toContain('createOwnerBoundSkillStore')
+    expect(routes).toContain('SkillConflictError')
+    expect(routes).not.toContain('writeFileSync')
+    expect(routes).not.toContain('mkdirSync')
+  })
+})

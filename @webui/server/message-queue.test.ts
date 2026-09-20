@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { describe, expect, it } from 'bun:test'
-import { claimQueueEntry, clearQueue, listQueueEntries, QueueEntryConflictError, QueueEntryTransitionError, reorderQueueEntry, reserveQueueEntry, updateQueueEntry } from './message-queue.ts'
+import { claimQueueEntry, clearQueue, listQueueEntries, QueueEntryConflictError, QueueEntryTransitionError, reconcileInterruptedSteering, reorderQueueEntry, reserveQueueEntry, updateQueueEntry } from './message-queue.ts'
 
 function database() {
   const db = new Database(':memory:')
@@ -60,5 +60,18 @@ describe('durable message queue', () => {
     reserveQueueEntry(db, 'owner-a', 'session-a', 'steering-a', 'steer', 'steering')
     updateQueueEntry(db, 'owner-a', 'session-a', 'steering-a', 'failed', 'temporary')
     expect(updateQueueEntry(db, 'owner-a', 'session-a', 'steering-a', 'enqueued')?.state).toBe('enqueued')
+  })
+
+  it('fails stale steering claims without draining enqueued entries', () => {
+    const db = database()
+    reserveQueueEntry(db, 'owner-a', 'session-a', 'steering-a', 'steer', 'steering')
+    reserveQueueEntry(db, 'owner-a', 'session-a', 'follow-a', 'follow', 'follow_up')
+    reconcileInterruptedSteering(db, 123)
+    expect(listQueueEntries(db, 'owner-a', 'session-a')).toMatchObject([
+      { clientId: 'steering-a', state: 'failed', error: 'QUEUE_INTERRUPTED' },
+      { clientId: 'follow-a', state: 'enqueued' },
+    ])
+    reconcileInterruptedSteering(db, 124)
+    expect(listQueueEntries(db, 'owner-a', 'session-a')[0]?.updatedAt).toBe(123)
   })
 })

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, statSy
 
 import { homedir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { Database } from 'bun:sqlite'
 import {
   AgentSession,
@@ -112,7 +112,9 @@ import {
   NotificationRepository,
   createPushNotificationAdapter,
   type NotificationAdapter,
+  createOwnerBoundSkillStore,
 } from './server/index.ts'
+import { SkillConflictError, SkillNotFoundError, SkillValidationError } from '../packages/subpolar-contracts/src/index.ts'
 import { effectiveAgentConfiguration } from './server/tools.ts'
 import {
   NewSessionRouteError,
@@ -135,6 +137,7 @@ import { permissionAskedProperties } from './server/approval-event.ts'
 import { escapeFilter } from './server/pocketbase.ts'
 import { InvalidSessionTagsError, normalizeSessionTags } from './server/project-store.ts'
 import { createEventCursor, ensureEventCursorSchema } from './server/event-cursor.ts'
+import { ensureRuntimeRecoverySchema, reconcileStartup, reserveRuntimeRun, updateRuntimeRun } from './server/runtime-recovery.ts'
 import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/project-filesystem.ts'
 import { GitPathPolicy } from './server/git/policy.ts'
 import { GitReadService } from './server/git/service.ts'
@@ -151,7 +154,6 @@ import {
   messageDeliveryFromRow,
   messageDeliveryResponse,
   replayMessageDeliveryResponse,
-  reconcileRunningDeliveries,
   reserveMessageDelivery,
   withDeliveryMetadata,
   type MessageDelivery,
@@ -519,11 +521,12 @@ database.exec(`
     ON message_queue (owner_id, session_id, state, position, created_at);
 `)
 ensureEventCursorSchema(database)
+ensureRuntimeRecoverySchema(database)
 try { database.exec('ALTER TABLE sessions ADD COLUMN user_id TEXT') } catch { /* already migrated */ }
 try { database.exec('ALTER TABLE sessions ADD COLUMN permission_override TEXT') } catch { /* already migrated */ }
 try { database.exec("ALTER TABLE sessions ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'") } catch { /* already migrated */ }
 try { database.exec('ALTER TABLE message_deliveries ADD COLUMN response TEXT') } catch { /* already migrated */ }
-reconcileRunningDeliveries(database)
+reconcileStartup(database)
 const allowedRpcCommands = new Set([
   'prompt', 'steer', 'follow_up', 'abort', 'clear_queue', 'new_session', 'get_state',
   'set_model', 'cycle_model', 'get_available_models', 'set_thinking_level',
@@ -1040,43 +1043,6 @@ function projectFor(name: string | undefined): Project {
   const value = projects().find((project) => project.name === name)
   if (!value) throw new Error(`Unknown project: ${name}`)
   return value
-}
-
-type SkillRecord = { name: string; description: string; body: string; scope: 'global' | 'project'; path: string; repoId?: number }
-
-function skillDirectories(directory?: string): Array<{ scope: 'global' | 'project'; directory: string; repoId?: number }> {
-  const result: Array<{ scope: 'global' | 'project'; directory: string; repoId?: number }> = []
-  const projectDirectory = directory ? assertPathWithinWorkspace(directory, projectsRoot) : undefined
-  if (projectDirectory) {
-    result.push({ scope: 'project', directory: assertPathWithinWorkspace(join(projectDirectory, '.subpolar', 'skills'), projectsRoot) })
-  }
-  else result.push({ scope: 'project', directory: join(root, '.subpolar', 'skills'), repoId: 1 })
-  result.push({ scope: 'global', directory: join(homedir(), '.config', 'subpolar', 'skills') })
-  result.push({ scope: 'global', directory: join(homedir(), '.pi', 'skills') })
-  return result
-}
-
-function readSkills(directory?: string): SkillRecord[] {
-  const result: SkillRecord[] = []
-  for (const source of skillDirectories(directory)) {
-    if (!existsSync(source.directory)) continue
-    try {
-      for (const entry of readdirSync(source.directory, { withFileTypes: true })) {
-        const candidate = entry.isDirectory() ? join(source.directory, entry.name, 'SKILL.md') : entry.name === 'SKILL.md' ? join(source.directory, entry.name) : ''
-        if (!candidate || !existsSync(candidate)) continue
-        let file = candidate
-        if (source.scope === 'project') {
-          try { file = assertPathWithinWorkspace(candidate, projectsRoot) } catch { continue }
-        }
-        const content = readFileSync(file, 'utf8')
-        const heading = content.match(/^#\s+(.+)$/m)
-        const description = content.match(/^(?:description|summary):\s*(.+)$/im)?.[1]?.trim() ?? heading?.[1]?.trim() ?? ''
-        const name = entry.isDirectory() ? entry.name : source.directory.split('/').pop() ?? 'skill'
-        result.push({ name, description, body: content, scope: source.scope, path: file, repoId: source.repoId })
-      }
-    } catch { /* an unavailable skill directory should not break settings */ }
-  }
-  return [...new Map(result.map((skill) => [`${skill.scope}:${skill.repoId ?? ''}:${skill.name}`, skill])).values()]
 }
 
 function projectResponse(project: Project, id: number, isGeneralChat = false) {
@@ -3190,52 +3156,72 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     }
     return json({ extensions })
   }
-  if (path[1] === 'settings' && path[2] === 'skills' && request.method === 'GET') {
-    const requestedDirectory = url.searchParams.get('directory')
-    let directory: string | undefined
-    const repoId = url.searchParams.get('repoId')
-    if (requestedDirectory) {
-      try { directory = safeProjectPath(requestedDirectory) } catch { return json({ error: 'Project not found' }, 404) }
-      const ownedPaths = (await createProjectSessionRepository(await applicationDatabase()).listProjects(authenticatedUser!.id)).flatMap((project) => {
-        try { return [safeProjectPath(project.path)] } catch { return [] }
-      })
-      if (!ownedPaths.includes(directory) && directory !== safeProjectPath(generalChatRoot)) return json({ error: 'Project not found' }, 404)
+  if (path[1] === 'settings' && path[2] === 'skills' && authenticatedUser) {
+    const skillStore = async () => createOwnerBoundSkillStore(await applicationDatabase(), authenticatedUser!.id)
+    const scope = (value: string | null): 'global' | 'agent' | 'project' | undefined => value === 'global' || value === 'agent' || value === 'project' ? value : undefined
+    const projectId = (value: unknown): string | undefined => typeof value === 'string' || typeof value === 'number' ? String(value) : undefined
+    const skillResponse = (skill: import('../packages/subpolar-contracts/src/index.ts').Skill) => ({
+      ...skill,
+      description: skill.metadata.description ?? '',
+      repoId: skill.projectId ? Number.isNaN(Number(skill.projectId)) ? skill.projectId : Number(skill.projectId) : undefined,
+    })
+    const skillError = (error: unknown): Response => {
+      if (error instanceof SkillValidationError || (error && typeof error === 'object' && (error as { code?: string }).code === 'INVALID_SKILL')) return json({ error: String(error), code: 'INVALID_SKILL' }, 400)
+      if (error instanceof SkillNotFoundError || (error && typeof error === 'object' && (error as { code?: string }).code === 'SKILL_NOT_FOUND')) return json({ error: String(error), code: 'SKILL_NOT_FOUND' }, 404)
+      if (error instanceof SkillConflictError || (error && typeof error === 'object' && (error as { code?: string }).code === 'SKILL_CONFLICT')) return json({ error: String(error), code: 'SKILL_CONFLICT' }, 409)
+      console.warn(`Skill store unavailable: ${redactedDiagnostic(error)}`)
+      return json({ error: 'Skill store unavailable', code: 'SKILL_STORE_UNAVAILABLE' }, 503)
     }
     try {
-      const skills = readSkills(directory).filter((skill) => !repoId || String(skill.repoId ?? '') === repoId)
-      return json(skills)
-    } catch {
-      return json({ error: 'Project skill path is outside the configured workspace' }, 400)
-    }
-  }
-  if (path[1] === 'settings' && path[2] === 'skills' && request.method === 'POST') {
-    const input = await body(request)
-    if (typeof input.name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.name)) return json({ error: 'Valid skill name is required' }, 400)
-    const scope = input.scope === 'project' ? 'project' : 'global'
-    let base = join(homedir(), '.config', 'subpolar', 'skills')
-    let projectDirectory: string | undefined
-    if (scope === 'project') {
-      try { projectDirectory = safeProjectPath(typeof input.directory === 'string' ? input.directory : generalChatRoot) } catch { return json({ error: 'Project not found' }, 404) }
-      const owned = (await createProjectSessionRepository(await applicationDatabase()).listProjects(authenticatedUser!.id)).some((project) => {
-        try { return safeProjectPath(project.path) === projectDirectory } catch { return false }
-      })
-      if (!owned && projectDirectory !== safeProjectPath(generalChatRoot)) return json({ error: 'Project not found' }, 404)
-    }
-    let file: string
-    try {
-      if (scope === 'project') {
-        base = assertPathWithinWorkspace(base, projectsRoot)
-        file = assertPathWithinWorkspace(join(base, input.name, 'SKILL.md'), projectsRoot)
-      } else {
-        file = join(base, input.name, 'SKILL.md')
+      if (request.method === 'GET' && path.length === 3) {
+        const skills = await (await skillStore()).list(authenticatedUser.id, { scope: scope(url.searchParams.get('scope')), agentId: url.searchParams.get('agentId') ?? undefined, projectId: url.searchParams.get('projectId') ?? url.searchParams.get('repoId') ?? undefined, includeDisabled: true })
+        return json(skills.map(skillResponse))
       }
-      mkdirSync(dirname(file), { recursive: true })
-      if (scope === 'project') file = assertPathWithinWorkspace(file, projectsRoot)
-      writeFileSync(file, `# ${input.name}\n\n${typeof input.description === 'string' ? input.description : ''}\n\n${typeof input.body === 'string' ? input.body : ''}\n`, 'utf8')
-      const saved = readSkills(scope === 'project' ? projectDirectory : undefined).find((skill) => skill.name === input.name)
-      return json(saved ?? { name: input.name, scope, body: input.body ?? '' }, 201)
-    } catch {
-      return json({ error: 'Project skill path is outside the configured workspace' }, 400)
+      if (request.method === 'GET' && path.length === 4) {
+        const skill = await (await skillStore()).get(authenticatedUser.id, decodeURIComponent(path[3]), { scope: scope(url.searchParams.get('scope')), agentId: url.searchParams.get('agentId') ?? undefined, projectId: url.searchParams.get('projectId') ?? url.searchParams.get('repoId') ?? undefined })
+        return json(skillResponse(skill))
+      }
+      if (request.method === 'POST' && path.length === 3) {
+        const input = await body(request)
+        const name = typeof input.name === 'string' ? input.name : ''
+        const skill = await (await skillStore()).create(authenticatedUser.id, {
+          id: typeof input.id === 'string' ? input.id : name,
+          name,
+          scope: scope(typeof input.scope === 'string' ? input.scope : null) ?? 'global',
+          mode: input.mode === 'always-loaded' || input.mode === 'explicit-only' || input.mode === 'disabled' ? input.mode : 'discoverable',
+          metadata: { ...(input.metadata && typeof input.metadata === 'object' && !Array.isArray(input.metadata) ? input.metadata as Record<string, string> : {}), ...(typeof input.description === 'string' ? { description: input.description } : {}) },
+          body: typeof input.body === 'string' ? input.body : '',
+          reference: typeof input.reference === 'string' ? input.reference : undefined,
+          agentId: projectId(input.agentId),
+          projectId: projectId(input.projectId ?? input.repoId),
+        })
+        return json(skillResponse(skill), 201)
+      }
+      if ((request.method === 'PUT' || request.method === 'DELETE') && path.length === 4) {
+        const id = decodeURIComponent(path[3])
+        const context = { scope: scope(url.searchParams.get('scope')), agentId: url.searchParams.get('agentId') ?? undefined, projectId: url.searchParams.get('projectId') ?? url.searchParams.get('repoId') ?? undefined }
+        if (request.method === 'DELETE') {
+          await (await skillStore()).delete(id, context)
+          return json({ success: true })
+        }
+        const input = await body(request)
+        const version = typeof input.version === 'number' ? input.version : undefined
+        if (!Number.isSafeInteger(version)) return json({ error: 'version is required', code: 'INVALID_SKILL' }, 400)
+        const nextVersion = version as number
+        const skill = await (await skillStore()).update(authenticatedUser.id, {
+          id,
+          version: nextVersion,
+          ...context,
+          ...(typeof input.name === 'string' ? { name: input.name } : {}),
+          ...(input.mode !== undefined ? { mode: input.mode as never } : {}),
+          ...(input.metadata !== undefined || input.description !== undefined ? { metadata: { ...(input.metadata as Record<string, string> ?? {}), ...(typeof input.description === 'string' ? { description: input.description } : {}) } } : {}),
+          ...(typeof input.body === 'string' ? { body: input.body } : {}),
+          ...(typeof input.reference === 'string' ? { reference: input.reference } : {}),
+        })
+        return json(skillResponse(skill))
+      }
+    } catch (error) {
+      return skillError(error)
     }
   }
 
@@ -3599,6 +3585,8 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
         }
         try {
           const metadata = JSON.parse(claimedDelivery.metadata) as Record<string, unknown>
+          const runtimeRun = reserveRuntimeRun(database, ownerId, id, claimedDelivery.messageId, typeof metadata.requestId === 'string' ? metadata.requestId : undefined)
+          if (runtimeRun.created) updateRuntimeRun(database, ownerId, id, claimedDelivery.messageId, 'running')
           const selectedModel = modelSelection(metadata.model)
           if (selectedModel) {
             await sendRpc(id, { type: 'set_model', provider: selectedModel.providerID, modelId: selectedModel.modelID }, ownedRecord)
@@ -3608,9 +3596,11 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
           // was created; filesystem `/profile` commands are intentionally gone.
           const response = await sendRpc(id, { type: 'prompt', message: claimedDelivery.content }, ownedRecord)
           completeMessageDelivery(claimedDelivery, response)
+          updateRuntimeRun(database, ownerId, id, claimedDelivery.messageId, 'completed')
           return json(withDeliveryMetadata(response, messageDeliveryResponse({ ...claimedDelivery, state: 'completed' })))
         } catch (error) {
           interruptMessageDelivery(claimedDelivery)
+          updateRuntimeRun(database, ownerId, id, claimedDelivery.messageId, 'interrupted', error)
           console.warn(`Message delivery interrupted: ${redactedDiagnostic(error)}`)
           return json(messageDeliveryResponse({ ...claimedDelivery, state: 'interrupted' }), 200)
         }
