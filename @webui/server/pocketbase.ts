@@ -209,6 +209,7 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
   ], ['CREATE UNIQUE INDEX idx_agents_user_name ON agents (user_id, name)'])
 
   await ensureCollection(client, 'tool_registry', [
+    field('owner_id', 'text'),
     field('tool_id', 'text', { required: true }),
     field('namespace', 'text', { required: true }),
     field('description', 'text'),

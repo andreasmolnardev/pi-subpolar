@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { canonicalToolId, manageAgentProfile, validateToolDefinition } from './tools.ts'
+import { canonicalToolId, manageAgentProfile, manageRegisteredTool, validateToolDefinition } from './tools.ts'
 
 const definition = (overrides: Record<string, unknown> = {}) => ({
   tool_id: 'acme/read', namespace: 'acme', description: 'Read data', adapter: 'openapi' as const,
@@ -47,5 +47,25 @@ describe('secure tool registry validation', () => {
     await manageAgentProfile(client, 'delete', { agentId: created.id }, 'u1')
     expect(records.some((profile) => profile.id === created.id)).toBe(false)
     expect(records.some((profile) => profile.name === 'master')).toBe(true)
+  })
+
+  it('supports owner-scoped registered tool CRUD and rejects internal tools', async () => {
+    const records: Array<Record<string, unknown>> = []
+    const collection = () => ({
+      getFullList: async () => records,
+      getFirstListItem: async (filter: string) => records.find((record) => filter.includes(`owner_id = \"${record.owner_id}\"`) && filter.includes(`tool_id = \"${record.tool_id}\"`)) ?? null,
+      create: async (input: Record<string, unknown>) => { const record = { id: `tool-${records.length}`, ...input }; records.push(record); return record },
+      update: async (id: string, input: Record<string, unknown>) => { const record = records.find((item) => item.id === id); if (!record) throw new Error('missing'); Object.assign(record, input); return record },
+      delete: async (id: string) => { const index = records.findIndex((record) => record.id === id); if (index >= 0) records.splice(index, 1) },
+    })
+    const client = { collection } as never
+    const created = await manageRegisteredTool(client, 'create', { ...definition({}), tool_id: 'acme/lookup', operation: 'lookup' }, 'u1') as Record<string, unknown>
+    expect(created.tool_id).toBe('acme/lookup')
+    const updated = await manageRegisteredTool(client, 'update', { tool_id: 'acme/lookup', description: 'Updated lookup' }, 'u1') as Record<string, unknown>
+    expect(updated.description).toBe('Updated lookup')
+    expect(await manageRegisteredTool(client, 'list', {}, 'u1')).toHaveLength(1)
+    await expect(manageRegisteredTool(client, 'create', { ...definition({ adapter: 'internal', target: 'pi' }), tool_id: 'acme/internal', operation: 'read' }, 'u1')).rejects.toThrow('Only HTTP')
+    await manageRegisteredTool(client, 'delete', { tool_id: 'acme/lookup' }, 'u1')
+    expect(records).toHaveLength(0)
   })
 })

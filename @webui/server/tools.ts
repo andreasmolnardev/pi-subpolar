@@ -34,6 +34,7 @@ export const SKILL_CONTEXT_MODES: readonly SkillContextMode[] = ['always-loaded'
 export const DECLARED_CAPABILITIES = ['subagent/run', 'read', 'write', 'bash'] as const
 const memoryMutationTools = new Set(['memory/write', 'memory/update', 'memory/delete'])
 const profileManagementTools = new Set(['list_agent_profiles', 'create_agent_profile', 'edit_agent_profile', 'delete_agent_profile'])
+const toolManagementTools = new Set(['list_registered_tools', 'create_registered_tool', 'update_registered_tool', 'delete_registered_tool'])
 const browserMutationGroups = new Set(['form-interaction', 'upload', 'download', 'submit', 'destructive'])
 export function memoryPolicyAllows(agent: { policies: Pick<AgentPolicySet, 'memory'>; template?: AgentDefinition['template'] }, toolId: string): boolean {
   return agent.policies.memory === true && !(memoryMutationTools.has(toolId) && (agent.template === 'plan' || agent.template === 'reviewer'))
@@ -139,6 +140,10 @@ const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>>
   { tool_id: 'create_agent_profile', namespace: 'builtin', description: 'Create an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'create', input_schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 80 }, description: { type: 'string', maxLength: 1000 }, mode: { type: 'string', enum: ['primary', 'subagent'] }, prompt: { type: 'string', maxLength: 100000 }, systemPrompt: { type: 'string', maxLength: 100000 }, enabled: { type: 'boolean' }, template: { type: 'string', enum: ['general', 'coding', 'plan', 'reviewer'] }, model: { type: 'string', maxLength: 200 }, thinking: { type: 'string', enum: ['off', 'minimal', 'low', 'medium', 'high'] }, approval_mode: { type: 'string', enum: ['auto', 'ask', 'deny'] }, policies: { type: 'object' }, project_overrides: { type: 'object' }, tool_context_modes: { type: 'object' }, skill_context_modes: { type: 'object' } }, required: ['name'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
   { tool_id: 'edit_agent_profile', namespace: 'builtin', description: 'Edit an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'edit', input_schema: { type: 'object', properties: { agentId: { type: 'string', minLength: 1, maxLength: 100 }, name: { type: 'string', minLength: 1, maxLength: 80 }, description: { type: 'string', maxLength: 1000 }, mode: { type: 'string', enum: ['primary', 'subagent'] }, prompt: { type: 'string', maxLength: 100000 }, systemPrompt: { type: 'string', maxLength: 100000 }, enabled: { type: 'boolean' }, template: { type: 'string', enum: ['general', 'coding', 'plan', 'reviewer'] }, model: { type: 'string', maxLength: 200 }, thinking: { type: 'string', enum: ['off', 'minimal', 'low', 'medium', 'high'] }, approval_mode: { type: 'string', enum: ['auto', 'ask', 'deny'] }, policies: { type: 'object' }, project_overrides: { type: 'object' }, tool_context_modes: { type: 'object' }, skill_context_modes: { type: 'object' } }, required: ['agentId'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
   { tool_id: 'delete_agent_profile', namespace: 'builtin', description: 'Delete an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'delete', input_schema: { type: 'object', properties: { agentId: { type: 'string', minLength: 1, maxLength: 100 } }, required: ['agentId'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'delete', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
+  { tool_id: 'list_registered_tools', namespace: 'builtin', description: 'List registered tools owned by the current user', adapter: 'internal', target: 'tool-registry', operation: 'list', input_schema: { type: 'object', properties: {}, additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: { capability: 'tool-registry' } },
+  { tool_id: 'create_registered_tool', namespace: 'builtin', description: 'Register an owned HTTP, OpenAPI, or MCP tool', adapter: 'internal', target: 'tool-registry', operation: 'create', input_schema: { type: 'object', properties: { tool_id: { type: 'string', maxLength: 160 }, namespace: { type: 'string', maxLength: 64 }, description: { type: 'string', maxLength: 1000 }, adapter: { type: 'string', enum: ['http', 'openapi', 'mcp'] }, target: { type: 'string', maxLength: 2000 }, operation: { type: 'string', maxLength: 128 }, input_schema: { type: 'object' }, output_schema: { type: 'object' }, risk: { type: 'string', enum: ['read', 'write', 'delete', 'external'] }, requires_approval: { type: 'boolean' }, enabled: { type: 'boolean' }, context_mode: { type: 'string', enum: ['always', 'discoverable', 'on-demand', 'disabled'] }, metadata: { type: 'object' } }, required: ['tool_id', 'namespace', 'description', 'adapter', 'target', 'operation', 'input_schema', 'output_schema', 'risk'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
+  { tool_id: 'update_registered_tool', namespace: 'builtin', description: 'Update an owned registered tool', adapter: 'internal', target: 'tool-registry', operation: 'update', input_schema: { type: 'object', properties: { tool_id: { type: 'string', maxLength: 160 }, description: { type: 'string', maxLength: 1000 }, target: { type: 'string', maxLength: 2000 }, operation: { type: 'string', maxLength: 128 }, input_schema: { type: 'object' }, output_schema: { type: 'object' }, risk: { type: 'string', enum: ['read', 'write', 'delete', 'external'] }, requires_approval: { type: 'boolean' }, enabled: { type: 'boolean' }, context_mode: { type: 'string', enum: ['always', 'discoverable', 'on-demand', 'disabled'] }, metadata: { type: 'object' } }, required: ['tool_id'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
+  { tool_id: 'delete_registered_tool', namespace: 'builtin', description: 'Delete an owned registered tool', adapter: 'internal', target: 'tool-registry', operation: 'delete', input_schema: { type: 'object', properties: { tool_id: { type: 'string', minLength: 1, maxLength: 160 } }, required: ['tool_id'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'delete', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
   { tool_id: 'search-tool', namespace: 'builtin', description: 'Search tools available to the active agent', adapter: 'internal', target: 'tool-router', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
   { tool_id: 'web-search', namespace: 'builtin', description: 'Search the public web through an approved OpenCode-compatible provider', adapter: 'internal', target: 'web-search', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 1000 }, provider: { type: 'string', enum: ['exa', 'parallel'] }, resultCount: { type: 'integer', minimum: 1, maximum: 10 }, contextSize: { type: 'integer', minimum: 1, maximum: 32000 }, type: { type: 'string' }, livecrawl: { type: 'string' }, objective: { type: 'string', maxLength: 1000 }, search_queries: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 1000 } } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'object', properties: { provider: { type: 'string' }, results: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' }, snippet: { type: 'string' } }, required: ['title', 'url', 'snippet'] } } }, required: ['provider', 'results'] }, risk: 'external', requires_approval: true, enabled: true, metadata: { capability: 'web-search' } },
   { tool_id: 'read', namespace: 'builtin', description: 'Read files from the selected project', adapter: 'internal', target: 'pi', operation: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } }, required: ['path'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
@@ -623,6 +628,55 @@ export async function manageAgentProfile(client: PocketBase, operation: string, 
   return profileProjection(record)
 }
 
+function registeredToolProjection(record: Record<string, unknown>): ToolDefinition {
+  return toTool(record)
+}
+
+function registeredToolFields(input: Record<string, unknown>, existing?: ToolDefinition): Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'> {
+  const value = (key: string, fallback: unknown) => input[key] === undefined ? fallback : input[key]
+  const definition = {
+    tool_id: existing?.tool_id ?? String(input.tool_id ?? ''),
+    namespace: existing?.namespace ?? String(input.namespace ?? ''),
+    description: String(value('description', existing?.description ?? '')),
+    adapter: (existing?.adapter ?? input.adapter) as ToolAdapter,
+    target: String(value('target', existing?.target ?? '')),
+    operation: String(value('operation', existing?.operation ?? '')),
+    input_schema: recordObject(value('input_schema', existing?.input_schema ?? {})),
+    output_schema: recordObject(value('output_schema', existing?.output_schema ?? {})),
+    risk: value('risk', existing?.risk ?? 'read') as ToolRisk,
+    requires_approval: Boolean(value('requires_approval', existing?.requires_approval ?? true)),
+    enabled: Boolean(value('enabled', existing?.enabled ?? true)),
+    context_mode: value('context_mode', existing?.context_mode ?? 'discoverable') as ToolContextMode,
+    metadata: recordObject(value('metadata', existing?.metadata ?? {})),
+  }
+  if (definition.adapter === 'internal') throw new Error('Only HTTP, OpenAPI, and MCP tools may be registered')
+  return validateToolDefinition(definition)
+}
+
+export async function manageRegisteredTool(client: PocketBase, operation: string, input: unknown, userId: string): Promise<unknown> {
+  const args = recordObject(input)
+  const ownedFilter = `owner_id = "${escapeFilter(userId)}"`
+  if (operation === 'list') {
+    const records = await client.collection('tool_registry').getFullList({ filter: ownedFilter, sort: 'namespace,tool_id' })
+    return records.map((record) => registeredToolProjection(record))
+  }
+  const toolId = typeof args.tool_id === 'string' ? args.tool_id.trim() : ''
+  if (!toolId) throw new Error('tool_id is required')
+  const existing = await client.collection('tool_registry').getFirstListItem(`${ownedFilter} && tool_id = "${escapeFilter(toolId)}"`).catch(() => null)
+  if (operation === 'delete') {
+    if (!existing) throw new Error('Registered tool not found')
+    await client.collection('tool_registry').delete(existing.id)
+    return { deleted: true, tool_id: toolId }
+  }
+  if (operation === 'update' && !existing) throw new Error('Registered tool not found')
+  const validated = registeredToolFields(args, existing ? toTool(existing) : undefined)
+  const data = { ...validated, owner_id: userId, metadata: { ...validated.metadata, contextMode: validated.context_mode }, updated_at: Date.now() }
+  const record = operation === 'update'
+    ? await client.collection('tool_registry').update(existing!.id, data)
+    : await client.collection('tool_registry').create({ ...data, owner_id: userId, created_at: Date.now() })
+  return registeredToolProjection(record)
+}
+
 
 
 async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext & { agentId?: string; projectId?: string }): Promise<unknown> {
@@ -652,6 +706,10 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     if (context?.agentName !== 'master' || !context.userId) throw new Error('Agent profile management requires the master agent')
     return manageAgentProfile(client, tool.operation, input, context.userId)
   }
+  if (tool.target === 'tool-registry') {
+    if (context?.agentName !== 'master' || !context.userId) throw new Error('Registered tool management requires the master agent')
+    return manageRegisteredTool(client, tool.operation, input, context.userId)
+  }
   if (tool.target === 'web-search' && tool.operation === 'search') return webSearch(input as WebSearchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
   const definitions = {
     read: createReadToolDefinition(cwd),
@@ -669,7 +727,7 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
 
 async function invokeExternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext & { agentId?: string; projectId?: string }): Promise<unknown> {
   if (tool.adapter === 'internal') {
-    if (['pi', 'memory', 'browser', 'web-search', 'subagent', 'agent-profiles'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
+    if (['pi', 'memory', 'browser', 'web-search', 'subagent', 'agent-profiles', 'tool-registry'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
     return { routed: true, toolId: tool.tool_id, operation: tool.operation, input }
   }
   if (tool.adapter === 'mcp') {
@@ -774,6 +832,10 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
   if (profileManagementTools.has(canonicalId) && agent.name !== 'master') {
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MASTER_REQUIRED' })
     return { ok: false as const, toolId: canonicalId, error: { code: 'MASTER_REQUIRED', message: 'Agent profile management requires the master agent' } }
+  }
+  if (toolManagementTools.has(canonicalId) && agent.name !== 'master') {
+    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MASTER_REQUIRED' })
+    return { ok: false as const, toolId: canonicalId, error: { code: 'MASTER_REQUIRED', message: 'Registered tool management requires the master agent' } }
   }
   if (canonicalId.startsWith('memory/') && effective.policies.memory !== true) {
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MEMORY_DISABLED' })
