@@ -2,7 +2,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createBrowserRouter, RouterProvider, Outlet, useNavigate, useLocation, Navigate, useParams } from 'react-router-dom'
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { Toaster } from 'sonner'
-import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
 import { Setup } from './pages/Setup'
@@ -70,7 +69,7 @@ function SettingsRoute() {
       return
     }
     if (didOpen.current) {
-      navigate('/home', { replace: true })
+      navigate('/new', { replace: true })
       return
     }
     open()
@@ -175,8 +174,8 @@ const router = createBrowserRouter([
       {
         element: <AuthRoot />,
         children: [
-          { path: '/', element: <Home /> },
-          { path: '/home', element: <Home /> },
+          { path: '/', element: <Navigate to="/new" replace /> },
+          { path: '/home', element: <Navigate to="/new" replace /> },
           { path: '/agents', element: <Agents /> },
           { path: '/agents/:agentName', element: <AgentChat /> },
           { path: '/new', element: <NewSession /> },
