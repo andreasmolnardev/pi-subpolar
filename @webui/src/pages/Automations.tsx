@@ -153,7 +153,7 @@ export function Automations() {
 
     updateMutation.mutate({
       repoId: repoId!,
-      jobId,
+      jobId: Number(jobId),
       data: toUpdateautomationRequest(data),
     }, {
       onSuccess: () => {
@@ -168,7 +168,7 @@ export function Automations() {
     }
 
     const deletedJobId = jobId
-    deleteMutation.mutate({ repoId: repoId!, jobId: deletedJobId }, {
+    deleteMutation.mutate({ repoId: repoId!, jobId: Number(deletedJobId) }, {
       onSuccess: () => {
         closeDialog()
       },
@@ -264,7 +264,7 @@ export function Automations() {
             {repoAutomationTab === 'jobs' && (
               <JobsTab
                 jobs={jobs ?? []}
-                selectedJobId={jobId}
+                selectedJobId={jobId === null ? null : Number(jobId)}
                 onSelectJob={handleSelectJob}
               />
             )}
@@ -302,7 +302,7 @@ export function Automations() {
         <div className="sm:block hidden">
           <AutomationTabMenu
             activeTab={repoAutomationTab as 'jobs' | 'detail' | 'runs'}
-            onTabChange={(tab) => setAutomationTab(tab)}
+            onTabChange={(tab: 'jobs' | 'detail' | 'runs') => setAutomationTab(tab)}
           />
         </div>
       )}

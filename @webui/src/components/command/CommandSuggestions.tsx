@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Command } from 'lucide-react'
 import type { components } from '@/api/opencode-types'
 
@@ -23,9 +23,15 @@ export function CommandSuggestions({
 }: CommandSuggestionsProps) {
   const listRef = useRef<HTMLDivElement>(null)
 
-  const filteredCommands = commands.filter(command =>
-    command.name.toLowerCase().includes(query.toLowerCase())
-  )
+  const filteredCommands = useMemo(() => {
+    const searchTerm = query.trim().toLowerCase()
+    return commands
+      .filter((command) => command.name.toLowerCase().includes(searchTerm))
+      .sort((a, b) => {
+        const rank = (name: string) => name === searchTerm ? 0 : name.startsWith(searchTerm) ? 1 : 2
+        return rank(a.name.toLowerCase()) - rank(b.name.toLowerCase()) || a.name.localeCompare(b.name)
+      })
+  }, [commands, query])
 
   useEffect(() => {
     if (!isOpen) return
@@ -45,7 +51,7 @@ export function CommandSuggestions({
 
     const selectedItem = listRef.current.children[selectedIndex] as HTMLElement
     if (selectedItem) {
-      selectedItem.scrollIntoView({ block: 'nearest' })
+      selectedItem.scrollIntoView?.({ block: 'nearest' })
     }
   }, [selectedIndex, isOpen])
 
@@ -54,10 +60,13 @@ export function CommandSuggestions({
   }
 
   return (
-    <div
-      ref={listRef}
-      className="absolute bottom-full left-0 right-0 mb-2 z-50 bg-background border border-border rounded-lg shadow-xl max-h-48 md:max-h-[40vh] lg:max-h-[50vh] overflow-y-auto"
-    >
+      <div
+        ref={listRef}
+        id="command-suggestions"
+        role="listbox"
+        aria-label="Slash commands"
+        className="absolute bottom-full left-0 right-0 mb-2 z-50 bg-background border border-border rounded-lg shadow-xl max-h-48 md:max-h-[40vh] lg:max-h-[50vh] overflow-y-auto"
+      >
       {filteredCommands.map((command, index) => {
         const isSelected = index === selectedIndex
         const displayName = `/${command.name}`
@@ -65,6 +74,10 @@ export function CommandSuggestions({
         return (
           <button
             key={command.name}
+            type="button"
+            id={`command-suggestion-${command.name}`}
+            role="option"
+            aria-selected={isSelected}
             onMouseDown={(e) => e.preventDefault()}
             onTouchEnd={(e) => {
               e.preventDefault()

@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { AutomationRunMarkdown } from './automationRunMarkdown'
+import { AutomationRunMarkdown } from './AutomationRunMarkdown'
 import { Loader2 } from 'lucide-react'
 import type { AutomationRun } from '@subpolar/shared/types'
 

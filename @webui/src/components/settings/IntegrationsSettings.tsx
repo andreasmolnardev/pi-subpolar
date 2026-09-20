@@ -8,9 +8,57 @@ import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { type IntegrationConfig } from '@/api/types/settings'
 import { settingsApi } from '@/api/settings'
 import { showToast } from '@/lib/toast'
+
+type IntegrationBase = {
+  id: string
+  name: string
+  enabled: boolean
+}
+
+type IntegrationConfig =
+  | (IntegrationBase & {
+      type: 'mcp'
+      transport: 'stdio' | 'streamable-http'
+      serverUrl: string
+      command: string[]
+      cwd: string
+      environment: Record<string, string>
+      headers: Record<string, string>
+      timeout: number
+    })
+  | (IntegrationBase & {
+      type: 'openapi'
+      providerName: string
+      document: string
+      serverUrl: string
+      timeout: number
+      authType: 'spec' | 'none' | 'apiKey' | 'bearer' | 'basic' | 'headers'
+      authKeyName: string
+      authPlacement: 'header' | 'query' | 'cookie'
+      authValue: string
+      authUsername: string
+      authPassword: string
+      headers: Record<string, string>
+    })
+  | (IntegrationBase & {
+      type: 'caldav'
+      serverUrl: string
+      username: string
+      password: string
+      calendarUrl: string
+    })
+  | (IntegrationBase & {
+      type: 'mail'
+      imapHost: string
+      imapPort: number
+      smtpHost: string
+      smtpPort: number
+      username: string
+      password: string
+      fromAddress: string
+    })
 
 type IntegrationType = IntegrationConfig['type']
 
@@ -426,7 +474,7 @@ export function IntegrationsSettings() {
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingIntegrationId, setEditingIntegrationId] = useState<string | null>(null)
   const [testingCalDavIntegrationId, setTestingCalDavIntegrationId] = useState<string | null>(null)
-  const { data, isLoading } = useQuery({
+  const { data, isLoading } = useQuery<{ integrations: IntegrationConfig[] }>({
     queryKey: ['integrations'],
     queryFn: settingsApi.listIntegrations,
   })
@@ -434,12 +482,12 @@ export function IntegrationsSettings() {
   const integrations = useMemo(() => data?.integrations ?? [], [data?.integrations])
   const refreshIntegrations = () => queryClient.invalidateQueries({ queryKey: ['integrations'] })
 
-  const createMutation = useMutation({
+  const createMutation = useMutation<IntegrationConfig, Error, IntegrationConfig>({
     mutationFn: settingsApi.createIntegration,
     onSuccess: refreshIntegrations,
   })
 
-  const updateMutation = useMutation({
+  const updateMutation = useMutation<IntegrationConfig, Error, IntegrationConfig>({
     mutationFn: settingsApi.updateIntegration,
     onSuccess: refreshIntegrations,
   })

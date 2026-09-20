@@ -15,6 +15,7 @@ import {
 } from '@/api/automations'
 import { showToast } from '@/lib/toast'
 import type { ListAllAutomationRunsParams, AutomationJobWithRepo, AutomationRunWithContext } from '@/api/automations'
+import type { AutomationId } from './useAutomationUrlState'
 
 export function useAllAutomations() {
   return useQuery({
@@ -50,7 +51,7 @@ export function useRepoAutomations(repoId: number | undefined) {
   })
 }
 
-export function useRepoAutomation(repoId: number | undefined, jobId: number | null) {
+export function useRepoAutomation(repoId: number | undefined, jobId: AutomationId | null) {
   return useQuery({
     queryKey: ['repo-automation', repoId, jobId],
     queryFn: async () => {
@@ -62,7 +63,7 @@ export function useRepoAutomation(repoId: number | undefined, jobId: number | nu
   })
 }
 
-export function useRepoAutomationRuns(repoId: number | undefined, jobId: number | null, limit: number = 20) {
+export function useRepoAutomationRuns(repoId: number | undefined, jobId: AutomationId | null, limit: number = 20) {
   return useQuery({
     queryKey: ['repo-automation-runs', repoId, jobId, limit],
     queryFn: async () => {
@@ -74,7 +75,7 @@ export function useRepoAutomationRuns(repoId: number | undefined, jobId: number 
   })
 }
 
-export function useRepoAutomationRun(repoId: number | undefined, jobId: number | null, runId: number | null) {
+export function useRepoAutomationRun(repoId: number | undefined, jobId: AutomationId | null, runId: AutomationId | null) {
   return useQuery({
     queryKey: ['repo-automation-run', repoId, jobId, runId],
     queryFn: async () => {

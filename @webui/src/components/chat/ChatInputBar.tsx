@@ -26,7 +26,12 @@ import { MentionSuggestions, type MentionItem } from "@/components/message/Menti
 import { savePendingSessionPrompt } from "@/lib/pending-session-prompt";
 import { shouldBlockSessionCreation } from "@/lib/session-submit";
 import { createProjectMarkdown, loadProjectAttachment, loadWebsiteAttachment } from "@/api/attachments";
-import { attachmentToParts, ATTACHMENT_LIMITS, validateAttachmentLimits, validateProjectPath, validateWebsiteUrl, type ChatAttachment } from "@/lib/attachments";
+import { attachmentToParts, validateAttachmentLimits, validateProjectPath, validateWebsiteUrl, type ChatAttachment } from "@/lib/attachments";
+import { CommandSuggestions } from "@/components/command/CommandSuggestions";
+import { useCommands } from "@/hooks/useCommands";
+import { useCommandHandler } from "@/hooks/useCommandHandler";
+import { useUIState } from "@/stores/uiStateStore";
+import type { components } from "@/api/opencode-types";
 
 export interface ChatInputBarHandle {
   setPromptValue: (value: string) => void;
@@ -103,13 +108,18 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const [hasPromptContent, setHasPromptContent] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
+  const [commandQuery, setCommandQuery] = useState<string | null>(null);
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [selectedMentions, setSelectedMentions] = useState<MentionContextItem[]>([]);
   const [pastedText, setPastedText] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const creatingSessionRef = useRef(false);
+  const pendingCommand = useUIState((state) => state.pendingPromptCommand);
+  const clearPendingCommand = useUIState((state) => state.clearPendingPromptCommand);
 
   const apiUrl = SUBPOLAR_API_BASE_URL;
+  const { commands, filterCommands, error: commandsError } = useCommands(apiUrl);
 
   const { data: projects = [] } = useQuery({
     queryKey: ["projects"],
@@ -217,7 +227,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
           modelID: key,
           name: model.name || key,
           providerName: provider.name,
-          imageInput: model.capabilities.input.image,
+          imageInput: model.modalities?.input.includes("image") ?? model.attachment === true,
         });
       }
     }
@@ -242,6 +252,13 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const selectedPermissionForRequest = selectedPermission === "none" || selectedPermission === "allow_all"
     ? selectedPermission
     : "ask";
+  const commandHandler = useCommandHandler({
+    apiUrl,
+    sessionID: sessionID ?? activeSessionId ?? "",
+    directory: selectedDirectory,
+    currentAgent: selectedAgentForRequest,
+  });
+  const commandSuggestions = commandQuery === null ? [] : filterCommands(commandQuery);
 
   const createSession = useCreateSession(apiUrl, selectedDirectory);
   const sendPrompt = useSendPrompt(apiUrl, selectedDirectory);
@@ -266,6 +283,23 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   useEffect(() => {
     setSelectedPermission(defaultPermission);
   }, [defaultPermission]);
+
+  useEffect(() => {
+    if (commandsError) showToast.error(commandsError);
+  }, [commandsError]);
+
+  useEffect(() => {
+    if (!pendingCommand || !textareaRef.current) return;
+    const value = `/${pendingCommand.command.name} `;
+    textareaRef.current.value = value;
+    textareaRef.current.style.height = "auto";
+    textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+    setCommandQuery(null);
+    setHasPromptContent(true);
+    onPromptChange?.(true);
+    clearPendingCommand();
+    textareaRef.current.focus();
+  }, [clearPendingCommand, onPromptChange, pendingCommand]);
 
   useImperativeHandle(ref, () => ({
     setPromptValue: (value: string) => {
@@ -410,6 +444,9 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       const match = beforeCursor.match(/(?:^|\s)@([^\s@]*)$/);
       setMentionQuery(match ? match[1] : null);
       setSelectedMentionIndex(0);
+      const commandMatch = beforeCursor.match(/^\/([^\s]*)$/);
+      setCommandQuery(commandMatch ? commandMatch[1] : null);
+      setSelectedCommandIndex(0);
     },
     [onPromptChange, pastedText],
   );
@@ -442,6 +479,26 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     });
   }, [onPromptChange]);
 
+  const insertCommand = useCallback((command: components["schemas"]["Command"]) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const cursor = textarea.selectionStart;
+    const beforeCursor = textarea.value.slice(0, cursor);
+    const match = beforeCursor.match(/^\/[^\s]*$/);
+    if (!match) return;
+    const nextValue = `/${command.name} ${textarea.value.slice(cursor)}`;
+    textarea.value = nextValue;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+    setCommandQuery(null);
+    setHasPromptContent(true);
+    onPromptChange?.(true);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(command.name.length + 2, command.name.length + 2);
+    });
+  }, [onPromptChange]);
+
   const buildPromptWithMentionContext = useCallback(async (rawPrompt: string, workspaceDirectory: string | undefined, mentions: MentionContextItem[]) => {
     if (!workspaceDirectory || mentions.length === 0) return rawPrompt;
     try {
@@ -464,11 +521,31 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     if (sendPrompt.isPending) return;
     if (shouldBlockSessionCreation(createSession.isPending, creatingSessionRef.current)) return;
 
-    const typedPrompt = textareaRef.current?.value.trim() ?? "";
-    const attachmentParts = attachmentToParts(attachments);
+    const typedPromptValue = textareaRef.current?.value ?? "";
+    const typedPrompt = typedPromptValue.trim();
+    const attachmentParts = attachmentToParts(attachments) as Array<
+      | { type: "image"; id: string; filename: string; mime: string; dataUrl: string }
+      | { type: "file"; path: string; name: string }
+      | { type: "text"; content: string }
+    >;
     const attachmentText = attachmentParts.filter((part): part is { type: "text"; content: string } => part.type === "text").map((part) => part.content);
     const rawPrompt = [typedPrompt, pastedText?.trim(), ...attachmentText].filter(Boolean).join("\n\n") || (attachmentParts.length ? "Please review the attached context." : "");
     if (!rawPrompt) return;
+
+    const commandMatch = typedPromptValue.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/);
+    const commandName = commandMatch?.[1];
+    const command = commandName
+      ? commands.find((candidate) => candidate.name.toLowerCase() === commandName.toLowerCase())
+      : undefined;
+    if (sessionID && command) {
+      textareaRef.current!.value = "";
+      textareaRef.current!.style.height = "auto";
+      setHasPromptContent(Boolean(pastedText || attachmentParts.length));
+      setCommandQuery(null);
+      onPromptChange?.(Boolean(pastedText || attachmentParts.length));
+      await commandHandler.executeCommand(command, commandMatch?.[2] ?? "");
+      return;
+    }
     if (!sessionID && !selectedProject) {
       showToast.error(sendImmediately ? "Select a project before sending" : "General chat is still loading");
       return;
@@ -600,10 +677,34 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     steer,
     enqueueFollowUp,
     targetProjectId,
+    commandHandler,
+    commands,
   ]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (commandQuery !== null && commandSuggestions.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSelectedCommandIndex((index) => Math.min(index + 1, commandSuggestions.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSelectedCommandIndex((index) => Math.max(index - 1, 0));
+          return;
+        }
+        if (e.key === "Tab" || e.key === "Enter") {
+          e.preventDefault();
+          insertCommand(commandSuggestions[selectedCommandIndex]);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setCommandQuery(null);
+          return;
+        }
+      }
       if (mentionQuery !== null && mentionItems.length > 0) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
@@ -630,7 +731,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
         handleSubmit();
       }
     },
-    [handleSubmit, insertMention, mentionItems, mentionQuery, selectedMentionIndex],
+    [commandQuery, commandSuggestions, handleSubmit, insertCommand, insertMention, mentionItems, mentionQuery, selectedCommandIndex, selectedMentionIndex],
   );
 
   const selectedProjectName = isGeneralChatProject ? null : selectedProject?.name ?? null;
@@ -700,13 +801,23 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
           onClose={() => setMentionQuery(null)}
           selectedIndex={selectedMentionIndex}
         />
+        <CommandSuggestions
+          isOpen={commandQuery !== null && commandSuggestions.length > 0}
+          query={commandQuery ?? ""}
+          commands={commandSuggestions}
+          onSelect={insertCommand}
+          onClose={() => setCommandQuery(null)}
+          selectedIndex={selectedCommandIndex}
+        />
           <textarea
             ref={textareaRef}
             onChange={handleTextareaInput}
             onPaste={handleTextareaPaste}
             onKeyDown={handleKeyDown}
             disabled={disabled}
-          placeholder={placeholder}
+            aria-controls={commandQuery !== null && commandSuggestions.length > 0 ? "command-suggestions" : undefined}
+            aria-activedescendant={commandQuery !== null && commandSuggestions.length > 0 ? `command-suggestion-${commandSuggestions[selectedCommandIndex]?.name}` : undefined}
+            placeholder={placeholder}
           rows={1}
           style={{ height: "auto", overflow: "hidden" }}
             className="w-full bg-transparent text-[18px] text-foreground placeholder-muted-foreground focus:outline-none resize-none rounded-lg"

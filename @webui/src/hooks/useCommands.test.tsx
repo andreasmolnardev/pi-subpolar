@@ -1,9 +1,9 @@
 import { renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { useCommands } from './useCommands'
-import { createSubpolarClient } from '../api/subpolar'
+import { createSubpolarClient } from '@/api/subpolar'
 
-vi.mock('../api/subpolar', () => ({
+vi.mock('@/api/subpolar', () => ({
   createSubpolarClient: vi.fn(),
 }))
 
@@ -54,5 +54,16 @@ describe('useCommands', () => {
         'compact',
       ])
     })
+  })
+
+  it('keeps built-in commands available when discovery fails', async () => {
+    vi.mocked(createSubpolarClient).mockReturnValue({
+      listCommands: vi.fn().mockRejectedValue(new Error('offline')),
+    } as unknown as ReturnType<typeof createSubpolarClient>)
+
+    const { result } = renderHook(() => useCommands('http://localhost:5551'))
+
+    await waitFor(() => expect(result.current.error).toBe('Failed to load commands'))
+    expect(result.current.filterCommands('help').map((command) => command.name)).toEqual(['help'])
   })
 })

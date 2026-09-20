@@ -1,14 +1,20 @@
 import { useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { getProject, listProjects } from '@/api/projects'
-import { listStoredSessions } from '@/api/sessions'
+import { listStoredSessionsPage, type StoredSession } from '@/api/sessions'
 import { Header } from '@/components/ui/header'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Plus } from 'lucide-react'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 import { formatDistanceToNow } from 'date-fns'
+
+export function mergeStoredSessionPages(pages: Array<{ sessions: StoredSession[] }>): StoredSession[] {
+  const unique = new Map<string, StoredSession>()
+  for (const session of pages.flatMap((page) => page.sessions)) unique.set(session.id, session)
+  return Array.from(unique.values())
+}
 
 export function History() {
   const navigate = useNavigate()
@@ -23,10 +29,16 @@ export function History() {
     queryFn: () => getProject(GENERAL_CHAT_PROJECT_ID),
   })
 
-  const { data: storedSessions, isLoading: sessionsLoading } = useQuery({
+  const sessionsQuery = useInfiniteQuery({
     queryKey: ['sessions'],
-    queryFn: listStoredSessions,
+    queryFn: ({ pageParam }) => listStoredSessionsPage({ limit: 25, cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor,
   })
+  const storedSessions = useMemo(() => {
+    return mergeStoredSessionPages(sessionsQuery.data?.pages ?? [])
+  }, [sessionsQuery.data])
+  const { isLoading: sessionsLoading, hasNextPage, fetchNextPage, isFetchingNextPage } = sessionsQuery
 
   const historyProjects = useMemo(() => {
     return [generalChat, ...(projects ?? [])].filter((project): project is NonNullable<typeof project> => Boolean(project?.fullPath))
@@ -74,7 +86,7 @@ export function History() {
         <div className="max-w-6xl mx-auto">
           {(storedSessions?.length ?? 0) > 0 ? (
             <div className="flex flex-col gap-3">
-              {storedSessions?.map((session) => (
+              {storedSessions.map((session) => (
                 <Card
                   key={session.id}
                   className="p-3 cursor-pointer transition-all bg-card border-border hover:bg-accent hover:border-border"
@@ -90,6 +102,13 @@ export function History() {
                   </div>
                 </Card>
               ))}
+              {hasNextPage && (
+                <div className="flex justify-center pt-2">
+                  <Button variant="outline" onClick={() => void fetchNextPage()} disabled={isFetchingNextPage}>
+                    {isFetchingNextPage ? 'Loading...' : 'Load more'}
+                  </Button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="text-center text-muted-foreground py-8">

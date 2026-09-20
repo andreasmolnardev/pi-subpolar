@@ -114,11 +114,11 @@ export function AutomationJobDialog({ open, onOpenChange, job, isSaving, onSubmi
       description: 'Workspace root',
     }
     const repoEntries = repos
-      .filter((repo) => repo.cloneStatus === 'ready')
+      .filter((repo) => repo.status === 'ready' && repo.id !== null)
       .map((repo) => ({
-        value: repo.id.toString(),
-        label: getRepoDisplayName(repo.repoUrl, repo.localPath, repo.sourcePath),
-        description: repo.localPath,
+        value: String(repo.id),
+        label: getRepoDisplayName(null, repo.directory, null),
+        description: repo.directory,
       }))
     return [workspaceOption, ...repoEntries]
   }, [repos])

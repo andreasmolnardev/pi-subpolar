@@ -2,9 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Automations } from '../Automations'
 
 const mocks = vi.hoisted(() => ({
   useAutomationTarget: vi.fn(),
+  useRepoAutomations: vi.fn(),
+  useRepoAutomation: vi.fn(),
+  useRepoAutomationRuns: vi.fn(),
+  useRepoAutomationRun: vi.fn(),
+  useCreateRepoAutomation: vi.fn(),
+  useUpdateRepoAutomation: vi.fn(),
+  useDeleteRepoAutomation: vi.fn(),
+  useRunRepoAutomation: vi.fn(),
+  useCancelRepoAutomationRun: vi.fn(),
   useRepoautomations: vi.fn(),
   useRepoautomation: vi.fn(),
   useRepoautomationRuns: vi.fn(),
@@ -29,15 +39,15 @@ vi.mock('@/hooks/useAutomationTarget', () => ({
 }))
 
 vi.mock('@/hooks/useAutomations', () => ({
-  useRepoautomations: mocks.useRepoautomations,
-  useRepoautomation: mocks.useRepoautomation,
-  useRepoautomationRuns: mocks.useRepoautomationRuns,
-  useRepoautomationRun: mocks.useRepoautomationRun,
-  useCreateRepoautomation: mocks.useCreateRepoautomation,
-  useUpdateRepoautomation: mocks.useUpdateRepoautomation,
-  useDeleteRepoautomation: mocks.useDeleteRepoautomation,
-  useRunRepoautomation: mocks.useRunRepoautomation,
-  useCancelRepoautomationRun: mocks.useCancelRepoautomationRun,
+  useRepoAutomations: (...args: Parameters<typeof mocks.useRepoAutomations>) => mocks.useRepoAutomations(...args) ?? mocks.useRepoautomations(...args),
+  useRepoAutomation: (...args: Parameters<typeof mocks.useRepoAutomation>) => mocks.useRepoAutomation(...args) ?? mocks.useRepoautomation(...args),
+  useRepoAutomationRuns: (...args: Parameters<typeof mocks.useRepoAutomationRuns>) => mocks.useRepoAutomationRuns(...args) ?? mocks.useRepoautomationRuns(...args),
+  useRepoAutomationRun: (...args: Parameters<typeof mocks.useRepoAutomationRun>) => mocks.useRepoAutomationRun(...args) ?? mocks.useRepoautomationRun(...args),
+  useCreateRepoAutomation: (...args: Parameters<typeof mocks.useCreateRepoAutomation>) => mocks.useCreateRepoAutomation(...args) ?? mocks.useCreateRepoautomation(...args),
+  useUpdateRepoAutomation: (...args: Parameters<typeof mocks.useUpdateRepoAutomation>) => mocks.useUpdateRepoAutomation(...args) ?? mocks.useUpdateRepoautomation(...args),
+  useDeleteRepoAutomation: (...args: Parameters<typeof mocks.useDeleteRepoAutomation>) => mocks.useDeleteRepoAutomation(...args) ?? mocks.useDeleteRepoautomation(...args),
+  useRunRepoAutomation: (...args: Parameters<typeof mocks.useRunRepoAutomation>) => mocks.useRunRepoAutomation(...args) ?? mocks.useRunRepoautomation(...args),
+  useCancelRepoAutomationRun: (...args: Parameters<typeof mocks.useCancelRepoAutomationRun>) => mocks.useCancelRepoAutomationRun(...args) ?? mocks.useCancelRepoautomationRun(...args),
 }))
 
 vi.mock('@/hooks/useProjectActivity', () => ({
@@ -49,7 +59,7 @@ vi.mock('@/hooks/useAutomationUrlState', () => ({
 }))
 
 vi.mock('@/components/automations', () => ({
-  automationJobDialog: vi.fn(({ onOpenChange }) => (
+  AutomationJobDialog: vi.fn(({ onOpenChange }) => (
     <div>
       automationJobDialog
       <button onClick={() => onOpenChange(false)} data-testid="close-job-dialog">Close</button>
@@ -68,13 +78,13 @@ vi.mock('@/components/automations', () => ({
     </div>
   )),
   RunHistoryTab: vi.fn(() => <div>RunHistoryTab</div>),
-  automationTabMenu: vi.fn(() => <div>automationTabMenu</div>),
+  AutomationTabMenu: vi.fn(() => <div>automationTabMenu</div>),
 }))
 
-function createMockautomationUrlState(overrides: Record<string, unknown> = {}) {
+function createMockAutomationUrlState(overrides: Record<string, unknown> = {}) {
   return {
     automationTab: 'jobs',
-    setautomationTab: vi.fn(),
+    setAutomationTab: vi.fn(),
     dialog: null,
     promptDialog: null,
     jobId: null,
@@ -108,26 +118,44 @@ const createWrapper = () => {
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
 }
 
-const renderautomations = (repoId: string, initialEntry = `/repos/${repoId}/automations`) => {
+const renderAutomations = (repoId: string, initialEntry = `/repos/${repoId}/automations`) => {
+  const routePath = initialEntry.startsWith('/projects/') ? '/projects/:id/automations' : '/repos/:id/automations'
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/repos/:id/automations" element={<automations />} />
+        <Route path={routePath} element={<Automations />} />
       </Routes>
     </MemoryRouter>,
     { wrapper: createWrapper() }
   )
 }
 
-describe('automations', () => {
+
+describe('Automations', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.useAutomationUrlState.mockReturnValue(createMockautomationUrlState())
+    mocks.useAutomationUrlState.mockReturnValue(createMockAutomationUrlState())
     mocks.useCreateRepoautomation.mockReturnValue({ mutate: vi.fn(), isPending: false })
     mocks.useUpdateRepoautomation.mockReturnValue({ mutate: vi.fn(), isPending: false })
     mocks.useDeleteRepoautomation.mockReturnValue({ mutate: vi.fn(), isPending: false })
     mocks.useRunRepoautomation.mockReturnValue({ mutate: vi.fn(), isPending: false })
     mocks.useCancelRepoautomationRun.mockReturnValue({ mutate: vi.fn(), isPending: false })
+  })
+
+  it.each(['/projects/5/automations', '/repos/5/automations'])('renders the automation page for %s', (path) => {
+    mocks.useAutomationTarget.mockReturnValue({
+      automationTarget: { repoId: 5, kind: 'project', name: 'Project Five', subtitle: '/work/project-five', fullPath: '/work/project-five', backHref: '/projects/5' },
+      isLoading: false,
+      isError: false,
+    })
+       mocks.useRepoAutomations.mockReturnValue({ data: [], isLoading: false })
+       mocks.useRepoAutomation.mockReturnValue({ data: undefined, isFetching: false })
+       mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+       mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
+
+    renderAutomations('5', path)
+
+    expect(screen.getByText('Project Five')).toBeInTheDocument()
   })
 
   describe('assistant automation target (repoId=0)', () => {
@@ -144,12 +172,12 @@ describe('automations', () => {
         isLoading: false,
         isError: false,
       })
-      mocks.useRepoautomations.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: undefined, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
+    mocks.useRepoAutomations.mockReturnValue({ data: [], isLoading: false })
+    mocks.useRepoAutomation.mockReturnValue({ data: undefined, isFetching: false })
+    mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+    mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
 
-      renderautomations('0')
+      renderAutomations('0')
 
       expect(screen.getByText('General Chat')).toBeInTheDocument()
       expect(screen.getByText('Built-in assistant')).toBeInTheDocument()
@@ -168,12 +196,12 @@ describe('automations', () => {
         isLoading: false,
         isError: false,
       })
-      mocks.useRepoautomations.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: undefined, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
+       mocks.useRepoAutomations.mockReturnValue({ data: [], isLoading: false })
+       mocks.useRepoAutomation.mockReturnValue({ data: undefined, isFetching: false })
+       mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+       mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
 
-      renderautomations('0')
+      renderAutomations('0')
 
       expect(screen.queryByText('Repository not found')).not.toBeInTheDocument()
     })
@@ -193,12 +221,12 @@ describe('automations', () => {
         isLoading: false,
         isError: false,
       })
-      mocks.useRepoautomations.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: undefined, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRepoAutomations.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomation.mockReturnValue({ data: undefined, isFetching: false })
+      mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
 
-      renderautomations('0')
+      renderAutomations('0')
 
       const backButton = screen.getAllByRole('button')[0]
       expect(backButton).toBeInTheDocument()
@@ -238,16 +266,16 @@ describe('automations', () => {
         nextRunAt: null,
         skillMetadata: null,
       }
-      mocks.useAutomationUrlState.mockReturnValue(createMockautomationUrlState({
+      mocks.useAutomationUrlState.mockReturnValue(createMockAutomationUrlState({
         automationTab: 'detail',
       }))
-      mocks.useRepoautomations.mockReturnValue({ data: [mockJob], isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: mockJob, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
-      mocks.useRunRepoautomation.mockReturnValue({ mutate: mutateMock, isPending: false })
+      mocks.useRepoAutomations.mockReturnValue({ data: [mockJob], isLoading: false })
+      mocks.useRepoAutomation.mockReturnValue({ data: mockJob, isFetching: false })
+      mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRunRepoAutomation.mockReturnValue({ mutate: mutateMock, isPending: false })
 
-      renderautomations('0')
+      renderAutomations('0')
 
       const runNowButton = screen.getByTestId('run-now')
       runNowButton.click()
@@ -270,12 +298,12 @@ describe('automations', () => {
         isLoading: false,
         isError: false,
       })
-      mocks.useRepoautomations.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: undefined, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRepoAutomations.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomation.mockReturnValue({ data: undefined, isFetching: false })
+      mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
 
-      renderautomations('5')
+      renderAutomations('5')
 
       expect(screen.getByText('my-repo')).toBeInTheDocument()
       expect(screen.getByText('repos/my-repo')).toBeInTheDocument()
@@ -296,12 +324,12 @@ describe('automations', () => {
         isLoading: false,
         isError: false,
       })
-      mocks.useRepoautomations.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: undefined, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRepoAutomations.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomation.mockReturnValue({ data: undefined, isFetching: false })
+      mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
 
-      renderautomations('5')
+      renderAutomations('5')
 
       const backButton = screen.getAllByRole('button')[0]
       expect(backButton).toBeInTheDocument()
@@ -324,12 +352,12 @@ describe('automations', () => {
         isLoading: false,
         isError: false,
       })
-      mocks.useRepoautomations.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: undefined, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRepoAutomations.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomation.mockReturnValue({ data: undefined, isFetching: false })
+      mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
 
-      renderautomations('5', '/repos/5/automations?returnTo=%2Frepos%2F5%2Fsessions%2Fabc%3Fassistant%3D1')
+      renderAutomations('5', '/repos/5/automations?returnTo=%2Frepos%2F5%2Fsessions%2Fabc%3Fassistant%3D1')
 
       fireEvent.click(screen.getAllByRole('button')[0])
 
@@ -337,11 +365,11 @@ describe('automations', () => {
     })
 
     it('normalizes prompts tab to jobs when jobs exist', () => {
-      const setautomationTab = vi.fn()
-      mocks.useAutomationUrlState.mockReturnValue(createMockautomationUrlState({
+      const setAutomationTab = vi.fn()
+      mocks.useAutomationUrlState.mockReturnValue(createMockAutomationUrlState({
         automationTab: 'prompts',
         jobId: 123,
-        setautomationTab,
+        setAutomationTab,
       }))
       mocks.useAutomationTarget.mockReturnValue({
         automationTarget: {
@@ -373,15 +401,15 @@ describe('automations', () => {
         nextRunAt: null,
         skillMetadata: null,
       }
-      mocks.useRepoautomations.mockReturnValue({ data: [mockJob], isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: mockJob, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRepoAutomations.mockReturnValue({ data: [mockJob], isLoading: false })
+      mocks.useRepoAutomation.mockReturnValue({ data: mockJob, isFetching: false })
+      mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
 
-      renderautomations('5')
+      renderAutomations('5')
 
       // The normalization effect should have reset the tab to 'jobs'
-      expect(setautomationTab).toHaveBeenCalledWith('jobs')
+      expect(setAutomationTab).toHaveBeenCalledWith('jobs')
       // Jobs tab content should render instead of blank
       expect(screen.getByText('Select Job')).toBeInTheDocument()
     })
@@ -394,12 +422,12 @@ describe('automations', () => {
         isLoading: false,
         isError: true,
       })
-      mocks.useRepoautomations.mockReturnValue({ data: undefined, isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: undefined, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRepoAutomations.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRepoAutomation.mockReturnValue({ data: undefined, isFetching: false })
+      mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
 
-      renderautomations('999')
+      renderAutomations('999')
 
       expect(screen.getByText('Repository not found')).toBeInTheDocument()
     })
@@ -410,12 +438,12 @@ describe('automations', () => {
         isLoading: false,
         isError: true,
       })
-      mocks.useRepoautomations.mockReturnValue({ data: undefined, isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: undefined, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRepoAutomations.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRepoAutomation.mockReturnValue({ data: undefined, isFetching: false })
+      mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
 
-      renderautomations('0')
+      renderAutomations('0')
 
       expect(screen.getByText('General Chat not found')).toBeInTheDocument()
     })
@@ -424,7 +452,7 @@ describe('automations', () => {
   describe('dialog interactions', () => {
     it('closing automationJobDialog calls closeDialog', () => {
       const closeDialog = vi.fn()
-      mocks.useAutomationUrlState.mockReturnValue(createMockautomationUrlState({
+      mocks.useAutomationUrlState.mockReturnValue(createMockAutomationUrlState({
         dialog: 'edit',
         jobId: 123,
         closeDialog,
@@ -459,12 +487,12 @@ describe('automations', () => {
         isLoading: false,
         isError: false,
       })
-      mocks.useRepoautomations.mockReturnValue({ data: [mockJob], isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: mockJob, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRepoAutomations.mockReturnValue({ data: [mockJob], isLoading: false })
+      mocks.useRepoAutomation.mockReturnValue({ data: mockJob, isFetching: false })
+      mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
 
-      renderautomations('5')
+      renderAutomations('5')
 
       const closeButton = screen.getByTestId('close-job-dialog')
       fireEvent.click(closeButton)
@@ -475,7 +503,7 @@ describe('automations', () => {
     it('delete mutation success calls closeDialog', () => {
       const closeDialog = vi.fn()
       const deleteMutate = vi.fn((_args, { onSuccess }) => { onSuccess() })
-      mocks.useAutomationUrlState.mockReturnValue(createMockautomationUrlState({
+      mocks.useAutomationUrlState.mockReturnValue(createMockAutomationUrlState({
         dialog: 'delete',
         jobId: 123,
         closeDialog,
@@ -510,13 +538,13 @@ describe('automations', () => {
         isLoading: false,
         isError: false,
       })
-      mocks.useRepoautomations.mockReturnValue({ data: [mockJob], isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: mockJob, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
-      mocks.useDeleteRepoautomation.mockReturnValue({ mutate: deleteMutate, isPending: false })
+      mocks.useRepoAutomations.mockReturnValue({ data: [mockJob], isLoading: false })
+      mocks.useRepoAutomation.mockReturnValue({ data: mockJob, isFetching: false })
+      mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useDeleteRepoAutomation.mockReturnValue({ mutate: deleteMutate, isPending: false })
 
-      renderautomations('5')
+      renderAutomations('5')
 
       // The DeleteDialog renders a Confirm button that calls onConfirm.
       // Find the confirm button and click it to trigger handleDelete.
@@ -529,7 +557,7 @@ describe('automations', () => {
 
     it('edit button on JobDetailTab calls openEditJob', () => {
       const openEditJob = vi.fn()
-      mocks.useAutomationUrlState.mockReturnValue(createMockautomationUrlState({
+      mocks.useAutomationUrlState.mockReturnValue(createMockAutomationUrlState({
         automationTab: 'detail',
         jobId: 123,
         openEditJob,
@@ -564,12 +592,12 @@ describe('automations', () => {
         isLoading: false,
         isError: false,
       })
-      mocks.useRepoautomations.mockReturnValue({ data: [mockJob], isLoading: false })
-      mocks.useRepoautomation.mockReturnValue({ data: mockJob, isFetching: false })
-      mocks.useRepoautomationRuns.mockReturnValue({ data: [], isLoading: false })
-      mocks.useRepoautomationRun.mockReturnValue({ data: undefined, isLoading: false })
+      mocks.useRepoAutomations.mockReturnValue({ data: [mockJob], isLoading: false })
+      mocks.useRepoAutomation.mockReturnValue({ data: mockJob, isFetching: false })
+      mocks.useRepoAutomationRuns.mockReturnValue({ data: [], isLoading: false })
+      mocks.useRepoAutomationRun.mockReturnValue({ data: undefined, isLoading: false })
 
-      renderautomations('5')
+      renderAutomations('5')
 
       const editButton = screen.getByTestId('edit-job')
       fireEvent.click(editButton)

@@ -15,15 +15,15 @@ describe('useAutomationUrlState', () => {
     expect(result.current.templateId).toBeNull()
   })
 
-  it('setautomationTab updates tab and removes param when set to jobs', () => {
+  it('setAutomationTab updates tab and removes param when set to jobs', () => {
     const { result } = renderHookWithRouterAndLocation(() => useAutomationUrlState())
     act(() => {
-      result.current.setautomationTab('prompts')
+      result.current.setAutomationTab('prompts')
     })
     expect(result.current.automationTab).toBe('prompts')
 
     act(() => {
-      result.current.setautomationTab('jobs')
+      result.current.setAutomationTab('jobs')
     })
     expect(result.current.automationTab).toBe('jobs')
   })
@@ -112,18 +112,18 @@ describe('useAutomationUrlState', () => {
     expect(result.current.templateId).toBeNull()
   })
 
-  it('parses jobId=abc as null (NaN) and runId=44 as 44', () => {
+  it('preserves opaque job IDs and parses numeric run IDs', () => {
     const { result } = renderHookWithRouterAndLocation(() => useAutomationUrlState(), ['/?jobId=abc&runId=44'])
-    expect(result.current.jobId).toBeNull()
+    expect(result.current.jobId).toBe('abc')
     expect(result.current.runId).toBe(44)
   })
 
-  it('preserves unrelated params across setautomationTab and openEditJob and closeDialog', () => {
+  it('preserves unrelated params across setAutomationTab and openEditJob and closeDialog', () => {
     const { result, capturedSearch } = renderHookWithRouterAndLocation(() => useAutomationUrlState(), ['/?assistant=1'])
 
-    // setautomationTab preserves assistant param
+    // setAutomationTab preserves assistant param
     act(() => {
-      result.current.setautomationTab('runs')
+      result.current.setAutomationTab('runs')
     })
     expect(capturedSearch.current).toContain('assistant=1')
     expect(capturedSearch.current).toContain('automationTab=runs')
@@ -237,7 +237,7 @@ describe('useAutomationUrlState', () => {
 
   it('returns stable function references across rerenders', () => {
     const { result, rerender } = renderHookWithRouterAndLocation(() => useAutomationUrlState(), )
-    const firstSetautomationTab = result.current.setautomationTab
+    const firstSetAutomationTab = result.current.setAutomationTab
     const firstOpenEditJob = result.current.openEditJob
     const firstCloseDialog = result.current.closeDialog
     const firstClosePromptDialog = result.current.closePromptDialog
@@ -247,7 +247,7 @@ describe('useAutomationUrlState', () => {
 
     rerender()
 
-    expect(result.current.setautomationTab).toBe(firstSetautomationTab)
+    expect(result.current.setAutomationTab).toBe(firstSetAutomationTab)
     expect(result.current.openEditJob).toBe(firstOpenEditJob)
     expect(result.current.closeDialog).toBe(firstCloseDialog)
     expect(result.current.closePromptDialog).toBe(firstClosePromptDialog)
@@ -388,9 +388,9 @@ describe('useAutomationUrlState', () => {
       expect(screen.getByTestId('dialog').textContent).toBe('null')
     })
 
-    it('setautomationTab uses replace so navigate(-1) does not step through tab changes', () => {
+    it('setAutomationTab uses replace so navigate(-1) does not step through tab changes', () => {
       function ReplaceHarness() {
-        const { automationTab, setautomationTab } = useAutomationUrlState()
+        const { automationTab, setAutomationTab } = useAutomationUrlState()
         const navigate = useNavigate()
         const [step, setStep] = useState<'start' | 'switched' | 'back'>('start')
         const handled = useRef(false)
@@ -399,12 +399,12 @@ describe('useAutomationUrlState', () => {
           if (handled.current) return
           if (step === 'switched') {
             handled.current = true
-            setautomationTab('runs')
+            setAutomationTab('runs')
           } else if (step === 'back') {
             handled.current = true
             navigate(-1)
           }
-        }, [step, setautomationTab, navigate])
+        }, [step, setAutomationTab, navigate])
 
         return (
           <div>

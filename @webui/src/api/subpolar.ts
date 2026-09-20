@@ -36,7 +36,7 @@ type LegacySession = SessionListResponse[number] & {
 }
 
 type SessionPageParams = { limit?: number; order?: 'asc' | 'desc'; search?: string; cursor?: string }
-type SessionPage = { items: LegacySession[]; nextCursor?: string }
+type SessionPage = { items: LegacySession[]; nextCursor?: string; page?: { limit: number; order: 'asc' | 'desc'; hasNext: boolean; nextCursor?: string } }
 
 export type { SendPromptResponse, SendCommandResponse, LspStatus }
 
@@ -123,9 +123,11 @@ export class SubpolarClient {
           ...(params?.order !== undefined && { order: params.order }),
           ...(params?.search !== undefined && { search: params.search }),
         })
-    const response = await fetchWrapper<{ sessions: Array<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }> }>(`${this.nativeBaseURL}/sessions`, { params: queryParams })
+    const response = await fetchWrapper<{ sessions: Array<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }>; nextCursor?: string; page?: SessionPage['page'] }>(`${this.nativeBaseURL}/sessions`, { params: queryParams })
     return {
       items: response.sessions.map((item) => this.toLegacySession(item)),
+      nextCursor: response.nextCursor ?? response.page?.nextCursor,
+      page: response.page,
     }
   }
 

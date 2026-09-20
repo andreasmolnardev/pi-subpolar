@@ -16,7 +16,7 @@ export function isGeneralChatId(id: number | undefined): boolean {
 
 export function automationTargetFromProject(project: Project): AutomationTarget {
   return {
-    projectId: project.id,
+    projectId: project.id ?? 0,
     kind: 'project',
     name: project.name || project.directory.split('/').pop() || project.directory,
     subtitle: project.directory,

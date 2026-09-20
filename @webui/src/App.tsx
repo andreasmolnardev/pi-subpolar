@@ -8,6 +8,8 @@ import { Register } from './pages/Register'
 import { Setup } from './pages/Setup'
 import { Projects } from './pages/Projects'
 import { ProjectDetail } from './pages/ProjectDetail'
+import { ProjectChanges } from './pages/ProjectChanges'
+import { Automations } from './pages/Automations'
 import { SessionDetail } from './pages/SessionDetail'
 import { History } from './pages/History'
 import { Agents } from './pages/Agents'
@@ -177,9 +179,11 @@ const router = createBrowserRouter([
           { path: '/new/:projectName/:agentName', element: <NewSession /> },
           { path: '/projects', element: <Projects /> },
           { path: '/projects/:id', element: <ProjectDetail /> },
+          { path: '/projects/:id/changes', element: <ProjectChanges /> },
+          { path: '/projects/:id/automations', element: <Automations /> },
           { path: '/projects/:id/sessions/:sessionId', element: <SessionDetail /> },
           { path: '/repos/:id/sessions/:sessionId', element: <RepoRedirect /> },
-          { path: '/repos/:id/automations', element: <RepoRedirect /> },
+          { path: '/repos/:id/automations', element: <Automations /> },
           { path: '/repos/:id', element: <RepoRedirect /> },
           { path: '/repos', element: <RepoRedirect /> },
           { path: '/history', element: <History /> },

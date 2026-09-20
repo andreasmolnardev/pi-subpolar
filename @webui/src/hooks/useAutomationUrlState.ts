@@ -4,34 +4,35 @@ import { useUrlParams } from './useUrlParams'
 export type AutomationTab = 'jobs' | 'detail' | 'runs' | 'prompts'
 export type AutomationDialog = 'new' | 'edit' | 'delete' | null
 export type PromptDialog = 'new' | 'edit' | 'delete' | 'import' | null
+export type AutomationId = number | string
 
 export interface UseAutomationUrlStateReturn {
   automationTab: AutomationTab
   setAutomationTab: (t: AutomationTab) => void
   dialog: AutomationDialog
   promptDialog: PromptDialog
-  jobId: number | null
-  runId: number | null
-  templateId: number | null
+  jobId: AutomationId | null
+  runId: AutomationId | null
+  templateId: AutomationId | null
   openNewJob: () => void
-  openEditJob: (jobId: number) => void
-  openDeleteJob: (jobId: number) => void
+  openEditJob: (jobId: AutomationId) => void
+  openDeleteJob: (jobId: AutomationId) => void
   openNewTemplate: () => void
-  openEditTemplate: (templateId: number) => void
-  openDeleteTemplate: (templateId: number) => void
+  openEditTemplate: (templateId: AutomationId) => void
+  openDeleteTemplate: (templateId: AutomationId) => void
   openImportTemplate: () => void
   closeDialog: () => void
   closePromptDialog: () => void
-  selectRun: (runId: number | null) => void
-  selectJobAndView: (jobId: number) => void
-  selectJobAndCloseDialog: (jobId: number) => void
+  selectRun: (runId: AutomationId | null) => void
+  selectJobAndView: (jobId: AutomationId) => void
+  selectJobAndCloseDialog: (jobId: AutomationId) => void
   replaceUrlParams: (updater: (params: URLSearchParams) => void) => void
 }
 
-function parseNullableInt(value: string | null): number | null {
+function parseNullableIdentifier(value: string | null): AutomationId | null {
   if (value === null || value === '') return null
   const n = Number(value)
-  return Number.isFinite(n) ? n : null
+  return Number.isSafeInteger(n) ? n : value
 }
 
 export function useAutomationUrlState(): UseAutomationUrlStateReturn {
@@ -61,9 +62,9 @@ export function useAutomationUrlState(): UseAutomationUrlStateReturn {
     return null
   }, [searchParams])
 
-  const jobId = useMemo<number | null>(() => parseNullableInt(searchParams.get('jobId')), [searchParams])
-  const runId = useMemo<number | null>(() => parseNullableInt(searchParams.get('runId')), [searchParams])
-  const templateId = useMemo<number | null>(() => parseNullableInt(searchParams.get('templateId')), [searchParams])
+  const jobId = useMemo<AutomationId | null>(() => parseNullableIdentifier(searchParams.get('jobId')), [searchParams])
+  const runId = useMemo<AutomationId | null>(() => parseNullableIdentifier(searchParams.get('runId')), [searchParams])
+  const templateId = useMemo<AutomationId | null>(() => parseNullableIdentifier(searchParams.get('templateId')), [searchParams])
 
   type AutomationDialogParam = 'automationDialog' | 'promptDialog'
   type AutomationEntityParam = 'jobId' | 'templateId'
@@ -77,7 +78,7 @@ export function useAutomationUrlState(): UseAutomationUrlStateReturn {
     dialogParam: AutomationDialogParam,
     dialogValue: Exclude<AutomationDialog, null> | Exclude<PromptDialog, null>,
     entityParam: AutomationEntityParam,
-    entityId: number | null,
+    entityId: AutomationId | null,
   ) => {
     const otherEntityParam = entityParam === 'jobId' ? 'templateId' : 'jobId'
     updateParams((p) => {
@@ -104,11 +105,11 @@ export function useAutomationUrlState(): UseAutomationUrlStateReturn {
     openEntityDialog('automationDialog', 'new', 'jobId', null)
   }, [openEntityDialog])
 
-  const openEditJob = useCallback((id: number) => {
+  const openEditJob = useCallback((id: AutomationId) => {
     openEntityDialog('automationDialog', 'edit', 'jobId', id)
   }, [openEntityDialog])
 
-  const openDeleteJob = useCallback((id: number) => {
+  const openDeleteJob = useCallback((id: AutomationId) => {
     openEntityDialog('automationDialog', 'delete', 'jobId', id)
   }, [openEntityDialog])
 
@@ -116,11 +117,11 @@ export function useAutomationUrlState(): UseAutomationUrlStateReturn {
     openEntityDialog('promptDialog', 'new', 'templateId', null)
   }, [openEntityDialog])
 
-  const openEditTemplate = useCallback((id: number) => {
+  const openEditTemplate = useCallback((id: AutomationId) => {
     openEntityDialog('promptDialog', 'edit', 'templateId', id)
   }, [openEntityDialog])
 
-  const openDeleteTemplate = useCallback((id: number) => {
+  const openDeleteTemplate = useCallback((id: AutomationId) => {
     openEntityDialog('promptDialog', 'delete', 'templateId', id)
   }, [openEntityDialog])
 
@@ -141,7 +142,7 @@ export function useAutomationUrlState(): UseAutomationUrlStateReturn {
     })
   }, [replaceUrlParams])
 
-  const selectRun = useCallback((id: number | null) => {
+  const selectRun = useCallback((id: AutomationId | null) => {
     replaceUrlParams((p) => {
       if (id === null) {
         p.delete('runId')
@@ -151,14 +152,14 @@ export function useAutomationUrlState(): UseAutomationUrlStateReturn {
     })
   }, [replaceUrlParams])
 
-  const selectJobAndView = useCallback((id: number) => {
+  const selectJobAndView = useCallback((id: AutomationId) => {
     replaceUrlParams((p) => {
       p.set('jobId', String(id))
       p.set('automationTab', 'detail')
     })
   }, [replaceUrlParams])
 
-  const selectJobAndCloseDialog = useCallback((id: number) => {
+  const selectJobAndCloseDialog = useCallback((id: AutomationId) => {
     replaceUrlParams((p) => {
       p.delete('automationDialog')
       p.set('jobId', String(id))

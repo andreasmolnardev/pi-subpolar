@@ -160,6 +160,20 @@ describe('SubpolarClient', () => {
       )
     })
 
+    it('exposes additive page metadata without changing the item adapter', async () => {
+      fetchMock.mockResolvedValue(new Response(JSON.stringify({
+        sessions: [{ id: 'ses_1', title: 'First', updatedAt: 10 }],
+        nextCursor: 'cursor_2',
+        page: { limit: 1, order: 'desc', hasNext: true, nextCursor: 'cursor_2' },
+      }), { status: 200 }))
+
+      await expect(new SubpolarClient('/api/opencode').listSessionsPage({ limit: 1 })).resolves.toMatchObject({
+        nextCursor: 'cursor_2',
+        page: { limit: 1, order: 'desc', hasNext: true },
+        items: [{ id: 'ses_1' }],
+      })
+    })
+
     it('uses Untitled Session for empty title', async () => {
       fetchMock.mockResolvedValue(
         new Response(

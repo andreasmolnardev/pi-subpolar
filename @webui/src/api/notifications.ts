@@ -1,64 +1,82 @@
-import type { PushSubscriptionRecord } from "@subpolar/shared/types";
-import { API_BASE_URL } from "@/config";
-import { fetchWrapper } from "./fetchWrapper";
+import type { PushSubscriptionRecord, NotificationPreferences } from '@subpolar/shared/types'
+import { API_BASE_URL } from '@/config'
+import { fetchWrapper } from './fetchWrapper'
+
+export interface NotificationDeliveryStatus {
+  id: string
+  inbox_id: string
+  subscription_id: string
+  state: 'delivered' | 'failed'
+  error_message?: string
+  created_at: number
+}
 
 export const notificationsApi = {
   getVapidPublicKey: async (): Promise<{ publicKey: string }> => {
-    return fetchWrapper(`${API_BASE_URL}/api/notifications/vapid-public-key`);
+    return fetchWrapper(`${API_BASE_URL}/api/notifications/vapid-public-key`)
   },
 
   subscribe: async (
     subscription: PushSubscriptionJSON,
     deviceName?: string,
-    userId = 'default'
   ): Promise<{ subscription: PushSubscriptionRecord }> => {
-    return fetchWrapper(`${API_BASE_URL}/api/notifications/subscribe`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    return fetchWrapper(`${API_BASE_URL}/api/notifications/subscriptions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        endpoint: subscription.endpoint,
-        keys: subscription.keys,
+        channel: 'push',
+        target: subscription.endpoint,
         deviceName,
       }),
-      params: { userId },
-    });
+    })
   },
 
-  unsubscribe: async (endpoint: string, userId = 'default'): Promise<{ success: boolean }> => {
-    return fetchWrapper(`${API_BASE_URL}/api/notifications/subscribe`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ endpoint }),
-      params: { userId },
-    });
-  },
-
-  getSubscriptions: async (userId = 'default'): Promise<{
-    subscriptions: PushSubscriptionRecord[];
-  }> => {
+  unsubscribe: async (endpoint: string): Promise<{ success: boolean }> => {
     return fetchWrapper(`${API_BASE_URL}/api/notifications/subscriptions`, {
-      params: { userId },
-    });
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint }),
+    })
+  },
+
+  getSubscriptions: async (): Promise<{
+    subscriptions: PushSubscriptionRecord[]
+  }> => {
+    return fetchWrapper(`${API_BASE_URL}/api/notifications/subscriptions`)
   },
 
   removeSubscription: async (
-    id: number,
-    userId = 'default'
+    id: string | number,
   ): Promise<{ success: boolean }> => {
-    return fetchWrapper(
-      `${API_BASE_URL}/api/notifications/subscriptions/${id}`,
-      { method: "DELETE", params: { userId } }
-    );
+    return fetchWrapper(`${API_BASE_URL}/api/notifications/subscriptions/${encodeURIComponent(String(id))}`, {
+      method: 'DELETE',
+    })
   },
 
-  sendTest: async (userId = 'default'): Promise<{
-    success: boolean;
-    devicesNotified: number;
+  getPreferences: async (): Promise<{ preferences: NotificationPreferences; updatedAt: number }> => {
+    return fetchWrapper(`${API_BASE_URL}/api/notifications/preferences`)
+  },
+
+  updatePreferences: async (preferences: Partial<NotificationPreferences>): Promise<{ preferences: NotificationPreferences; updatedAt: number }> => {
+    return fetchWrapper(`${API_BASE_URL}/api/notifications/preferences`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preferences }),
+    })
+  },
+
+  getDeliveryStatus: async (limit?: number): Promise<{ deliveries: NotificationDeliveryStatus[] }> => {
+    return fetchWrapper(`${API_BASE_URL}/api/notifications/delivery-status`, {
+      params: { limit },
+    })
+  },
+
+  sendTest: async (): Promise<{
+    success: boolean
+    devicesNotified: number
   }> => {
     return fetchWrapper(`${API_BASE_URL}/api/notifications/test`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      params: { userId },
-    });
+      method: 'POST',
+    })
   },
-};
+}

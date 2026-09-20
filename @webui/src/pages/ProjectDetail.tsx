@@ -9,7 +9,7 @@ import { useProjectActivity } from '@/hooks/useProjectActivity'
 import { useSSE } from '@/hooks/useSSE'
 import { SUBPOLAR_API_BASE_URL } from '@/config'
 import { Button } from '@/components/ui/button'
-import { Plus, Loader2 } from 'lucide-react'
+import { GitCompare, Plus, Loader2 } from 'lucide-react'
 import { useSidebarAction } from '@/hooks/useSidebarAction'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 import { newSessionPath } from '@/lib/new-session-route'
@@ -81,7 +81,10 @@ export function ProjectDetail() {
         <div className="flex items-center gap-2 min-w-0">
           <Header.Title>{project.name}</Header.Title>
         </div>
-        <Header.Actions>
+          <Header.Actions>
+            <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}/changes`)} className="hidden sm:inline-flex">
+              <GitCompare className="h-4 w-4" /> Changes
+            </Button>
           <Button
             onClick={() => handleCreateSession()}
             disabled={!apiUrl || projectLoading}

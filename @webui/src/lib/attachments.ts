@@ -16,6 +16,11 @@ export type ChatAttachment = {
   contextOnly?: boolean
 }
 
+type AttachmentPart =
+  | { type: 'image'; id: string; filename: string; mime: string; dataUrl: string }
+  | { type: 'file'; path: string; name: string }
+  | { type: 'text'; content: string }
+
 export const ATTACHMENT_LIMITS = {
   maxCount: 8,
   maxFileBytes: 10 * 1024 * 1024,
@@ -69,7 +74,7 @@ export function validateWebsiteUrl(value: string): string | undefined {
 }
 
 export function attachmentToParts(attachments: readonly ChatAttachment[]) {
-  return attachments.filter((item) => item.status === 'ready').flatMap((item) => {
+  return attachments.filter((item) => item.status === 'ready').flatMap((item): AttachmentPart[] => {
     if (item.kind === 'image' && item.dataUrl) return [{ type: 'image' as const, id: item.id, filename: item.name, mime: item.mime ?? 'image/*', dataUrl: item.dataUrl }]
     if (item.kind === 'file' && item.path) return [{ type: 'file' as const, path: item.path, name: item.name }]
     if ((item.kind === 'text' || item.kind === 'website') && item.content) {
