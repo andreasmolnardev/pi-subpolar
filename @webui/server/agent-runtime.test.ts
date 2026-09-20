@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type PocketBase from 'pocketbase'
+import { InMemorySkillRepository } from '../../packages/subpolar-contracts/src/index.ts'
 import {
 
   convertLegacyPiProfile,
@@ -102,6 +103,29 @@ describe('PocketBase agent runtime adapter', () => {
       tools: ['read', 'write', 'subpolar-tools'],
     })
     expect(runtime.pi.excludedToolNames).toEqual(['bash'])
+  })
+
+  it('renders durable skill metadata and bodies using repository and project precedence', async () => {
+    const repository = new InMemorySkillRepository()
+    await repository.create('user_1', {
+      id: 'review-guidance', name: 'review-guidance', scope: 'global', mode: 'always-loaded',
+      metadata: { description: 'Global guidance', secret: 'metadata-only' }, body: 'Global body',
+    })
+    await repository.create('user_1', {
+      id: 'project-guidance', name: 'project-guidance', scope: 'project', projectId: 'project_1', mode: 'discoverable',
+      metadata: { description: 'Project metadata' }, body: 'Project body',
+    })
+
+    const runtime = await loadAgentRuntime(clientFor(baseData({
+      agent: { ...baseData().agent, id: 'agent_1', skill_context_modes: { 'project-guidance': 'always-loaded' } },
+    })), 'user_1', 'builder', 'project_1', { skillRepository: repository })
+
+    expect(runtime.skillContext).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'review-guidance', body: 'Global body', metadata: { description: 'Global guidance', secret: 'metadata-only' } }),
+      expect.objectContaining({ id: 'project-guidance', body: '', mode: 'discoverable' }),
+    ]))
+    expect(runtime.systemPrompt).toContain('Global body')
+    expect(runtime.systemPrompt).toContain('Project metadata')
   })
 
   it('fails closed for an agent returned with another owner', async () => {

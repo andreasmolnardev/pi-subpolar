@@ -22,6 +22,7 @@ import type { ToolGatewayContext } from './tool-gateway.ts'
 import { PocketBaseMemoryService, type MemoryContext, type MemoryScope } from './memory.ts'
 import { BrowserSessionService, BrowserRuntimeError, browserProfileAllows, type BrowserContext } from './browser/index.ts'
 import { webSearch, type WebSearchInput } from './web-search.ts'
+import type { SkillRepository } from '../../packages/subpolar-contracts/src/index.ts'
 
 export type ToolAdapter = 'internal' | 'http' | 'openapi' | 'mcp'
 export type ToolEffect = 'allow' | 'deny' | 'approval'
@@ -479,7 +480,12 @@ export function effectiveAgentConfiguration(agent: AgentDefinition, projectId?: 
   }
   const tools = { ...agent.tool_context_modes }
   for (const [id, mode] of Object.entries(override.tools ?? {})) tools[id] = reduceMode(tools[id] ?? 'disabled', mode)
-  const skills = { ...agent.skill_context_modes, ...override.skills }
+  const skills = { ...agent.skill_context_modes }
+  const skillOrder = { disabled: 0, 'explicit-only': 1, discoverable: 2, 'always-loaded': 3 }
+  for (const [id, mode] of Object.entries(override.skills ?? {})) {
+    const current = skills[id] ?? 'always-loaded'
+    skills[id] = skillOrder[mode] < skillOrder[current] ? mode : current
+  }
   return { ...agent, tool_context_modes: tools, skill_context_modes: skills, policies: { ...agent.policies, ...override.policies, builtin: { ...agent.policies.builtin, ...(override.policies?.builtin ?? {}) }, registered: { ...agent.policies.registered, ...(override.policies?.registered ?? {}) } }, effective_source: { ...agent.effective_source, tools: 'project', skills: 'project' } }
 }
 
@@ -492,6 +498,91 @@ export function skillIsExposed(agent: AgentDefinition, skillId: string, explicit
   if (mode === 'disabled') return false
   if (mode === 'explicit-only') return explicit
   return mode === 'always-loaded' || mode === 'discoverable'
+}
+
+export type SkillRuntimeContext = {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly metadata: Record<string, string>
+  readonly mode: SkillContextMode
+  readonly body: string
+  readonly reference?: string
+  readonly scope: 'global' | 'agent' | 'project'
+  readonly version: number
+}
+
+export function renderSkillRuntimeContext(skills: readonly SkillRuntimeContext[]): string {
+  const metadata = skills.filter((skill) => !skill.body).map((skill) => `- ${skill.name}: ${skill.description}`).join('\n')
+  const bodies = skills.filter((skill) => skill.body).map((skill) => `### ${skill.name}\n\n${skill.body}`).join('\n\n')
+  return [metadata ? `## Available skills\n${metadata}` : '', bodies ? `## Loaded skills\n${bodies}` : ''].filter(Boolean).join('\n\n')
+}
+
+export type SkillContextAudit = (event: {
+  action: 'discovery' | 'load'
+  ownerId: string
+  agentId: string
+  projectId?: string
+  skillId: string
+  mode: SkillContextMode
+}) => Promise<void> | void
+
+export function createSkillContextAudit(client: PocketBase): SkillContextAudit {
+  return async (event) => {
+    await client.collection('tool_call_audit').create({
+      user_id: event.ownerId,
+      action: `skill.${event.action}`,
+      skill_id: event.skillId,
+      agent_id: event.agentId,
+      ...(event.projectId ? { project_id: event.projectId } : {}),
+      mode: event.mode,
+      status: 'success',
+      result_summary: `Skill ${event.action}: ${event.skillId}`,
+      created_at: Date.now(),
+    })
+  }
+}
+
+const skillModeRank: Record<SkillContextMode, number> = { disabled: 0, 'explicit-only': 1, discoverable: 2, 'always-loaded': 3 }
+
+function restrictSkillMode(repositoryMode: SkillContextMode, configuredMode?: SkillContextMode): SkillContextMode {
+  if (!configuredMode) return repositoryMode
+  return skillModeRank[configuredMode] < skillModeRank[repositoryMode] ? configuredMode : repositoryMode
+}
+
+/** Resolves durable skills for one authenticated runtime without exposing raw records. */
+export async function resolveSkillRuntimeContext(
+  repository: SkillRepository,
+  ownerId: string,
+  agent: AgentDefinition,
+  options: { projectId?: string; explicitSkillIds?: readonly string[]; audit?: SkillContextAudit } = {},
+): Promise<readonly SkillRuntimeContext[]> {
+  const effective = await repository.resolve(ownerId, {
+    agentId: agent.id,
+    ...(options.projectId ? { projectId: options.projectId } : {}),
+    explicitSkillIds: options.explicitSkillIds,
+  })
+  const explicit = new Set(options.explicitSkillIds ?? [])
+  const result: SkillRuntimeContext[] = []
+  for (const skill of effective) {
+    const mode = restrictSkillMode(skill.exposure, agent.skill_context_modes[skill.id])
+    if (mode === 'disabled' || (mode === 'explicit-only' && !explicit.has(skill.id))) continue
+    const body = mode === 'always-loaded' || explicit.has(skill.id) ? skill.body : ''
+    const context: SkillRuntimeContext = {
+      id: skill.id,
+      name: skill.name,
+      description: skill.metadata.description ?? skill.name,
+      metadata: { ...skill.metadata },
+      mode,
+      body,
+      ...(skill.reference ? { reference: skill.reference } : {}),
+      scope: skill.scope,
+      version: skill.version,
+    }
+    await options.audit?.({ action: body ? 'load' : 'discovery', ownerId, agentId: agent.id, ...(options.projectId ? { projectId: options.projectId } : {}), skillId: skill.id, mode })
+    result.push(context)
+  }
+  return result
 }
 
 function toolContextMode(agent: AgentDefinition, toolId: string): ToolContextMode {

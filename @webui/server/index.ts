@@ -33,6 +33,8 @@ export {
   listAgents,
   listPendingApprovals,
   listToolsForAgent,
+  createSkillContextAudit,
+  resolveSkillRuntimeContext,
   respondToApproval,
   type AgentDefinition,
   type Approval,

@@ -15,7 +15,12 @@ import {
   agentTemplateDefaults,
   agentToolContextMode,
   effectiveAgentConfiguration,
+  resolveSkillRuntimeContext,
+  renderSkillRuntimeContext,
+  type SkillContextAudit,
+  type SkillRuntimeContext,
 } from './tools.ts'
+import type { SkillRepository } from '../../packages/subpolar-contracts/src/index.ts'
 
 /** The only Pi tool names that can be activated by this adapter. */
 export const PI_ROUTED_TOOL_NAMES = [
@@ -122,6 +127,7 @@ export type PiRuntimeConfiguration = {
   initialActiveToolNames: readonly PiRoutedToolName[]
   excludedToolNames: readonly PiRoutedToolName[]
   effectiveSource: AgentEffectiveSource
+  skillContext: readonly SkillRuntimeContext[]
 }
 
 export type AgentRuntime = {
@@ -132,6 +138,7 @@ export type AgentRuntime = {
   prompt: string
   toolPolicy: AgentToolPolicyRuntime
   pi: PiRuntimeConfiguration
+  skillContext: readonly SkillRuntimeContext[]
   diagnostics: readonly string[]
 }
 
@@ -149,6 +156,8 @@ type PocketBaseCollections = {
 export type PocketBaseAgentRuntimeAdapterOptions = {
   /** Defaults to `master`, matching the bridge and the existing tool router. */
   defaultAgentName?: string
+  skillRepository?: SkillRepository
+  skillAudit?: SkillContextAudit
 }
 
 function object(value: unknown): RecordValue {
@@ -366,7 +375,7 @@ function buildToolPolicyRuntime(agent: AgentDefinition, policies: readonly Agent
   }
 }
 
-function buildPiRuntimeConfiguration(agent: AgentDefinition, toolPolicy: AgentToolPolicyRuntime): PiRuntimeConfiguration {
+function buildPiRuntimeConfiguration(agent: AgentDefinition, toolPolicy: AgentToolPolicyRuntime, skillContext: readonly SkillRuntimeContext[] = [], configuredSystemPrompt?: string): PiRuntimeConfiguration {
   const allowed = new Set<PiRoutedToolName>()
   const excluded = new Set<PiRoutedToolName>()
 
@@ -392,7 +401,7 @@ function buildPiRuntimeConfiguration(agent: AgentDefinition, toolPolicy: AgentTo
   }
 
   const activeToolNames = [...allowed]
-  const systemPrompt = effectiveSystemPrompt(agent)
+  const systemPrompt = configuredSystemPrompt ?? effectiveSystemPrompt(agent)
   const profile: PiAgentProfile = { systemPrompt, tools: activeToolNames }
   return {
     source: 'pocketbase',
@@ -406,6 +415,7 @@ function buildPiRuntimeConfiguration(agent: AgentDefinition, toolPolicy: AgentTo
     initialActiveToolNames: activeToolNames,
     excludedToolNames: [...excluded].filter((name) => !allowed.has(name)),
     effectiveSource: agent.effective_source,
+    skillContext,
   }
 }
 
@@ -463,6 +473,7 @@ export async function loadAgentRuntime(
   userId: string,
   agentSelector = 'master',
   projectId?: string,
+  options: { skillRepository?: SkillRepository; skillAudit?: SkillContextAudit } = {},
 ): Promise<AgentRuntime> {
   const normalizedUserId = nonBlank(userId)
   if (!normalizedUserId) throw new AgentRuntimeError('INVALID_USER', 'A user ID is required')
@@ -482,21 +493,28 @@ export async function loadAgentRuntime(
     getPolicies(client, normalizedUserId, agent.id),
     getEnabledTools(client),
   ])
+  const skillContext = options.skillRepository
+    ? await resolveSkillRuntimeContext(options.skillRepository, normalizedUserId, agent, { projectId, audit: options.skillAudit })
+    : []
   const toolPolicy = buildToolPolicyRuntime(agent, policies, registry.definitions)
-  const pi = buildPiRuntimeConfiguration(agent, toolPolicy)
+  const systemPrompt = [effectiveSystemPrompt(agent), renderSkillRuntimeContext(skillContext)].filter(Boolean).join('\n\n') || undefined
+  const pi = buildPiRuntimeConfiguration(agent, toolPolicy, skillContext, systemPrompt)
   return {
     source: 'pocketbase',
     agent,
-    systemPrompt: effectiveSystemPrompt(agent),
+    systemPrompt,
     prompt: agent.prompt,
     toolPolicy,
     pi,
+    skillContext,
     diagnostics: registry.diagnostics,
   }
 }
 
 export class PocketBaseAgentRuntimeAdapter {
   private readonly defaultAgentName: string
+  private readonly skillRepository?: SkillRepository
+  private readonly skillAudit?: SkillContextAudit
 
   constructor(
     private readonly client: PocketBase,
@@ -504,10 +522,12 @@ export class PocketBaseAgentRuntimeAdapter {
     options: PocketBaseAgentRuntimeAdapterOptions = {},
   ) {
     this.defaultAgentName = nonBlank(options.defaultAgentName) ?? 'master'
+    this.skillRepository = options.skillRepository
+    this.skillAudit = options.skillAudit
   }
 
   load(agentSelector = this.defaultAgentName): Promise<AgentRuntime> {
-    return loadAgentRuntime(this.client, this.userId, agentSelector)
+    return loadAgentRuntime(this.client, this.userId, agentSelector, undefined, { skillRepository: this.skillRepository, skillAudit: this.skillAudit })
   }
 
   async list(): Promise<AgentDefinition[]> {

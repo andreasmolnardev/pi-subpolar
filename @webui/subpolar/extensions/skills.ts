@@ -20,6 +20,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { SkillContextMode, SkillRepository } from "../../../packages/subpolar-contracts/src/index.ts";
 
 
 type LoadMode = "name-only" | "metadata" | "agent-skill";
@@ -31,6 +32,15 @@ type Skill = {
   load: LoadMode;
   profiles: string[];
   path: string;
+};
+
+export type DurableSkillContextOptions = {
+  repository: SkillRepository;
+  ownerId: string;
+  agentId: string;
+  projectId?: string;
+  skillContextModes?: Record<string, SkillContextMode>;
+  audit?: (event: { action: "discovery" | "load"; ownerId: string; agentId: string; projectId?: string; skillId: string; mode: SkillContextMode }) => Promise<void> | void;
 };
 
 type FrontMatter = {
@@ -161,16 +171,61 @@ function skillContext(skills: Skill[], profile: string): string {
   return sections.join("\n\n");
 }
 
-export default function skillsExtension(pi: ExtensionAPI) {
+const modeRank: Record<SkillContextMode, number> = { disabled: 0, "explicit-only": 1, discoverable: 2, "always-loaded": 3 };
+
+function durableMode(repositoryMode: SkillContextMode, configuredMode: SkillContextMode | undefined): SkillContextMode {
+  if (!configuredMode) return repositoryMode;
+  return modeRank[configuredMode] < modeRank[repositoryMode] ? configuredMode : repositoryMode;
+}
+
+export async function durableSkillContext(
+  options: DurableSkillContextOptions,
+  explicitSkillIds: readonly string[] = [],
+): Promise<string> {
+  const explicit = new Set(explicitSkillIds);
+  const skills = await options.repository.resolve(options.ownerId, {
+    agentId: options.agentId,
+    ...(options.projectId ? { projectId: options.projectId } : {}),
+    explicitSkillIds,
+  });
+  const sections: string[] = [];
+  const metadata: string[] = [];
+  for (const skill of skills) {
+    const mode = durableMode(skill.exposure, options.skillContextModes?.[skill.id]);
+    if (mode === "disabled" || (mode === "explicit-only" && !explicit.has(skill.id))) continue;
+    const event = { action: mode === "always-loaded" || explicit.has(skill.id) ? "load" as const : "discovery" as const, ownerId: options.ownerId, agentId: options.agentId, ...(options.projectId ? { projectId: options.projectId } : {}), skillId: skill.id, mode };
+    await options.audit?.(event);
+    if (mode === "always-loaded" || explicit.has(skill.id)) sections.push(`### ${skill.name}\n\n${skill.body}`);
+    else metadata.push(`- ${skill.name}: ${skill.metadata.description ?? skill.name}`);
+  }
+  if (metadata.length) sections.unshift(`## Available skills\n${metadata.join("\n")}`);
+  if (sections.length && sections[0]?.startsWith("### ")) sections.unshift("## Loaded skills");
+  return sections.join("\n\n");
+}
+
+export default function skillsExtension(pi: ExtensionAPI, durable?: DurableSkillContextOptions) {
   let cwd = "";
+  const explicitSkillIds = new Set<string>();
 
   pi.on("session_start", async (_event: unknown, ctx: ExtensionContext) => {
     cwd = ctx.cwd;
   });
 
   pi.on("before_agent_start", async (event: { systemPrompt: string }, ctx: ExtensionContext) => {
-    const context = skillContext(readSkills(cwd || ctx.cwd), activeProfile(ctx));
+    const context = durable
+      ? await durableSkillContext(durable, [...explicitSkillIds])
+      : skillContext(readSkills(cwd || ctx.cwd), activeProfile(ctx));
     if (!context) return;
     return { systemPrompt: `${event.systemPrompt}\n\n${context}` };
   });
+
+  if (durable) {
+    pi.registerCommand("skill", {
+      description: "Explicitly load a durable skill",
+      handler: async (args) => {
+        const id = args?.trim();
+        if (id) explicitSkillIds.add(id);
+      },
+    });
+  }
 }

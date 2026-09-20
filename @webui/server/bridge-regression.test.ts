@@ -114,4 +114,14 @@ describe('durable skill routes', () => {
     expect(routes).not.toContain('writeFileSync')
     expect(routes).not.toContain('mkdirSync')
   })
+
+  it('injects an owner-bound durable skill repository and redacted audit sink into Pi runtime loading', () => {
+    const initialization = section('private async initialize(): Promise<void> {', 'private async openOrCreateSession(): Promise<SessionManager>')
+    expect(initialization).toContain('createOwnerBoundSkillStore(client, userId)')
+    expect(initialization).toContain('createSkillContextAudit(client)')
+    expect(initialization).toContain('skillRepository:')
+    expect(initialization).toContain('skillAudit:')
+    expect(initialization).toContain('context.session?.project')
+    expect(initialization).not.toContain('readSkills')
+  })
 })

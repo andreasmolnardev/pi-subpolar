@@ -115,7 +115,7 @@ import {
   createOwnerBoundSkillStore,
 } from './server/index.ts'
 import { SkillConflictError, SkillNotFoundError, SkillValidationError } from '../packages/subpolar-contracts/src/index.ts'
-import { effectiveAgentConfiguration } from './server/tools.ts'
+import { createSkillContextAudit, effectiveAgentConfiguration } from './server/tools.ts'
 import {
   NewSessionRouteError,
   resolveNewSessionRoute,
@@ -136,6 +136,7 @@ import { handleVoiceRoute, localVoiceBackends, type VoiceBackends, redactVoiceSe
 import { permissionAskedProperties } from './server/approval-event.ts'
 import { escapeFilter } from './server/pocketbase.ts'
 import { InvalidSessionTagsError, normalizeSessionTags } from './server/project-store.ts'
+import { createSuggestionService, type SuggestionProvider } from './server/suggestions.ts'
 import { createEventCursor, ensureEventCursorSchema } from './server/event-cursor.ts'
 import { ensureRuntimeRecoverySchema, reconcileStartup, reserveRuntimeRun, updateRuntimeRun } from './server/runtime-recovery.ts'
 import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/project-filesystem.ts'
@@ -215,6 +216,24 @@ let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccou
 let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
 const migratedUsers = new Set<string>()
 const requestRateLimiter = new InProcessRateLimiter()
+const suggestionProviderModule = process.env.SUBPOLAR_SUGGESTION_PROVIDER_MODULE?.trim()
+let suggestionServicePromise: Promise<ReturnType<typeof createSuggestionService>> | undefined
+
+async function configuredSuggestionService() {
+  if (!suggestionServicePromise) {
+    suggestionServicePromise = (async () => {
+      if (!suggestionProviderModule) return createSuggestionService()
+      const loaded = await import(suggestionProviderModule) as { default?: SuggestionProvider; provider?: SuggestionProvider }
+      const provider = loaded.default ?? loaded.provider
+      return createSuggestionService(typeof provider === 'function' ? provider : undefined)
+    })().catch((error) => {
+      suggestionServicePromise = undefined
+      console.warn(`Suggestion provider unavailable: ${redactedDiagnostic(error)}`)
+      return createSuggestionService()
+    })
+  }
+  return suggestionServicePromise
+}
 const voiceBackends: VoiceBackends = localVoiceBackends({
   sttExecutable: process.env.SUBPOLAR_VOICE_STT_EXECUTABLE,
   ttsExecutable: process.env.SUBPOLAR_VOICE_TTS_EXECUTABLE,
@@ -1356,7 +1375,10 @@ class PiSdkSession {
     this.runtimePermissionOverride = context.permissionOverride
     this.record.profile = context.agentName
     if (context.session?.permissionOverride !== undefined) this.record.permissionOverride = context.session.permissionOverride
-    const runtime = await loadAgentRuntime(client, userId, context.agentName, context.session?.project)
+    const runtime = await loadAgentRuntime(client, userId, context.agentName, context.session?.project, {
+      skillRepository: createOwnerBoundSkillStore(client, userId),
+      skillAudit: createSkillContextAudit(client),
+    })
     const sessionManager = await this.openOrCreateSession()
     const sessionCwd = this.record.directory ?? this.project.path
     const resourceLoader = new DefaultResourceLoader({
@@ -1975,6 +1997,24 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
         return json({ message: 'Failed to change password' }, 400)
       }
     }
+  }
+
+  if (url.pathname === '/api/suggestions' && request.method === 'POST') {
+    if (!authenticatedUser) return json({ error: 'Unauthorized' }, 401)
+    const input = await readJsonBody(request, 32 * 1024)
+    const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : ''
+    const assistantMessageId = typeof input.assistantMessageId === 'string' ? input.assistantMessageId.trim() : ''
+    const lastUserText = typeof input.lastUserText === 'string' ? input.lastUserText.trim() : ''
+    const lastAssistantText = typeof input.lastAssistantText === 'string' ? input.lastAssistantText.trim() : ''
+    if (!sessionId || !assistantMessageId || !lastUserText || !lastAssistantText) return json({ available: false, suggestions: [] })
+    if (sessionId.length > 256 || assistantMessageId.length > 256 || lastUserText.length > 12_000 || lastAssistantText.length > 12_000) {
+      return json({ error: 'Suggestion input is too large' }, 413)
+    }
+    const owned = await ownedSessionRecord(await applicationDatabase(), authenticatedUser.id, sessionId)
+    if (!owned) return json({ error: 'Session not found' }, 404)
+    const service = await configuredSuggestionService()
+    const suggestions = await service.get({ sessionId, assistantMessageId, lastUserText, lastAssistantText })
+    return json({ available: service.isAvailable(), suggestions })
   }
 
   if (path[0] === 'api' && path[1] === 'auth-info') {
