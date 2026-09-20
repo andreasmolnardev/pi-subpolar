@@ -1118,6 +1118,21 @@ Voice provider/backend settings belong under user/runtime settings rather than b
 
 ## MCP
 
+Subpolar provides a policy-controlled web-search capability compatible with the
+OpenCode MCP providers. The default provider is the public Exa MCP endpoint
+(`https://mcp.exa.ai/mcp`) using `web_search_exa`; Parallel is available as an
+explicit alternative at `https://search.parallel.ai/mcp` using `web_search`.
+Provider endpoints are bounded by the normal network policy, timeout, redirect,
+response-size, credential-redaction, approval, and audit controls. Public
+endpoints are best-effort integrations, not a guarantee of unlimited free
+service. Provider API keys are optional and must never be persisted in tool
+metadata, logs, or audit payloads.
+
+The search input is bounded to a query, result count, provider-specific search
+arguments, and a maximum returned context size. Search results contain title,
+URL, and bounded snippets; fetching a result is a separate web-fetch operation
+and does not happen implicitly.
+
 - [ ] Finish MCP server management.
 - [ ] Discover tools and schemas.
 - [ ] Show connection state and errors.

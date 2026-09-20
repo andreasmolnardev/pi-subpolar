@@ -13,6 +13,7 @@
     "typecheck": "npm --prefix @webui run typecheck",
     "build": "npm --prefix @webui run build",
     "test:core": "bun test packages/subpolar-contracts packages/subpolar-core packages/subpolar-adapter-local packages/subpolar-adapter-pocketbase packages/subpolar-cli",
-    "test:e2e:contract": "bun test e2e/contract-smoke.test.ts"
+    "test:e2e:contract": "bun test e2e/contract-smoke.test.ts",
+    "test:e2e:live": "E2E_LIVE=true bun test e2e/live-smoke.test.ts"
   }
 }

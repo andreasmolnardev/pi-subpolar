@@ -4,7 +4,10 @@ import { join, resolve } from 'node:path'
 
 const root = resolve(import.meta.dir, '..')
 const e2eTempPrefix = 'subpolar-phase16-'
-const credentials = { email: 'e2e-admin@example.test', password: 'e2e-admin-password-16' }
+const credentials = {
+  email: process.env.E2E_LIVE_EMAIL ?? 'e2e-admin@example.test',
+  password: process.env.E2E_LIVE_PASSWORD ?? 'e2e-admin-password-16',
+}
 
 type Child = ReturnType<typeof Bun.spawn>
 
@@ -14,7 +17,7 @@ function port(name: string, fallback: number): number {
   return value
 }
 
-async function waitFor(url: string, label: string, timeoutMs = 45_000): Promise<void> {
+async function waitFor(url: string, label: string, timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   let lastError = 'no response'
   while (Date.now() < deadline) {
@@ -37,14 +40,16 @@ function command(value: string | undefined, fallback: string[]): string[] {
   return parts
 }
 
-async function main(): Promise<void> {
-  if (process.argv.includes('--help')) {
-    console.log('Usage: bun e2e/harness.ts [--keep]')
-    console.log('Starts isolated PocketBase, bridge, and Vite processes; requires Bun, PocketBase, and installed WebUI dependencies.')
-    return
-  }
+export type Harness = {
+  baseUrl: string
+  bridgeUrl: string
+  pocketBaseUrl: string
+  directory: string
+  cleanup: () => Promise<void>
+}
 
-  const keep = process.argv.includes('--keep') || process.env.E2E_KEEP_ARTIFACTS === 'true'
+export async function startHarness(options: { keep?: boolean } = {}): Promise<Harness> {
+  const keep = options.keep ?? process.env.E2E_KEEP_ARTIFACTS === 'true'
   const pocketBasePort = port('E2E_POCKETBASE_PORT', 48090)
   // Vite's checked-in proxy target is 127.0.0.1:4173; keep that boundary
   // unchanged while isolating the disposable stack from normal PB port 8090.
@@ -60,7 +65,7 @@ async function main(): Promise<void> {
   }
   await Promise.all(Object.values(paths).map((path) => mkdir(path, { recursive: true })))
   const children: Child[] = []
-  let failed = false
+  let cleaned = false
 
   const spawnLogged = (name: string, args: string[], env: Record<string, string>) => {
     const logPath = join(paths.logs, `${name}.log`)
@@ -114,18 +119,49 @@ async function main(): Promise<void> {
     await waitFor(`http://127.0.0.1:${webPort}/`, 'WebUI')
     console.log(`isolated harness ready: http://127.0.0.1:${webPort}`)
     console.log(`credentials: ${credentials.email} / ${credentials.password}`)
-    if (!keep) console.log('press Ctrl-C to stop; temporary data is removed on exit')
-    await new Promise<void>((resolveExit) => process.on('SIGINT', resolveExit).once('SIGTERM', resolveExit))
+    const cleanup = async () => {
+      if (cleaned) return
+      cleaned = true
+      for (const child of children.slice().reverse()) child.kill('SIGTERM')
+      const exits = await Promise.all(children.map((child) => Promise.race([
+        child.exited.catch(() => -1),
+        Bun.sleep(5_000).then(() => -1),
+      ])))
+      children.forEach((child, index) => { if (exits[index] === -1) child.kill('SIGKILL') })
+      if (keep) console.error(`artifacts/logs: ${directory}`)
+      else await rm(directory, { recursive: true, force: true })
+    }
+    return { baseUrl: `http://127.0.0.1:${webPort}`, bridgeUrl: `http://127.0.0.1:${bridgePort}`, pocketBaseUrl: `http://127.0.0.1:${pocketBasePort}`, directory, cleanup }
   } catch (error) {
-    failed = true
-    console.error(error instanceof Error ? error.message : String(error))
-  } finally {
-    for (const child of children.reverse()) child.kill('SIGTERM')
-    await Promise.all(children.map((child) => child.exited.catch(() => -1)))
-    if (keep || failed) console.error(`artifacts/logs: ${directory}`)
+    for (const child of children.slice().reverse()) child.kill('SIGTERM')
+    const exits = await Promise.all(children.map((child) => Promise.race([
+      child.exited.catch(() => -1),
+      Bun.sleep(5_000).then(() => -1),
+    ])))
+    children.forEach((child, index) => { if (exits[index] === -1) child.kill('SIGKILL') })
+    if (keep) console.error(`artifacts/logs: ${directory}`)
     else await rm(directory, { recursive: true, force: true })
+    throw error
   }
-  if (failed) process.exitCode = 1
+}
+
+async function main(): Promise<void> {
+  if (process.argv.includes('--help')) {
+    console.log('Usage: bun e2e/harness.ts [--keep]')
+    console.log('Starts isolated PocketBase, bridge, and Vite processes; requires Bun, PocketBase, and installed WebUI dependencies.')
+    return
+  }
+  let harness: Harness | undefined
+  try {
+    harness = await startHarness()
+    console.log('press Ctrl-C to stop; temporary data is removed on exit')
+    await new Promise<void>((resolveExit) => process.once('SIGINT', resolveExit).once('SIGTERM', resolveExit))
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  } finally {
+    await harness?.cleanup()
+  }
 }
 
 if (import.meta.main) await main()
