@@ -8,8 +8,14 @@ import type {
   SessionTranscriptEntry,
   MemoryRecord,
   MemoryStore,
+  Skill,
+  SkillRepository,
+  CreateSkillInput,
+  UpdateSkillInput,
+  ListSkillsInput,
+  GetSkillInput,
 } from "../../subpolar-contracts/src/index.ts";
-import { UnsupportedCapabilityError, type JsonValue } from "../../subpolar-contracts/src/index.ts";
+import { UnsupportedCapabilityError, SkillConflictError, SkillNotFoundError, SkillValidationError, createSkill, updateSkill, listSkills, resolveEffectiveSkills, assertValidSkill, type JsonValue } from "../../subpolar-contracts/src/index.ts";
 
 const ephemeralCapabilities: AdapterCapabilities = {
   adapter: "local-ephemeral",
@@ -33,6 +39,101 @@ const jsonFileCapabilities: AdapterCapabilities = {
     "memory.persistence": false,
   },
 };
+
+const skillIdentity = (skill: Pick<Skill, "id" | "scope" | "agentId" | "projectId">): string =>
+  JSON.stringify([skill.id, skill.scope, skill.agentId ?? null, skill.projectId ?? null]);
+
+function validatePersistedSkill(value: unknown, location: string): Skill {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid skill record at ${location}`);
+  const record = value as Record<string, unknown>;
+  const allowed = new Set(["id", "ownerId", "name", "scope", "mode", "version", "metadata", "body", "reference", "agentId", "projectId"]);
+  if (Object.keys(record).some((key) => !allowed.has(key))) throw new Error(`Invalid skill record at ${location}`);
+  for (const field of ["id", "ownerId", "name", "scope", "mode", "version", "metadata", "body"] as const) {
+    if (!(field in record)) throw new Error(`Invalid skill record at ${location}: missing ${field}`);
+  }
+  try { return structuredClone(assertValidSkill(record as unknown as Skill)); }
+  catch (error) { throw new Error(`Invalid skill record at ${location}: ${(error as Error).message}`); }
+}
+
+export class LocalSkillRepository implements SkillRepository {
+  private readonly records: Skill[] = [];
+  private operationQueue: Promise<void> = Promise.resolve();
+
+  constructor(private readonly filePath?: string) {}
+
+  async list(ownerId: string, input: ListSkillsInput = {}): Promise<readonly Skill[]> {
+    return this.serialize(async () => {
+      const records = await this.read();
+      const latest = new Map<string, Skill>();
+      for (const skill of records.filter((item) => item.ownerId === ownerId)) latest.set(skillIdentity(skill), skill);
+      return listSkills([...latest.values()], input).map((skill) => structuredClone(skill));
+    });
+  }
+
+  async get(ownerId: string, id: string, input: GetSkillInput = {}): Promise<Skill> {
+    return this.serialize(async () => {
+      const records = (await this.read()).filter((skill) => skill.ownerId === ownerId && skill.id === id &&
+        (input.scope === undefined || skill.scope === input.scope) && (input.agentId === undefined || skill.agentId === input.agentId) && (input.projectId === undefined || skill.projectId === input.projectId));
+      const scoped = input.scope === undefined && input.agentId === undefined && input.projectId === undefined ? records.filter((skill) => skill.scope === "global") : records;
+      const selected = input.version === undefined ? scoped.at(-1) : scoped.find((skill) => skill.version === input.version);
+      if (!selected) throw new SkillNotFoundError(`skill ${id} was not found for owner ${ownerId}`);
+      return structuredClone(selected);
+    });
+  }
+
+  async create(ownerId: string, input: CreateSkillInput): Promise<Skill> {
+    return this.serialize(async () => {
+      const skill = createSkill({ ...input, ownerId: input.ownerId ?? ownerId });
+      if (skill.ownerId !== ownerId) throw new SkillValidationError(["ownerId is immutable"]);
+      const records = await this.read();
+      if (records.some((candidate) => candidate.ownerId === ownerId && skillIdentity(candidate) === skillIdentity(skill))) throw new SkillConflictError(`skill ${skill.id} already exists for this scope`);
+      const next = [...records, skill];
+      await this.write(next);
+      this.replaceMemory(next);
+      return structuredClone(skill);
+    });
+  }
+
+  async update(ownerId: string, input: UpdateSkillInput): Promise<Skill> {
+    return this.serialize(async () => {
+      const records = await this.read();
+      const candidates = records.filter((skill) => skill.ownerId === ownerId && skill.id === input.id &&
+        (input.scope === undefined || skill.scope === input.scope) && (input.agentId === undefined || skill.agentId === input.agentId) && (input.projectId === undefined || skill.projectId === input.projectId));
+      const current = candidates.at(-1) ?? records.filter((skill) => skill.ownerId === ownerId && skill.id === input.id).at(-1);
+      if (!current) throw new SkillNotFoundError(`skill ${input.id} was not found for owner ${ownerId}`);
+      if (input.version !== current.version + 1) throw new SkillConflictError("version must be exactly the next version");
+      const nextSkill = updateSkill(current, input);
+      const next = [...records, nextSkill];
+      await this.write(next);
+      this.replaceMemory(next);
+      return structuredClone(nextSkill);
+    });
+  }
+
+  async resolve(ownerId: string, input: Parameters<SkillRepository["resolve"]>[1]): Promise<readonly import("../../subpolar-contracts/src/index.ts").EffectiveSkill[]> {
+    return resolveEffectiveSkills({ ...input, skills: await this.list(ownerId, { includeDisabled: true }) });
+  }
+
+  private async read(): Promise<Skill[]> {
+    if (!this.filePath) return this.records.map((skill) => structuredClone(skill));
+    try {
+      const parsed: unknown = JSON.parse(await readFile(this.filePath, "utf8"));
+      if (!Array.isArray(parsed)) throw new Error("Skill file must contain an array");
+      return parsed.map((value, index) => validatePersistedSkill(value, `skill[${index}]`));
+    } catch (error) { if ((error as { code?: string }).code === "ENOENT") return []; throw error; }
+  }
+
+  private async write(records: Skill[]): Promise<void> {
+    if (!this.filePath) return;
+    await mkdir(dirname(this.filePath), { recursive: true });
+    const temporaryPath = `${this.filePath}.tmp-${process.pid}-${randomUUID()}`;
+    await writeFile(temporaryPath, `${JSON.stringify(records, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await rename(temporaryPath, this.filePath);
+  }
+
+  private replaceMemory(records: Skill[]): void { this.records.splice(0, this.records.length, ...records.map((skill) => structuredClone(skill))); }
+  private serialize<T>(operation: () => Promise<T>): Promise<T> { const result = this.operationQueue.then(operation, operation); this.operationQueue = result.then(() => undefined, () => undefined); return result; }
+}
 
 const memoryCapabilities = (durable: boolean): AdapterCapabilities => ({
   adapter: durable ? "local-json-file" : "local-ephemeral",
@@ -288,16 +389,19 @@ export class JsonFileSessionStore implements SessionStore {
 export interface LocalAdapterOptions {
   sessionFile?: string;
   memoryFile?: string;
+  skillFile?: string;
 }
 
 export interface LocalAdapter {
   readonly sessions: SessionStore;
-  readonly capabilities: AdapterCapabilities;
+  readonly capabilities: AdapterCapabilities & { supports: AdapterCapabilities["supports"] & Record<string, boolean> };
   readonly memory: MemoryStore;
+  readonly skills: SkillRepository;
 }
 
 export function createLocalAdapter(options: LocalAdapterOptions = {}): LocalAdapter {
   const sessions = options.sessionFile ? new JsonFileSessionStore(options.sessionFile) : new EphemeralSessionStore();
   const memory = new LocalMemoryStore(options.memoryFile);
-  return { sessions, memory, capabilities: { ...sessions.capabilities, supports: { ...sessions.capabilities.supports, "memory.persistence": Boolean(options.memoryFile) } } };
+  const skills = new LocalSkillRepository(options.skillFile);
+  return { sessions, memory, skills, capabilities: { ...sessions.capabilities, supports: { ...sessions.capabilities.supports, "memory.persistence": Boolean(options.memoryFile), "skill.persistence": Boolean(options.skillFile) } as AdapterCapabilities["supports"] & Record<string, boolean> } };
 }

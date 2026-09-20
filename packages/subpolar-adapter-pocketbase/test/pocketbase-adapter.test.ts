@@ -277,6 +277,33 @@ describe("PocketBase adapter fake-client contract", () => {
     expect(await adapter.memories.list("owner-b")).toEqual([]);
   });
 
+  test("stores owner-scoped skill heads and immutable versions", async () => {
+    const client = new FakeClient();
+    const conditionalUpdate: PocketBaseConditionalUpdatePort = {
+      update: async (collection, id, expected, data) => {
+        const current = await collection.get(id);
+        if (!current || Object.entries(expected).some(([key, value]) => current[key] !== value)) return undefined;
+        return collection.update(id, data);
+      },
+    };
+    const adapter = createPocketBaseAdapter({
+      client,
+      collections: { skills: "skills", skillVersions: "skill_versions" },
+      conditionalUpdate,
+      now,
+    });
+    const created = await adapter.skills.create("owner-a", { id: "skill-one", name: "skill-one", scope: "global", mode: "discoverable", body: "v1" });
+    await adapter.skills.update("owner-a", { id: created.id, version: 2, body: "v2" });
+
+    expect(adapter.capabilities.supports["skill.persistence"]).toBe(true);
+    expect(await adapter.skills.get("owner-a", created.id, { version: 1 })).toMatchObject({ body: "v1", version: 1 });
+    expect(await adapter.skills.get("owner-a", created.id)).toMatchObject({ body: "v2", version: 2 });
+    expect(await adapter.skills.list("owner-b")).toEqual([]);
+    await expect(adapter.skills.create("owner-a", { id: "skill-one", name: "skill-one", scope: "global", mode: "discoverable", body: "duplicate" })).rejects.toMatchObject({ code: "SKILL_CONFLICT" });
+    await expect(adapter.skills.update("owner-a", { id: created.id, version: 2, body: "stale" })).rejects.toMatchObject({ code: "SKILL_CONFLICT" });
+    expect(await client.collection("skill_versions").list()).toHaveLength(2);
+  });
+
   test("rejects approval decisions without an atomic capability", async () => {
     const adapter = makeAdapter({ transaction: undefined });
     const approval = await adapter.approvals.create("owner-a", {

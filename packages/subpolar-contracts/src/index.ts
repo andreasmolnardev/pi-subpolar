@@ -319,3 +319,6 @@ export interface MemoryStore {
   list(ownerId: string, limit?: number): Promise<readonly MemoryRecord[]>;
   save(record: MemoryRecord): Promise<MemoryRecord>;
 }
+
+export * from "./skills.ts";
+export * from "./operations.ts";

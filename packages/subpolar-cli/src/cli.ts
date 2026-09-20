@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { createLocalAdapter } from "../../subpolar-adapter-local/src/index.ts";
 import { createPiRunPort, resolvePiExecutorFactory, type PiExecutorFactory, type PiExecutorModule } from "../../subpolar-adapter-pi/src/index.ts";
-import type { AgentExecutor, RunContext, ToolDefinition, ToolExecutor } from "../../subpolar-contracts/src/index.ts";
+import type { AgentExecutor, RunContext, RunEvent, ToolDefinition, ToolExecutor } from "../../subpolar-contracts/src/index.ts";
 import { createPolicyGateway, createRunService, redactAuditValue } from "../../subpolar-core/src/index.ts";
 
 export const LOCAL_FIXTURE_EXECUTOR = "local-fixture-echo";
@@ -33,17 +33,22 @@ export interface CliOptions {
   pi?: { factory?: PiExecutorFactory; module?: string | PiExecutorModule; config?: unknown };
   sessionFile?: string;
   now?: () => Date;
+  signal?: AbortSignal;
 }
 
 interface ParsedRun {
   prompt: string;
   json: boolean;
+  jsonl: boolean;
+  timeout?: number;
   sessionId?: string;
   sessionFile?: string;
 }
 
 function parseRunArgs(args: string[]): ParsedRun {
   let json = false;
+  let jsonl = false;
+  let timeout: number | undefined;
   let sessionId: string | undefined;
   let sessionFile: string | undefined;
   const promptParts: string[] = [];
@@ -51,6 +56,14 @@ function parseRunArgs(args: string[]): ParsedRun {
     const argument = args[index];
     if (argument === "--json") {
       json = true;
+    } else if (argument === "--jsonl") {
+      jsonl = true;
+    } else if (argument === "--timeout") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new CliUsageError("--timeout requires a value");
+      timeout = Number(value);
+      if (!Number.isInteger(timeout) || timeout < 1) throw new CliUsageError("--timeout must be a positive integer in milliseconds");
+      index += 1;
     } else if (argument === "--session" || argument === "--session-file") {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) throw new CliUsageError(`${argument} requires a value`);
@@ -65,7 +78,8 @@ function parseRunArgs(args: string[]): ParsedRun {
   }
   const prompt = promptParts.join(" ").trim();
   if (!prompt) throw new CliUsageError("run requires a prompt");
-  return { prompt, json, sessionId, sessionFile };
+  if (json && jsonl) throw new CliUsageError("--json and --jsonl cannot be used together");
+  return { prompt, json, jsonl, timeout, sessionId, sessionFile };
 }
 
 export class CliUsageError extends Error {
@@ -82,9 +96,29 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
   const stdout = io.stdout ?? ((text) => process.stdout.write(text));
   const stderr = io.stderr ?? ((text) => process.stderr.write(text));
   const jsonRequested = argv.includes("--json");
+  const jsonlRequested = argv.includes("--jsonl");
+  let timedOut = false;
+  let explicitlyCancelled = false;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const controller = new AbortController();
+  const abortFromCaller = () => {
+    explicitlyCancelled = true;
+    controller.abort();
+  };
+  const processCancel = () => abortFromCaller();
+  process.on("SIGINT", processCancel);
+  process.on("SIGTERM", processCancel);
+  if (options.signal?.aborted) abortFromCaller();
+  else options.signal?.addEventListener("abort", abortFromCaller, { once: true });
   try {
-    if (argv[0] !== "run") throw new CliUsageError("Usage: subpolar-cli run <prompt> [--json] [--session <id>] [--session-file <path>]");
+    if (argv[0] !== "run") throw new CliUsageError("Usage: subpolar-cli run <prompt> [--json|--jsonl] [--timeout <ms>] [--session <id>] [--session-file <path>]");
     const parsed = parseRunArgs(argv.slice(1));
+    if (parsed.timeout !== undefined) {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, parsed.timeout);
+    }
     const sessionId = parsed.sessionId ?? `ephemeral-${(options.now ?? (() => new Date()))().getTime()}`;
     const adapter = createLocalAdapter({ sessionFile: parsed.sessionFile ?? options.sessionFile });
     const executor = options.executor ?? localFixtureEchoExecutor;
@@ -121,12 +155,22 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
       return result.value;
       };
     }
-    const run = createRunService({ executor: agentExecutor, sessionStore: adapter.sessions, now: options.now });
-    const result = await run.run({ runId: `run-${sessionId}`, prompt: parsed.prompt, context });
+    const emitEvent = parsed.jsonl ? (event: RunEvent) => {
+      const terminal = event.type === "run.completed" || event.type === "run.failed" || event.type === "run.interrupted" || event.type === "run.unknown";
+      const category = event.type === "run.started" ? "started" : event.type === "run.progress" ? "progress" : terminal ? "terminal" : undefined;
+      if (category) stdout(`${JSON.stringify(redactAuditValue({ event: category, ...event }))}\n`);
+    } : undefined;
+    const run = createRunService({ executor: agentExecutor, sessionStore: adapter.sessions, now: options.now, eventSink: emitEvent });
+    const result = await run.run({ runId: `run-${sessionId}`, prompt: parsed.prompt, context, signal: controller.signal });
     if (result.state !== "completed") {
-      const output = envelopeError(result.error);
-      (parsed.json ? stdout : stderr)(`${parsed.json ? JSON.stringify(output) : `Error [${output.error.code}]: ${output.error.message}`}\n`);
-      return 1;
+      const error = timedOut
+        ? { code: "CLI_TIMEOUT", message: "Run timed out" }
+        : explicitlyCancelled
+          ? { code: "CLI_CANCELLED", message: "Run cancelled" }
+          : result.error;
+      const output = envelopeError(error);
+      if (!parsed.jsonl) (parsed.json ? stdout : stderr)(`${parsed.json ? JSON.stringify(output) : `Error [${output.error.code}]: ${output.error.message}`}\n`);
+      return timedOut ? 3 : explicitlyCancelled ? 4 : 1;
     }
     const value = result.output as { executor?: string; text?: string };
     const output = {
@@ -137,13 +181,22 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
       executor: value.executor ?? executorName,
       result: value,
     };
-    (parsed.json ? stdout : stdout)(`${parsed.json ? JSON.stringify(output) : `${output.result.text}\n(session ${sessionId}; ${output.executor})\n`}\n`);
+    if (!parsed.jsonl) {
+      const safeOutput = redactAuditValue(output) as typeof output;
+      stdout(`${parsed.json ? JSON.stringify(safeOutput) : `${safeOutput.result.text}\n(session ${sessionId}; ${safeOutput.executor})\n`}\n`);
+    }
     return 0;
   } catch (error) {
     const typed = error instanceof CliUsageError ? error : { code: "CLI_ERROR", message: "CLI failed" };
     const output = envelopeError(typed);
-    (jsonRequested ? stdout : stderr)(`${jsonRequested ? JSON.stringify(output) : `Error [${output.error.code}]: ${output.error.message}`}\n`);
-    return 2;
+    if (jsonlRequested) stdout(`${JSON.stringify(redactAuditValue({ event: "terminal", ...output }))}\n`);
+    else (jsonRequested ? stdout : stderr)(`${jsonRequested ? JSON.stringify(output) : `Error [${output.error.code}]: ${output.error.message}`}\n`);
+    return error instanceof CliUsageError ? 2 : timedOut ? 3 : explicitlyCancelled ? 4 : 1;
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    options.signal?.removeEventListener("abort", abortFromCaller);
+    process.off("SIGINT", processCancel);
+    process.off("SIGTERM", processCancel);
   }
 }
 

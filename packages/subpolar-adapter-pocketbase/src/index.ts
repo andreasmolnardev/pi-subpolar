@@ -9,7 +9,15 @@ import type {
   SessionTranscriptEntry,
   MemoryRecord,
   MemoryScope,
+  Skill,
+  SkillRepository,
+  CreateSkillInput,
+  UpdateSkillInput,
+  ListSkillsInput,
+  GetSkillInput,
+  EffectiveSkill,
 } from "../../subpolar-contracts/src/index.ts";
+import { SkillConflictError, SkillNotFoundError, SkillValidationError, createSkill, updateSkill, listSkills, resolveEffectiveSkills, assertValidSkill } from "../../subpolar-contracts/src/index.ts";
 
 export const POCKETBASE_ADAPTER_NAME = "pocketbase";
 
@@ -26,7 +34,8 @@ export type PocketBaseCapability =
   | "conditional-updates"
   | "approval.atomic-decision"
   | "multi-process-concurrency"
-  | "memory.persistence";
+  | "memory.persistence"
+  | "skill.persistence";
 
 export interface PocketBaseAdapterCapabilities {
   adapter: typeof POCKETBASE_ADAPTER_NAME;
@@ -107,6 +116,8 @@ export interface PocketBaseCollectionNames {
   audits?: string | null;
   events?: string | null;
   memories?: string | null;
+  skills?: string | null;
+  skillVersions?: string | null;
 }
 
 export interface PocketBaseAdapterOptions {
@@ -264,6 +275,7 @@ export interface PocketBaseAdapter {
   readonly audits: AuditRepository;
   readonly events: EventRepository;
   readonly memories: MemoryRepository;
+  readonly skills: SkillRepository;
   readonly transactions: TransactionBoundary;
   readonly idempotency: IdempotencyBoundary;
 }
@@ -334,6 +346,43 @@ function requireCollection(
 
 function owner(ownerId: string): string {
   return requireText(ownerId, "ownerId");
+}
+
+function skillKey(skill: Pick<Skill, "id" | "scope" | "agentId" | "projectId">): string {
+  return JSON.stringify([skill.id, skill.scope, skill.agentId ?? null, skill.projectId ?? null]);
+}
+
+function mapSkill(record: PocketBaseStoredRecord, trustedOwner?: string): Skill {
+  const skill = {
+    id: asString(record, "skillId"),
+    ownerId: trustedOwner ?? asString(record, "ownerId"),
+    name: asString(record, "name"),
+    scope: asString(record, "scope"),
+    mode: asString(record, "mode"),
+    version: record.version,
+    metadata: asJson(record, "metadata", {}) as Record<string, string>,
+    body: asString(record, "body"),
+    reference: asOptionalString(record, "reference"),
+    ...(record.agentId === undefined ? {} : { agentId: asString(record, "agentId") }),
+    ...(record.projectId === undefined ? {} : { projectId: asString(record, "projectId") }),
+  } as Skill;
+  try { return clone(assertValidSkill(skill)); } catch (error) { throw new Error(`Invalid PocketBase skill: ${(error as Error).message}`); }
+}
+
+function skillData(skill: Skill, ownerId: string): Record<string, unknown> {
+  return {
+    ownerId,
+    skillId: skill.id,
+    name: skill.name,
+    scope: skill.scope,
+    mode: skill.mode,
+    version: skill.version,
+    metadata: clone(skill.metadata),
+    body: skill.body,
+    ...(skill.reference === undefined ? {} : { reference: skill.reference }),
+    ...(skill.agentId === undefined ? {} : { agentId: skill.agentId }),
+    ...(skill.projectId === undefined ? {} : { projectId: skill.projectId }),
+  };
 }
 
 async function ownedRecord(
@@ -479,6 +528,8 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
   const auditCollection = collection(configuredCollectionName(options.collections, "audits"));
   const eventCollection = collection(configuredCollectionName(options.collections, "events"));
   const memoryCollection = collection(configuredCollectionName(options.collections, "memories"));
+  const skillCollection = collection(configuredCollectionName(options.collections, "skills"));
+  const skillVersionCollection = collection(configuredCollectionName(options.collections, "skillVersions"));
 
   const supports: Record<PocketBaseCapability, boolean> = {
     "agent.persistence": Boolean(agentCollection),
@@ -494,6 +545,7 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
     "approval.atomic-decision": Boolean(approvalCollection && (options.transaction || options.idempotency || options.conditionalUpdate)),
     "multi-process-concurrency": false,
     "memory.persistence": Boolean(memoryCollection),
+    "skill.persistence": Boolean(skillCollection && skillVersionCollection),
   };
   const capabilities: PocketBaseAdapterCapabilities = {
     adapter: POCKETBASE_ADAPTER_NAME,
@@ -780,6 +832,67 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
     },
   };
 
+  const skills: SkillRepository = {
+    async list(ownerId, input = {}) {
+      const scopedOwner = owner(ownerId);
+      const records = await ownedRecords(requireCollection(skillCollection, "skill.persistence"), scopedOwner);
+      return listSkills(records.map((record) => mapSkill(record, scopedOwner)), input).map(clone);
+    },
+    async get(ownerId, id, input = {}) {
+      const scopedOwner = owner(ownerId);
+      requireText(id, "id");
+      const heads = await ownedRecords(requireCollection(skillCollection, "skill.persistence"), scopedOwner);
+      const matches = heads.filter((record) => record.skillId === id &&
+        (input.scope === undefined || record.scope === input.scope) && (input.agentId === undefined || record.agentId === input.agentId) && (input.projectId === undefined || record.projectId === input.projectId));
+      const scoped = input.scope === undefined && input.agentId === undefined && input.projectId === undefined ? matches.filter((record) => record.scope === "global") : matches;
+      if (input.version === undefined) {
+        if (!scoped[0]) throw new SkillNotFoundError(`skill ${id} was not found for owner ${scopedOwner}`);
+        return mapSkill(scoped[0], scopedOwner);
+      }
+      const versions = await ownedRecords(requireCollection(skillVersionCollection, "skill.persistence"), scopedOwner);
+      const version = versions.find((record) => record.skillId === id && record.version === input.version &&
+        (input.scope === undefined || record.scope === input.scope) && (input.agentId === undefined || record.agentId === input.agentId) && (input.projectId === undefined || record.projectId === input.projectId));
+      if (!version) throw new SkillNotFoundError(`skill ${id} version ${input.version} was not found for owner ${scopedOwner}`);
+      return mapSkill(version, scopedOwner);
+    },
+    async create(ownerId, input) {
+      const scopedOwner = owner(ownerId);
+      const skill = createSkill({ ...input, ownerId: input.ownerId ?? scopedOwner });
+      if (skill.ownerId !== scopedOwner) throw new SkillValidationError(["ownerId is immutable"]);
+      const skills = requireCollection(skillCollection, "skill.persistence");
+      const versions = requireCollection(skillVersionCollection, "skill.persistence");
+      const existing = (await skills.list()).find((record) => record.ownerId === scopedOwner && record.identityKey === skillKey(skill));
+      if (existing) throw new SkillConflictError(`skill ${skill.id} already exists for this scope`);
+      const data = skillData(skill, scopedOwner);
+      const created = await skills.create({ ...data, identityKey: skillKey(skill) });
+      await versions.create({ ...data, skillHeadId: created.id });
+      return mapSkill(created, scopedOwner);
+    },
+    async update(ownerId, input) {
+      const scopedOwner = owner(ownerId);
+      const skills = requireCollection(skillCollection, "skill.persistence");
+      const versions = requireCollection(skillVersionCollection, "skill.persistence");
+      const heads = await skills.list();
+      const candidates = heads.filter((record) => record.ownerId === scopedOwner && record.skillId === input.id &&
+        (input.scope === undefined || record.scope === input.scope) && (input.agentId === undefined || record.agentId === input.agentId) && (input.projectId === undefined || record.projectId === input.projectId));
+      const currentRecord = candidates.at(-1) ?? heads.filter((record) => record.ownerId === scopedOwner && record.skillId === input.id).at(-1);
+      if (!currentRecord) throw new SkillNotFoundError(`skill ${input.id} was not found for owner ${scopedOwner}`);
+      const current = mapSkill(currentRecord, scopedOwner);
+      if (input.version !== current.version + 1) throw new SkillConflictError("version must be exactly the next version");
+      const next = updateSkill(current, input);
+      const payload = { ...skillData(next, scopedOwner), identityKey: skillKey(next) };
+      const updated = options.conditionalUpdate
+        ? await options.conditionalUpdate.update(skills, currentRecord.id, { ownerId: scopedOwner, skillId: current.id, version: current.version }, payload)
+        : await skills.update(currentRecord.id, payload);
+      if (!updated) throw new SkillConflictError("skill has a stale version");
+      await versions.create({ ...skillData(next, scopedOwner), skillHeadId: currentRecord.id });
+      return mapSkill(updated, scopedOwner);
+    },
+    async resolve(ownerId, input): Promise<readonly EffectiveSkill[]> {
+      return resolveEffectiveSkills({ ...input, skills: await this.list(ownerId, { includeDisabled: true }) });
+    },
+  };
+
   return {
     capabilities,
     agents,
@@ -789,6 +902,7 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
     audits,
     events,
     memories,
+    skills,
     transactions: {
       run: async <T>(operation: () => Promise<T>) => {
         if (!options.transaction) throw new PocketBaseUnsupportedCapabilityError("transactions");

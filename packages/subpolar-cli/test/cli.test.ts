@@ -14,7 +14,7 @@ describe("subpolar-cli", () => {
     const output: string[] = [];
     const exitCode = await runCli(["nope", "--json"], {}, { stdout: (text) => output.push(text) });
 
-    expect(exitCode).not.toBe(0);
+    expect(exitCode).toBe(2);
     expect(JSON.parse(output.join(""))).toMatchObject({ ok: false, error: { code: "CLI_USAGE_ERROR" } });
   });
 
@@ -58,5 +58,57 @@ describe("subpolar-cli", () => {
 
     expect(exitCode).toBe(0);
     expect(JSON.parse(output.join(""))).toMatchObject({ ok: true, executor: "pi-fake", result: { text: "Pi: hello pi" } });
+  });
+
+  test("streams ordered JSONL lifecycle events and redacts secrets", async () => {
+    const output: string[] = [];
+    const exitCode = await runCli(
+      ["run", "hello", "--jsonl", "--session", "jsonl"],
+      {
+        pi: {
+          factory: async () => ({
+            async execute({ emit }) {
+              await emit({ type: "status", data: { phase: "progress", token: "secret-value" } });
+              return { text: "finished token=secret-value" };
+            },
+          }),
+        },
+      },
+      { stdout: (text) => output.push(text) },
+    );
+
+    expect(exitCode).toBe(0);
+    const events = output.join("").trim().split("\n").map((line) => JSON.parse(line));
+    expect(events.map((event) => event.event)).toEqual(["started", "progress", "terminal"]);
+    expect(events[2]).toMatchObject({ type: "run.completed", state: "completed" });
+    expect(output.join("")).not.toContain("secret-value");
+  });
+
+  test("returns timeout exit code and terminal JSONL event", async () => {
+    const output: string[] = [];
+    const exitCode = await runCli(
+      ["run", "wait", "--jsonl", "--timeout", "10"],
+      { executor: async () => new Promise<never>((_, reject) => setTimeout(() => reject(new Error("late token=timeout-secret")), 100)) },
+      { stdout: (text) => output.push(text) },
+    );
+
+    expect(exitCode).toBe(3);
+    expect(output.join("")).toContain('"event":"terminal"');
+    expect(output.join("")).not.toContain("timeout-secret");
+  });
+
+  test("returns explicit cancellation exit code", async () => {
+    const controller = new AbortController();
+    const output: string[] = [];
+    const pending = runCli(
+      ["run", "cancel", "--json"],
+      { executor: async () => new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(new Error("cancelled token=cancel-secret")), { once: true })), signal: controller.signal },
+      { stdout: (text) => output.push(text) },
+    );
+    controller.abort();
+
+    expect(await pending).toBe(4);
+    expect(JSON.parse(output.join(""))).toMatchObject({ ok: false, error: { code: "CLI_CANCELLED" } });
+    expect(output.join("")).not.toContain("cancel-secret");
   });
 });

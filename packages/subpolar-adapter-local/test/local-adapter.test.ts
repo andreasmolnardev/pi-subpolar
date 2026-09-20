@@ -101,4 +101,29 @@ describe("local adapter", () => {
       await expect(createLocalAdapter({ memoryFile: filePath }).memory.list("user-a")).rejects.toThrow("Invalid memory memory[0].content");
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
+
+  test("persists owner-scoped skill versions and reloads them atomically", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "subpolar-skills-"));
+    const filePath = join(directory, "skills.json");
+    const input = { id: "skill-one", name: "skill-one", scope: "global" as const, mode: "discoverable" as const, body: "v1" };
+    try {
+      const first = createLocalAdapter({ skillFile: filePath });
+      const created = await first.skills.create("owner-a", input);
+      await first.skills.update("owner-a", { id: created.id, version: 2, body: "v2" });
+      expect(await first.skills.get("owner-a", created.id, { version: 1 })).toMatchObject({ body: "v1", version: 1 });
+      expect(await createLocalAdapter({ skillFile: filePath }).skills.get("owner-a", created.id)).toMatchObject({ body: "v2", version: 2 });
+      expect(await createLocalAdapter({ skillFile: filePath }).skills.list("owner-b")).toEqual([]);
+      expect(first.capabilities.supports["skill.persistence" as never]).toBe(true);
+      await expect(first.skills.update("owner-a", { id: created.id, version: 2, body: "stale" })).rejects.toMatchObject({ code: "SKILL_CONFLICT" });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  test("rejects malformed persisted skill files", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "subpolar-skills-"));
+    const filePath = join(directory, "skills.json");
+    try {
+      await writeFile(filePath, JSON.stringify([{ id: "bad", ownerId: "owner-a", name: "Bad Name", scope: "global", mode: "disabled", version: 1, metadata: {}, body: "" }]));
+      await expect(createLocalAdapter({ skillFile: filePath }).skills.list("owner-a")).rejects.toThrow("Invalid skill record");
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
 });
