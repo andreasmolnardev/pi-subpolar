@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { canonicalToolId, manageAgentProfile, manageRegisteredTool, validateToolDefinition } from './tools.ts'
+import { canonicalToolId, executeCliTool, manageAgentProfile, manageRegisteredTool, requiresManualApproval, validateToolDefinition } from './tools.ts'
 
 const definition = (overrides: Record<string, unknown> = {}) => ({
   tool_id: 'acme/read', namespace: 'acme', description: 'Read data', adapter: 'openapi' as const,
@@ -67,5 +67,25 @@ describe('secure tool registry validation', () => {
     await expect(manageRegisteredTool(client, 'create', { ...definition({ adapter: 'internal', target: 'pi' }), tool_id: 'acme/internal', operation: 'read' }, 'u1')).rejects.toThrow('Only HTTP')
     await manageRegisteredTool(client, 'delete', { tool_id: 'acme/lookup' }, 'u1')
     expect(records).toHaveLength(0)
+  })
+
+  it('creates constrained CLI tools and rejects unsafe runtime arguments', async () => {
+    const records: Array<Record<string, unknown>> = []
+    const collection = () => ({
+      getFullList: async () => records,
+      getFirstListItem: async () => null,
+      create: async (input: Record<string, unknown>) => { const record = { id: `tool-${records.length}`, ...input }; records.push(record); return record },
+      update: async () => { throw new Error('unexpected update') },
+      delete: async () => undefined,
+    })
+    const client = { collection } as never
+    const created = await manageRegisteredTool(client, 'create-cli', { tool_id: 'local/bun-version', namespace: 'local', description: 'Bun version', executable: 'bun', fixed_args: ['--version'], max_args: 0 }, 'u1') as Record<string, unknown>
+    expect(created.requires_approval).toBe(true)
+    expect((created.metadata as Record<string, unknown>).cli).toMatchObject({ executable: 'bun', maxArgs: 0 })
+    await expect(executeCliTool(created as never, { args: [';touch'] }, process.cwd())).rejects.toThrow('invalid')
+    await expect(executeCliTool(created as never, { args: [] }, process.cwd())).resolves.toMatchObject({ exitCode: 0 })
+    expect(requiresManualApproval('local/bun-version', 'cli')).toBe(true)
+    expect(requiresManualApproval('create_cli_tool', 'tool-registry')).toBe(true)
+    expect(requiresManualApproval('read', 'pi')).toBe(false)
   })
 })

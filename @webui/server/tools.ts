@@ -1,4 +1,6 @@
 import type PocketBase from 'pocketbase'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import {
   createBashToolDefinition,
   createEditToolDefinition,
@@ -35,6 +37,10 @@ export const DECLARED_CAPABILITIES = ['subagent/run', 'read', 'write', 'bash'] a
 const memoryMutationTools = new Set(['memory/write', 'memory/update', 'memory/delete'])
 const profileManagementTools = new Set(['list_agent_profiles', 'create_agent_profile', 'edit_agent_profile', 'delete_agent_profile'])
 const toolManagementTools = new Set(['list_registered_tools', 'create_registered_tool', 'update_registered_tool', 'delete_registered_tool'])
+const cliManagementTools = new Set(['create_cli_tool'])
+const manualApprovalToolTargets = new Set(['cli'])
+const execFileAsync = promisify(execFile)
+const allowedCliExecutables = new Set(['bun', 'cargo', 'git', 'go', 'node', 'npm', 'pnpm', 'pytest', 'python', 'python3', 'rustc'])
 const browserMutationGroups = new Set(['form-interaction', 'upload', 'download', 'submit', 'destructive'])
 export function memoryPolicyAllows(agent: { policies: Pick<AgentPolicySet, 'memory'>; template?: AgentDefinition['template'] }, toolId: string): boolean {
   return agent.policies.memory === true && !(memoryMutationTools.has(toolId) && (agent.template === 'plan' || agent.template === 'reviewer'))
@@ -144,6 +150,7 @@ const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>>
   { tool_id: 'create_registered_tool', namespace: 'builtin', description: 'Register an owned HTTP, OpenAPI, or MCP tool', adapter: 'internal', target: 'tool-registry', operation: 'create', input_schema: { type: 'object', properties: { tool_id: { type: 'string', maxLength: 160 }, namespace: { type: 'string', maxLength: 64 }, description: { type: 'string', maxLength: 1000 }, adapter: { type: 'string', enum: ['http', 'openapi', 'mcp'] }, target: { type: 'string', maxLength: 2000 }, operation: { type: 'string', maxLength: 128 }, input_schema: { type: 'object' }, output_schema: { type: 'object' }, risk: { type: 'string', enum: ['read', 'write', 'delete', 'external'] }, requires_approval: { type: 'boolean' }, enabled: { type: 'boolean' }, context_mode: { type: 'string', enum: ['always', 'discoverable', 'on-demand', 'disabled'] }, metadata: { type: 'object' } }, required: ['tool_id', 'namespace', 'description', 'adapter', 'target', 'operation', 'input_schema', 'output_schema', 'risk'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
   { tool_id: 'update_registered_tool', namespace: 'builtin', description: 'Update an owned registered tool', adapter: 'internal', target: 'tool-registry', operation: 'update', input_schema: { type: 'object', properties: { tool_id: { type: 'string', maxLength: 160 }, description: { type: 'string', maxLength: 1000 }, target: { type: 'string', maxLength: 2000 }, operation: { type: 'string', maxLength: 128 }, input_schema: { type: 'object' }, output_schema: { type: 'object' }, risk: { type: 'string', enum: ['read', 'write', 'delete', 'external'] }, requires_approval: { type: 'boolean' }, enabled: { type: 'boolean' }, context_mode: { type: 'string', enum: ['always', 'discoverable', 'on-demand', 'disabled'] }, metadata: { type: 'object' } }, required: ['tool_id'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
   { tool_id: 'delete_registered_tool', namespace: 'builtin', description: 'Delete an owned registered tool', adapter: 'internal', target: 'tool-registry', operation: 'delete', input_schema: { type: 'object', properties: { tool_id: { type: 'string', minLength: 1, maxLength: 160 } }, required: ['tool_id'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'delete', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
+  { tool_id: 'create_cli_tool', namespace: 'builtin', description: 'Create an approved workspace-bounded CLI tool', adapter: 'internal', target: 'tool-registry', operation: 'create-cli', input_schema: { type: 'object', properties: { tool_id: { type: 'string', maxLength: 160 }, namespace: { type: 'string', maxLength: 64 }, description: { type: 'string', maxLength: 1000 }, executable: { type: 'string', enum: [...allowedCliExecutables] }, fixed_args: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 256 } }, max_args: { type: 'integer', minimum: 0, maximum: 32 }, timeout_ms: { type: 'integer', minimum: 100, maximum: 120000 }, max_output_bytes: { type: 'integer', minimum: 1024, maximum: 1048576 } }, required: ['tool_id', 'namespace', 'description', 'executable'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
   { tool_id: 'search-tool', namespace: 'builtin', description: 'Search tools available to the active agent', adapter: 'internal', target: 'tool-router', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
   { tool_id: 'web-search', namespace: 'builtin', description: 'Search the public web through an approved OpenCode-compatible provider', adapter: 'internal', target: 'web-search', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 1000 }, provider: { type: 'string', enum: ['exa', 'parallel'] }, resultCount: { type: 'integer', minimum: 1, maximum: 10 }, contextSize: { type: 'integer', minimum: 1, maximum: 32000 }, type: { type: 'string' }, livecrawl: { type: 'string' }, objective: { type: 'string', maxLength: 1000 }, search_queries: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 1000 } } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'object', properties: { provider: { type: 'string' }, results: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' }, snippet: { type: 'string' } }, required: ['title', 'url', 'snippet'] } } }, required: ['provider', 'results'] }, risk: 'external', requires_approval: true, enabled: true, metadata: { capability: 'web-search' } },
   { tool_id: 'read', namespace: 'builtin', description: 'Read files from the selected project', adapter: 'internal', target: 'pi', operation: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } }, required: ['path'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
@@ -310,6 +317,10 @@ export function canonicalToolId(toolId: string, adapter?: ToolAdapter, namespace
     return `${namespace}/${operation}`
   }
   return toolId
+}
+
+export function requiresManualApproval(toolId: string, target: string): boolean {
+  return manualApprovalToolTargets.has(target) || toolManagementTools.has(toolId) || cliManagementTools.has(toolId)
 }
 
 const registryName = /^[a-z][a-z0-9._-]{0,63}$/
@@ -632,6 +643,38 @@ function registeredToolProjection(record: Record<string, unknown>): ToolDefiniti
   return toTool(record)
 }
 
+function safeCliArgument(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 256 && !/[\0\r\n;|&><`$(){}]/.test(value)
+}
+
+function cliMetadata(value: unknown): { executable: string; fixedArgs: string[]; maxArgs: number; timeoutMs: number; maxOutputBytes: number } {
+  const input = recordObject(value)
+  const executable = typeof input.executable === 'string' ? input.executable : ''
+  const fixedArgs = Array.isArray(input.fixedArgs) ? input.fixedArgs : []
+  const maxArgs = typeof input.maxArgs === 'number' && Number.isInteger(input.maxArgs) ? input.maxArgs : 0
+  const timeoutMs = typeof input.timeoutMs === 'number' && Number.isInteger(input.timeoutMs) ? input.timeoutMs : 30_000
+  const maxOutputBytes = typeof input.maxOutputBytes === 'number' && Number.isInteger(input.maxOutputBytes) ? input.maxOutputBytes : 256 * 1024
+  if (!allowedCliExecutables.has(executable)) throw new Error('CLI executable is not in the approved executable set')
+  if (fixedArgs.length > 32 || fixedArgs.some((arg) => !safeCliArgument(arg))) throw new Error('CLI fixed arguments are invalid or exceed the limit')
+  if (maxArgs < 0 || maxArgs > 32 || timeoutMs < 100 || timeoutMs > 120_000 || maxOutputBytes < 1024 || maxOutputBytes > 1_048_576) throw new Error('CLI limits are outside the allowed range')
+  return { executable, fixedArgs: [...fixedArgs] as string[], maxArgs, timeoutMs, maxOutputBytes }
+}
+
+export async function executeCliTool(tool: ToolDefinition, input: unknown, cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const spec = cliMetadata(recordObject(tool.metadata).cli)
+  const args = recordObject(input).args
+  if (!Array.isArray(args) || args.length > spec.maxArgs || args.some((arg) => !safeCliArgument(arg))) throw new Error('CLI arguments are invalid or exceed the configured limit')
+  try {
+    const result = await execFileAsync(spec.executable, [...spec.fixedArgs, ...args as string[]], { cwd, shell: false, timeout: spec.timeoutMs, maxBuffer: spec.maxOutputBytes, windowsHide: true })
+    return { stdout: String(result.stdout), stderr: String(result.stderr), exitCode: 0 }
+  } catch (error) {
+    const failure = error as { stdout?: string; stderr?: string; code?: number | string; killed?: boolean }
+    const message = failure.killed ? 'CLI tool timed out' : 'CLI tool failed'
+    const output = `${String(failure.stdout ?? '')}${String(failure.stderr ?? '')}`.slice(0, spec.maxOutputBytes)
+    throw new Error(`${message}${output ? `: ${redactSensitiveText(output)}` : ''}`)
+  }
+}
+
 function registeredToolFields(input: Record<string, unknown>, existing?: ToolDefinition): Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'> {
   const value = (key: string, fallback: unknown) => input[key] === undefined ? fallback : input[key]
   const definition = {
@@ -649,7 +692,11 @@ function registeredToolFields(input: Record<string, unknown>, existing?: ToolDef
     context_mode: value('context_mode', existing?.context_mode ?? 'discoverable') as ToolContextMode,
     metadata: recordObject(value('metadata', existing?.metadata ?? {})),
   }
-  if (definition.adapter === 'internal') throw new Error('Only HTTP, OpenAPI, and MCP tools may be registered')
+  if (definition.adapter === 'internal' && definition.target !== 'cli') throw new Error('Only HTTP, OpenAPI, and MCP tools may be registered')
+  if (definition.target === 'cli') {
+    if (definition.adapter !== 'internal' || definition.operation !== 'run') throw new Error('CLI tools must use the internal cli/run operation')
+    cliMetadata(definition.metadata.cli)
+  }
   return validateToolDefinition(definition)
 }
 
@@ -667,6 +714,28 @@ export async function manageRegisteredTool(client: PocketBase, operation: string
     if (!existing) throw new Error('Registered tool not found')
     await client.collection('tool_registry').delete(existing.id)
     return { deleted: true, tool_id: toolId }
+  }
+  if (operation === 'create-cli') {
+    if (existing) throw new Error('A registered tool with this ID already exists')
+    const spec = cliMetadata({ executable: args.executable, fixedArgs: args.fixed_args, maxArgs: args.max_args, timeoutMs: args.timeout_ms, maxOutputBytes: args.max_output_bytes })
+    const validated = registeredToolFields({
+      tool_id: toolId,
+      namespace: String(args.namespace ?? ''),
+      description: String(args.description ?? ''),
+      adapter: 'internal',
+      target: 'cli',
+      operation: 'run',
+      input_schema: { type: 'object', properties: { args: { type: 'array', maxItems: spec.maxArgs, items: { type: 'string', maxLength: 256 } } }, required: ['args'], additionalProperties: false },
+      output_schema: { type: 'object' },
+      risk: 'external',
+      requires_approval: true,
+      enabled: true,
+      context_mode: 'discoverable',
+      metadata: { cli: spec },
+    })
+    const now = Date.now()
+    const record = await client.collection('tool_registry').create({ ...validated, owner_id: userId, created_at: now, updated_at: now })
+    return registeredToolProjection(record)
   }
   if (operation === 'update' && !existing) throw new Error('Registered tool not found')
   const validated = registeredToolFields(args, existing ? toTool(existing) : undefined)
@@ -710,6 +779,7 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     if (context?.agentName !== 'master' || !context.userId) throw new Error('Registered tool management requires the master agent')
     return manageRegisteredTool(client, tool.operation, input, context.userId)
   }
+  if (tool.target === 'cli' && tool.operation === 'run') return executeCliTool(tool, input, cwd)
   if (tool.target === 'web-search' && tool.operation === 'search') return webSearch(input as WebSearchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
   const definitions = {
     read: createReadToolDefinition(cwd),
@@ -727,7 +797,7 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
 
 async function invokeExternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext & { agentId?: string; projectId?: string }): Promise<unknown> {
   if (tool.adapter === 'internal') {
-    if (['pi', 'memory', 'browser', 'web-search', 'subagent', 'agent-profiles', 'tool-registry'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
+    if (['pi', 'memory', 'browser', 'web-search', 'subagent', 'agent-profiles', 'tool-registry', 'cli'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
     return { routed: true, toolId: tool.tool_id, operation: tool.operation, input }
   }
   if (tool.adapter === 'mcp') {
@@ -837,6 +907,10 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MASTER_REQUIRED' })
     return { ok: false as const, toolId: canonicalId, error: { code: 'MASTER_REQUIRED', message: 'Registered tool management requires the master agent' } }
   }
+  if (cliManagementTools.has(canonicalId) && agent.name !== 'master') {
+    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MASTER_REQUIRED' })
+    return { ok: false as const, toolId: canonicalId, error: { code: 'MASTER_REQUIRED', message: 'CLI tool management requires the master agent' } }
+  }
   if (canonicalId.startsWith('memory/') && effective.policies.memory !== true) {
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MEMORY_DISABLED' })
     return { ok: false as const, toolId: canonicalId, error: { code: 'MEMORY_DISABLED', message: 'Memory is disabled for this agent' } }
@@ -862,7 +936,8 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
     return { ok: false as const, toolId: canonicalId, error: { code: 'PERMISSION_DENIED', message: `Agent is not allowed to use ${canonicalId}` } }
   }
 
-  const needsApproval = effective.approval_mode === 'ask' || override === 'ask' || (override !== 'allow_all' && (tool.requires_approval || matching.some((item) => item.effect === 'approval')))
+  const needsManualApproval = requiresManualApproval(canonicalId, tool.target)
+  const needsApproval = needsManualApproval || effective.approval_mode === 'ask' || override === 'ask' || (override !== 'allow_all' && (tool.requires_approval || matching.some((item) => item.effect === 'approval')))
   if (needsApproval) {
     const created = await createApprovalFlow(client).create({ userId, agentId: agent.id, sessionId, toolId: canonicalId, input, reason: `${canonicalId} requires approval` })
     retainPendingApprovalInput(created.approval.id, input)
