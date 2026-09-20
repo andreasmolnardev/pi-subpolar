@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDesktop } from "@/hooks/useDesktop";
 import { useSidebarCollapsed } from "@/hooks/useSidebarCollapsed";
 import { useAuth } from "@/hooks/useAuth";
-import { getProject, hasProjectId, listProjects } from "@/api/projects";
+import { createProject, getProject, hasProjectId, listProjects } from "@/api/projects";
 import { listStoredSessions } from "@/api/sessions";
 import { settingsApi, type AgentToolPolicyEffect } from "@/api/settings";
 import { DEFAULT_USER_PREFERENCES } from "@/api/types/settings";
@@ -35,8 +35,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { AgentDialog } from "@/components/settings/AgentDialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ProjectDialog } from "@/components/project/ProjectDialog";
+import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getSidebarProjectRoute } from "@/lib/projectNavigation";
+import { showToast } from "@/lib/toast";
+
+const NEW_PROJECT_VALUE = "__new_project__";
 
 function SidebarSection({
   label,
@@ -242,6 +246,7 @@ export function DesktopSidebar() {
   const [agentsExpanded, setAgentsExpanded] = useState(true);
   const [historyExpanded, setHistoryExpanded] = useState(true);
   const [selectedSidebarProjectId, setSelectedSidebarProjectId] = useState<string>(String(GENERAL_CHAT_PROJECT_ID));
+  const [isCreateProjectDialogOpen, setIsCreateProjectDialogOpen] = useState(false);
   const [isCreateAgentDialogOpen, setIsCreateAgentDialogOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<{ name: string; agent: Agent } | null>(null);
   const { data: projects } = useQuery({
@@ -318,6 +323,21 @@ export function DesktopSidebar() {
   const parsedConfig = rawContent ? tryParseJson(rawContent) : null;
 
   const queryClient = useQueryClient();
+
+  const createProjectMutation = useMutation({
+    mutationFn: createProject,
+    onSuccess: (project) => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      setIsCreateProjectDialogOpen(false);
+      if (hasProjectId(project)) {
+        setSelectedSidebarProjectId(String(project.id));
+        navigate(`/projects/${project.id}`);
+      }
+    },
+    onError: (error) => {
+      showToast.error(error instanceof Error ? error.message : "Failed to create project");
+    },
+  });
 
   const updateConfigMutation = useMutation({
     mutationFn: async ({ agents, changedAgent }: { agents: Record<string, Agent>; changedAgent?: { name: string; agent: Agent } }) => {
@@ -434,12 +454,16 @@ export function DesktopSidebar() {
               <div className="mb-2 flex items-center gap-1 px-1">
                 <Select
                   value={selectedSidebarProjectId}
-onValueChange={(value) => {
-                      const route = getSidebarProjectRoute(value, projects);
-                     if (!route) return;
-                     setSelectedSidebarProjectId(value);
-                     navigate(route);
-                   }}
+                  onValueChange={(value) => {
+                    if (value === NEW_PROJECT_VALUE) {
+                      setIsCreateProjectDialogOpen(true);
+                      return;
+                    }
+                    const route = getSidebarProjectRoute(value, projects);
+                    if (!route) return;
+                    setSelectedSidebarProjectId(value);
+                    navigate(route);
+                  }}
                 >
                   <SelectTrigger className="h-9 min-w-0 flex-1">
                     <SelectValue placeholder="Project" />
@@ -453,7 +477,14 @@ onValueChange={(value) => {
                         {project.name}
                       </SelectItem>
                     ))}
-                      </SelectContent>
+                    <SelectSeparator />
+                    <SelectItem value={NEW_PROJECT_VALUE}>
+                      <span className="flex items-center gap-2">
+                        <Plus className="h-4 w-4" />
+                        New project
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
                 </Select>
 
               </div>
@@ -595,6 +626,16 @@ onValueChange={(value) => {
         </div>
       </Sidebar>
 
+      <ProjectDialog
+        open={isCreateProjectDialogOpen}
+        onOpenChange={setIsCreateProjectDialogOpen}
+        onSubmit={async (values) => {
+          await createProjectMutation.mutateAsync(values);
+        }}
+        availableAgents={projectAgents}
+        userId={user?.id}
+        isSubmitting={createProjectMutation.isPending}
+      />
       <AgentDialog
         open={isCreateAgentDialogOpen}
         onOpenChange={setIsCreateAgentDialogOpen}
