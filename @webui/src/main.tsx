@@ -5,6 +5,7 @@ import App from './App.tsx'
 import { ErrorBoundary } from '@/components/ui/error-boundary'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { registerServiceWorker } from './lib/serviceWorker'
+import { createApiCompletionSuggestionProvider } from './hooks/useCompletionSuggestions'
 
 registerServiceWorker()
 
@@ -12,7 +13,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
       <TooltipProvider>
-        <App />
+        <App suggestionProvider={createApiCompletionSuggestionProvider()} />
       </TooltipProvider>
     </ErrorBoundary>
   </StrictMode>,

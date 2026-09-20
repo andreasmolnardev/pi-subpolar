@@ -58,6 +58,7 @@ import {
 } from "@/lib/pending-session-prompt";
 import { newSessionPath } from "@/lib/new-session-route";
 import { downloadTranscript, exportTranscript, type TranscriptExportFormat } from "@/lib/transcriptExport";
+import { useCompletionSuggestions } from "@/hooks/useCompletionSuggestions";
 
 const compareMessageIds = (id1: string, id2: string): number => {
   const num1 = parseInt(id1, 10)
@@ -231,6 +232,30 @@ export function SessionDetail() {
   const { current: currentQuestion, reply: replyToQuestion, reject: rejectQuestion, syncForSession: syncQuestionsForSession } = useQuestions();
 
   const lastAssistantMessage = messages?.filter(m => m.info.role === 'assistant').at(-1);
+  const suggestionUserMessage = useMemo(() => {
+    if (!messages || !lastAssistantMessage || !sessionId) return undefined
+    const assistantIndex = messages.findIndex((message) => message.info.id === lastAssistantMessage.info.id)
+    for (let index = assistantIndex - 1; index >= 0; index -= 1) {
+      if (messages[index].info.role !== 'user') continue
+      return {
+        sessionId,
+        assistantMessageId: lastAssistantMessage.info.id,
+        lastUserText: messages[index].parts.filter((part) => part.type === 'text').map((part) => part.text || '').join('\n\n').trim(),
+        lastAssistantText: lastAssistantMessage.parts.filter((part) => part.type === 'text').map((part) => part.text || '').join('\n\n').trim(),
+      }
+    }
+    return undefined
+  }, [lastAssistantMessage, messages, sessionId])
+  const completionSuggestions = useCompletionSuggestions(
+    lastAssistantMessage && 'completed' in lastAssistantMessage.info.time && lastAssistantMessage.info.time.completed
+      ? suggestionUserMessage
+      : undefined,
+  )
+  const suggestionsByAssistantId = useMemo(() => {
+    const result = new Map<string, string[]>()
+    if (lastAssistantMessage && completionSuggestions.length > 0) result.set(lastAssistantMessage.info.id, completionSuggestions)
+    return result
+  }, [completionSuggestions, lastAssistantMessage])
   
   const isSessionActive = useMemo(() => {
     if (session?.time?.compacting) return true
@@ -500,6 +525,10 @@ export function SessionDetail() {
     promptInputRef.current?.setPromptValue(restoredPrompt)
   }, []);
 
+  const handleSuggestionSelect = useCallback((suggestion: string) => {
+    promptInputRef.current?.submitPrompt(suggestion)
+  }, [])
+
   const handleExport = useCallback(async (format: TranscriptExportFormat) => {
     if (!session) return
     setExportingFormat(format)
@@ -671,6 +700,8 @@ export function SessionDetail() {
               onChildSessionClick={handleChildSessionClick}
               onUndoMessage={handleUndoMessage}
               model={modelString || undefined}
+              suggestionsByAssistantId={suggestionsByAssistantId}
+              onSuggestionSelect={handleSuggestionSelect}
             />
           ) : null}
         </div>

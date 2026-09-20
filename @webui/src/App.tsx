@@ -34,6 +34,11 @@ import { useAuth } from '@/hooks/useAuth'
 import { useServerHealth } from '@/hooks/useServerHealth'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { CommandPalette } from '@/components/navigation/CommandPalette'
+import {
+  CompletionSuggestionContext,
+  unavailableCompletionSuggestionProvider,
+  type CompletionSuggestionProvider,
+} from './hooks/useCompletionSuggestions'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -194,12 +199,14 @@ const router = createBrowserRouter([
   },
 ])
 
-function App() {
+function App({ suggestionProvider }: { suggestionProvider?: CompletionSuggestionProvider } = {}) {
   return (
     <QueryClientProvider client={queryClient}>
       <TTSProvider>
         <SwipeNavigationProvider>
-          <RouterProvider router={router} />
+          <CompletionSuggestionContext.Provider value={suggestionProvider ?? unavailableCompletionSuggestionProvider}>
+            <RouterProvider router={router} />
+          </CompletionSuggestionContext.Provider>
         </SwipeNavigationProvider>
       </TTSProvider>
     </QueryClientProvider>

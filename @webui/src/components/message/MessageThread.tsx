@@ -4,6 +4,7 @@ import { MessagePart } from './MessagePart'
 import { UserMessageActionButtons } from './UserMessageActionButtons'
 import { EditableUserMessage, ClickableUserMessage } from './EditableUserMessage'
 import { MessageError } from './MessageError'
+import { AssistantSuggestions } from './AssistantSuggestions'
 import type { Message, Part, MessageWithParts } from '@/api/types'
 import { useSessionStatusForSession } from '@/stores/sessionStatusStore'
 import { useSessionTodos } from '@/stores/sessionTodosStore'
@@ -29,6 +30,8 @@ interface MessageThreadProps {
   onChildSessionClick?: (sessionId: string) => void
   onUndoMessage?: (restoredPrompt: string) => void
   model?: string
+  suggestionsByAssistantId?: ReadonlyMap<string, string[]>
+  onSuggestionSelect?: (suggestion: string) => void
 }
 
 function SendingIndicator() {
@@ -193,6 +196,8 @@ interface MessageRowProps {
   handleCancelEdit: () => void
   model?: string
   simpleChatMode: boolean
+  suggestions?: string[]
+  onSuggestionSelect?: (suggestion: string) => void
 }
 
 const MessageRow = memo(function MessageRow({
@@ -213,6 +218,8 @@ const MessageRow = memo(function MessageRow({
   handleCancelEdit,
   model,
   simpleChatMode,
+  suggestions,
+  onSuggestionSelect,
 }: MessageRowProps) {
   const msg = msgWithParts.info
   const parts = msgWithParts.parts
@@ -418,6 +425,9 @@ const MessageRow = memo(function MessageRow({
             ))}
           </div>
         )}
+        {msg.role === 'assistant' && suggestions && onSuggestionSelect && (
+          <AssistantSuggestions suggestions={suggestions} onSelect={onSuggestionSelect} />
+        )}
       </div>
     </div>
   )
@@ -431,7 +441,9 @@ export const MessageThread = memo(function MessageThread({
   onFileClick, 
   onChildSessionClick,
   onUndoMessage,
-  model
+  model,
+  suggestionsByAssistantId,
+  onSuggestionSelect,
 }: MessageThreadProps) {
   const [editingUserMessageId, setEditingUserMessageId] = useState<string | null>(null)
   const [editingForAssistantId, setEditingForAssistantId] = useState<string | null>(null)
@@ -547,6 +559,8 @@ export const MessageThread = memo(function MessageThread({
           handleCancelEdit={handleCancelEdit}
           model={model}
           simpleChatMode={simpleChatMode}
+          suggestions={suggestionsByAssistantId?.get(msgWithParts.info.id)}
+          onSuggestionSelect={onSuggestionSelect}
         />
       ))}
       {isWaitingForAssistantResponse && <SendingIndicator />}

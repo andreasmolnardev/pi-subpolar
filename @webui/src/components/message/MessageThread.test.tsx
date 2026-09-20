@@ -225,6 +225,31 @@ describe('MessageThread', () => {
     expect(onChildSessionClick).toHaveBeenCalledWith('child-session')
   })
 
+  it('attaches suggestions to their source assistant message and reports selection', () => {
+    setupSettings({ simpleChatMode: false, showReasoning: false })
+    const onSuggestionSelect = vi.fn()
+    const messages = [
+      createUserMessage('1', 'Hello'),
+      createAssistantMessage('2', [createTextPart('Answer', '2')]),
+      createAssistantMessage('3', [createTextPart('Later answer', '3')]),
+    ]
+
+    render(
+      <MessageThread
+        apiUrl="http://localhost:5551"
+        sessionID="test-session"
+        messages={messages as any}
+        suggestionsByAssistantId={new Map([['2', ['Ask for an example']]])}
+        onSuggestionSelect={onSuggestionSelect}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ask for an example' }))
+    expect(onSuggestionSelect).toHaveBeenCalledWith('Ask for an example')
+    expect(screen.getByText('Answer').closest('.group')).toContainElement(screen.getByRole('button', { name: 'Ask for an example' }))
+    expect(screen.getByText('Later answer').closest('.group')).not.toContainElement(screen.getByRole('button', { name: 'Ask for an example' }))
+  })
+
   it('renders assistant task message with empty text and step finish as standalone row', () => {
     setupSettings({
       simpleChatMode: false,
@@ -363,7 +388,7 @@ describe('MessageThread', () => {
     )
 
     expect(screen.getByText('This is a response')).toBeInTheDocument()
-    expect(screen.getByText('test-model')).toBeInTheDocument()
+    expect(screen.getByText('General Chat')).toBeInTheDocument()
   })
 
   it('renders assistant message with text and subtask normally with header', () => {
@@ -390,7 +415,7 @@ describe('MessageThread', () => {
 
     expect(screen.getByText('Here is the analysis')).toBeInTheDocument()
     expect(screen.getByText('Review changes')).toBeInTheDocument()
-    expect(screen.getByText('test-model')).toBeInTheDocument()
+    expect(screen.getByText('General Chat')).toBeInTheDocument()
   })
 
   it('renders user messages normally', () => {

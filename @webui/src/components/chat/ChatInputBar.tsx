@@ -35,6 +35,7 @@ import type { components } from "@/api/opencode-types";
 
 export interface ChatInputBarHandle {
   setPromptValue: (value: string) => void;
+  submitPrompt: (value: string) => void;
   clearPrompt: () => void;
   triggerFileUpload: () => void;
 }
@@ -300,30 +301,6 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     clearPendingCommand();
     textareaRef.current.focus();
   }, [clearPendingCommand, onPromptChange, pendingCommand]);
-
-  useImperativeHandle(ref, () => ({
-    setPromptValue: (value: string) => {
-      if (!textareaRef.current) return;
-      textareaRef.current.value = value;
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
-      textareaRef.current.focus();
-      setPastedText(null);
-      const hasContent = value.trim().length > 0;
-      setHasPromptContent(hasContent);
-      onPromptChange?.(hasContent);
-    },
-    clearPrompt: () => {
-      if (!textareaRef.current) return;
-      textareaRef.current.value = "";
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.focus();
-      setPastedText(null);
-      setHasPromptContent(false);
-      onPromptChange?.(false);
-    },
-    triggerFileUpload: () => fileInputRef.current?.click(),
-  }), [onPromptChange]);
 
   const handleTextareaPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const image = Array.from(e.clipboardData.items).find((item) => item.type.startsWith("image/"));
@@ -681,6 +658,38 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     commands,
   ]);
 
+  useImperativeHandle(ref, () => ({
+    setPromptValue: (value: string) => {
+      if (!textareaRef.current) return;
+      textareaRef.current.value = value;
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+      textareaRef.current.focus();
+      setPastedText(null);
+      const hasContent = value.trim().length > 0;
+      setHasPromptContent(hasContent);
+      onPromptChange?.(hasContent);
+    },
+    submitPrompt: (value: string) => {
+      if (!textareaRef.current) return;
+      textareaRef.current.value = value;
+      setPastedText(null);
+      setHasPromptContent(value.trim().length > 0);
+      onPromptChange?.(value.trim().length > 0);
+      void handleSubmit();
+    },
+    clearPrompt: () => {
+      if (!textareaRef.current) return;
+      textareaRef.current.value = "";
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.focus();
+      setPastedText(null);
+      setHasPromptContent(false);
+      onPromptChange?.(false);
+    },
+    triggerFileUpload: () => fileInputRef.current?.click(),
+  }), [handleSubmit, onPromptChange]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (commandQuery !== null && commandSuggestions.length > 0) {
@@ -967,6 +976,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
             </div>
           ) : (
             <Button
+              data-submit-prompt
               onClick={() => handleSubmit()}
               disabled={disabled || createSession.isPending || abortSession.isPending || (sendPrompt.isPending && !isGeneratingMessage)}
               size="icon"
