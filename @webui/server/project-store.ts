@@ -43,6 +43,7 @@ export type SessionRecord = {
   permissionOverride?: PermissionOverride
   /** Empty for General Chat or an orphaned legacy project. */
   projectId?: string
+  tags: string[]
 }
 
 /** A session record with its PocketBase record id retained for diagnostics/updating. */
@@ -74,11 +75,39 @@ export type CreateSessionInput = {
   model?: string
   directory?: string
   permissionOverride?: PermissionOverride
+  tags?: unknown
   /** Migration-only escape hatch for a session whose project definition was absent. */
   allowOrphanProject?: boolean
 }
 
 export type UpdateSessionInput = Partial<Omit<CreateSessionInput, 'id'>>
+
+export class InvalidSessionTagsError extends Error {
+  readonly code = 'INVALID_SESSION_TAGS'
+
+  constructor() {
+    super('Session tags must be an array of up to 12 valid strings, each no longer than 32 characters')
+    this.name = 'InvalidSessionTagsError'
+  }
+}
+
+export function normalizeSessionTags(value: unknown): string[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 12) throw new InvalidSessionTagsError()
+  const tags: string[] = []
+  const seen = new Set<string>()
+  for (const raw of value) {
+    if (typeof raw !== 'string') throw new InvalidSessionTagsError()
+    const tag = raw.trim()
+    if (!tag || tag.length > 32 || !/^[A-Za-z0-9 _-]+$/.test(tag)) throw new InvalidSessionTagsError()
+    const key = tag.toLocaleLowerCase()
+    if (!seen.has(key)) {
+      seen.add(key)
+      tags.push(tag)
+    }
+  }
+  return tags
+}
 
 export class ProjectPathConflictError extends Error {
   readonly code = 'PROJECT_PATH_CONFLICT'
@@ -96,7 +125,7 @@ export type ListSessionsOptions = {
 }
 
 export type LegacyProjectDefinition = ProjectDefinition
-export type LegacySessionRecord = Omit<SessionRecord, 'userId'> & { userId?: string }
+export type LegacySessionRecord = Omit<SessionRecord, 'userId' | 'tags'> & { userId?: string; tags?: unknown }
 
 export type MigrationIssue = {
   kind: 'project' | 'session'
@@ -149,6 +178,7 @@ export const PROJECT_SESSION_SCHEMA = {
       { name: 'model', type: 'text' },
       { name: 'directory', type: 'text' },
       { name: 'permission_override', type: 'select', values: ['ask', 'none', 'allow_all'], maxSelect: 1 },
+      { name: 'tags', type: 'json' },
     ],
     indexes: [
       'CREATE UNIQUE INDEX idx_sessions_user_session ON sessions (user_id, session_id)',
@@ -262,6 +292,7 @@ function sessionFromRecord(value: CollectionRecord): StoredSessionRecord {
     ...(optionalString(value.directory) ? { directory: optionalString(value.directory) } : {}),
     ...(permission ? { permissionOverride: permission } : {}),
     ...(optionalString(value.project_id) ? { projectId: optionalString(value.project_id) } : {}),
+    tags: normalizeSessionTags(value.tags),
   }
 }
 
@@ -299,6 +330,7 @@ function sessionData(userId: string, input: CreateSessionInput, now: number): Re
   if (!project) throw new Error('Session project is required')
   if (!title) throw new Error('Session title is required')
   const permission = normalizePermission(input.permissionOverride)
+  const tags = normalizeSessionTags(input.tags)
   return {
     user_id: userId,
     session_id: id,
@@ -312,6 +344,7 @@ function sessionData(userId: string, input: CreateSessionInput, now: number): Re
     model: input.model?.trim() || '',
     directory: input.directory?.trim() ? resolve(input.directory) : '',
     permission_override: permission ?? '',
+    tags,
   }
 }
 
@@ -356,6 +389,7 @@ function sessionUpdateData(input: UpdateSessionInput): Record<string, unknown> {
   if (input.model !== undefined) data.model = input.model.trim()
   if (input.directory !== undefined) data.directory = input.directory.trim() ? resolve(input.directory) : ''
   if (input.permissionOverride !== undefined) data.permission_override = normalizePermission(input.permissionOverride) ?? ''
+  if (input.tags !== undefined) data.tags = normalizeSessionTags(input.tags)
   return data
 }
 
@@ -691,6 +725,7 @@ function parseSession(value: unknown): LegacySessionRecord | null {
     ...(typeof item.directory === 'string' ? { directory: item.directory } : {}),
     ...(typeof item.userId === 'string' ? { userId: item.userId } : {}),
     ...(permissionOverride ? { permissionOverride } : {}),
+    tags: item.tags === undefined ? [] : normalizeSessionTags(item.tags),
   }
 }
 
@@ -752,6 +787,7 @@ function legacySessionInput(legacy: LegacySessionRecord): CreateSessionInput {
     model: legacy.model,
     directory: legacy.directory,
     permissionOverride: legacy.permissionOverride,
+    tags: legacy.tags,
     allowOrphanProject: true,
   }
 }
@@ -768,6 +804,7 @@ function mergeLegacySession(existing: StoredSessionRecord, incoming: CreateSessi
     ...(incoming.model || existing.model ? { model: incoming.model ?? existing.model } : {}),
     ...(incoming.directory || existing.directory ? { directory: incoming.directory ?? existing.directory } : {}),
     ...(incoming.permissionOverride || existing.permissionOverride ? { permissionOverride: incoming.permissionOverride ?? existing.permissionOverride } : {}),
+    tags: incoming.tags === undefined ? existing.tags : normalizeSessionTags(incoming.tags),
     ...(incoming.allowOrphanProject ? { allowOrphanProject: true } : {}),
   }
 }

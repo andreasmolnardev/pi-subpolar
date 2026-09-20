@@ -9,6 +9,7 @@ import { Card } from '@/components/ui/card'
 import { Plus } from 'lucide-react'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 import { formatDistanceToNow } from 'date-fns'
+import { SessionTags } from '@/components/session/SessionTags'
 
 export function mergeStoredSessionPages(pages: Array<{ sessions: StoredSession[] }>): StoredSession[] {
   const unique = new Map<string, StoredSession>()
@@ -99,6 +100,7 @@ export function History() {
                     <div className="text-xs text-muted-foreground">
                       {formatDistanceToNow(new Date(session.updatedAt), { addSuffix: true })}
                     </div>
+                    <SessionTags session={session} />
                   </div>
                 </Card>
               ))}

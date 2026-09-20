@@ -92,4 +92,16 @@ describe('session pagination route', () => {
     expect(route.indexOf("if (requestedCursor && !cursor) return json")).toBeLessThan(route.indexOf('repository.listSessions'))
     expect(route).toContain("const project = cursor?.project ?? url.searchParams.get('project')")
   })
+
+  it('normalizes and validates owner-scoped session tags on create and patch', () => {
+    const routes = section("if (path[1] === 'sessions' && path.length === 2 && request.method === 'POST')", "if (path[1] === 'sessions' && path.length >= 3)")
+    expect(routes).toContain('normalizeSessionTags(input.tags)')
+    expect(routes).toContain('InvalidSessionTagsError')
+    expect(routes).toContain('tags,')
+
+    const sessionRoutes = section("if (path[1] === 'sessions' && path.length >= 3)", "if (path[1] === 'extensions'")
+    expect(sessionRoutes).toContain('getSessionById(id)')
+    expect(sessionRoutes).toContain('normalizeSessionTags(input.tags)')
+    expect(sessionRoutes.indexOf('updateSession(ownerId, id')).toBeLessThan(sessionRoutes.indexOf('record.tags = updated.tags'))
+  })
 })

@@ -133,6 +133,7 @@ import { redactSensitive, redactSensitiveText } from './server/security-redactio
 import { handleVoiceRoute, localVoiceBackends, type VoiceBackends, redactVoiceSettings, VoiceAuthorizationError } from './server/voice/index.ts'
 import { permissionAskedProperties } from './server/approval-event.ts'
 import { escapeFilter } from './server/pocketbase.ts'
+import { InvalidSessionTagsError, normalizeSessionTags } from './server/project-store.ts'
 import { createEventCursor, ensureEventCursorSchema } from './server/event-cursor.ts'
 import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/project-filesystem.ts'
 import { GitPathPolicy } from './server/git/policy.ts'
@@ -179,6 +180,7 @@ type SessionRecord = {
   directory?: string
   userId?: string
   permissionOverride?: PermissionOverride
+  tags: string[]
 }
 type RpcCommand = Record<string, unknown> & { type: string }
 type RpcMessage = Record<string, unknown> & { type?: string; id?: string }
@@ -472,6 +474,7 @@ database.exec(`
     directory TEXT,
     user_id TEXT,
     permission_override TEXT
+    ,tags TEXT NOT NULL DEFAULT '[]'
   );
   CREATE TABLE IF NOT EXISTS proxy_credentials (
     id TEXT PRIMARY KEY,
@@ -518,6 +521,7 @@ database.exec(`
 ensureEventCursorSchema(database)
 try { database.exec('ALTER TABLE sessions ADD COLUMN user_id TEXT') } catch { /* already migrated */ }
 try { database.exec('ALTER TABLE sessions ADD COLUMN permission_override TEXT') } catch { /* already migrated */ }
+try { database.exec("ALTER TABLE sessions ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'") } catch { /* already migrated */ }
 try { database.exec('ALTER TABLE message_deliveries ADD COLUMN response TEXT') } catch { /* already migrated */ }
 reconcileRunningDeliveries(database)
 const allowedRpcCommands = new Set([
@@ -642,11 +646,11 @@ function sessionWorkspace(id: string): string {
 }
 
 function loadState(): SessionRecord[] {
-  const rows = database.query('SELECT id, project, title, created_at, updated_at, archived, profile, model, directory, user_id, permission_override FROM sessions ORDER BY updated_at').all() as Array<Record<string, unknown>>
+  const rows = database.query('SELECT id, project, title, created_at, updated_at, archived, profile, model, directory, user_id, permission_override, tags FROM sessions ORDER BY updated_at').all() as Array<Record<string, unknown>>
   if (rows.length > 0 || !existsSync(legacyStatePath)) return rows.map(sessionFromRow).filter(isSessionRecord)
   try {
     const value = JSON.parse(readFileSync(legacyStatePath, 'utf8')) as unknown
-    const legacy = Array.isArray(value) ? value.filter(isSessionRecord) : []
+    const legacy = Array.isArray(value) ? value.filter(isSessionRecord).map((item) => ({ ...item, tags: normalizeSessionTags(item.tags) })) : []
     saveStateSync(legacy)
     return legacy
   } catch {
@@ -665,7 +669,13 @@ function sessionFromRow(row: Record<string, unknown>): SessionRecord {
     ...(typeof row.user_id === 'string' ? { userId: row.user_id } : {}),
     ...(row.permission_override === 'ask' || row.permission_override === 'none' || row.permission_override === 'allow_all'
       ? { permissionOverride: row.permission_override } : {}),
+    tags: parseLocalTags(row.tags),
   }
+}
+
+function parseLocalTags(value: unknown): string[] {
+  if (typeof value !== 'string') return []
+  try { return normalizeSessionTags(JSON.parse(value)) } catch { return [] }
 }
 
 function isSessionRecord(value: unknown): value is SessionRecord {
@@ -673,6 +683,7 @@ function isSessionRecord(value: unknown): value is SessionRecord {
   const item = value as Partial<SessionRecord>
   return typeof item.id === 'string' && typeof item.project === 'string' && typeof item.title === 'string'
     && typeof item.createdAt === 'number' && typeof item.updatedAt === 'number'
+     && (item.tags === undefined || Array.isArray(item.tags))
 }
 
 let sessions = loadState()
@@ -745,8 +756,8 @@ function broadcastSse(value: unknown, userId?: string): void {
 function saveStateSync(records: SessionRecord[]): void {
   const transaction = database.transaction((items: SessionRecord[]) => {
     database.exec('DELETE FROM sessions')
-    const insert = database.query('INSERT INTO sessions (id, project, title, created_at, updated_at, archived, profile, model, directory, user_id, permission_override) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    for (const session of items) insert.run(session.id, session.project, session.title, session.createdAt, session.updatedAt, session.archived ? 1 : 0, session.profile ?? null, session.model ?? null, session.directory ?? null, session.userId ?? null, session.permissionOverride ?? null)
+    const insert = database.query('INSERT INTO sessions (id, project, title, created_at, updated_at, archived, profile, model, directory, user_id, permission_override, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    for (const session of items) insert.run(session.id, session.project, session.title, session.createdAt, session.updatedAt, session.archived ? 1 : 0, session.profile ?? null, session.model ?? null, session.directory ?? null, session.userId ?? null, session.permissionOverride ?? null, JSON.stringify(session.tags))
   })
   transaction(records)
 }
@@ -951,6 +962,7 @@ function nativeSessionRecord(filePath: string, knownProjects: Project[]): Sessio
       title: title ?? 'Untitled session',
       createdAt,
       updatedAt,
+      tags: [],
     }
   } catch {
     return undefined
@@ -1003,6 +1015,7 @@ type DurableSession = {
   directory?: string
   userId: string
   permissionOverride?: PermissionOverride
+  tags: string[]
 }
 
 function localSessionRecord(stored: DurableSession): SessionRecord {
@@ -1018,6 +1031,7 @@ function localSessionRecord(stored: DurableSession): SessionRecord {
     directory: stored.directory,
     userId: stored.userId,
     permissionOverride: stored.permissionOverride,
+    tags: stored.tags,
   }
 }
 
@@ -1231,7 +1245,7 @@ async function executeSubagentHost(input: { task: import('./server/task-control-
     worktree = await subagentWorktrees.create({ ownerId: input.task.owner_id, projectId: input.task.project_id, repository: cwd, baseRef: 'HEAD', taskId: input.task.id })
     await (await applicationDatabase()).collection('tasks').update(input.task.id, { worktree_id: worktree.id, base_ref: worktree.baseRef, updated_at: Date.now() })
   }
-  const record: SessionRecord = { id: `subagent-${input.task.id}`, project: 'Subagent', title: input.task.title, createdAt: Date.now(), updatedAt: Date.now(), userId: input.task.owner_id, profile: input.task.subagent_id, directory: worktree?.path ?? cwd }
+  const record: SessionRecord = { id: `subagent-${input.task.id}`, project: 'Subagent', title: input.task.title, createdAt: Date.now(), updatedAt: Date.now(), userId: input.task.owner_id, profile: input.task.subagent_id, directory: worktree?.path ?? cwd, tags: [] }
   const project: Project = { name: 'Subagent', path: worktree?.path ?? cwd }
   const session = new PiSdkSession(record, project, input.capabilities)
   const abort = () => { void session.send({ type: 'abort' }) }
@@ -3336,6 +3350,14 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
       if (error instanceof ModelUnavailableError) return json({ error: error.message, code: error.code }, 409)
       throw error
     }
+    let tags: string[] = []
+    if (input.tags !== undefined) {
+      try { tags = normalizeSessionTags(input.tags) }
+      catch (error) {
+        if (error instanceof InvalidSessionTagsError) return json({ error: error.message, code: error.code }, 400)
+        throw error
+      }
+    }
     const now = Date.now()
     const id = crypto.randomUUID()
     const directory = project.name === 'General Chat' ? sessionWorkspace(id) : project.path
@@ -3346,6 +3368,7 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
       project: project.name,
       ...(typeof project.id === 'string' ? { projectId: project.id } : {}),
       title: typeof input.title === 'string' && input.title.trim() ? input.title.trim() : 'Untitled session',
+      tags,
       createdAt: now,
       updatedAt: now,
       directory,
@@ -3364,6 +3387,7 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
       model: stored.model,
       userId: stored.userId,
       permissionOverride: stored.permissionOverride,
+      tags: stored.tags,
     }
     sessions.push(record)
     await saveState()
@@ -3384,22 +3408,29 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
       if (path.length === 3 && request.method === 'GET') return json(storedSessionResponse(ownedRecord, await createProjectSessionRepository(ownershipClient).listProjects(ownerId)))
       if (path.length === 3 && request.method === 'PATCH') {
         const input = await body(request)
+        let tags: string[] | undefined
+        if (input.tags !== undefined) {
+          try { tags = normalizeSessionTags(input.tags) }
+          catch (error) {
+            if (error instanceof InvalidSessionTagsError) return json({ error: error.message, code: error.code }, 400)
+            throw error
+          }
+        }
         const title = typeof input.title === 'string' ? input.title.trim() : ''
         const client = ownershipClient
         const record = ownedRecord
-        if (title) {
-          await sendRpc(id, { type: 'set_session_name', name: title }, ownedRecord)
-          record.title = title
-        }
-        if (typeof input.archived === 'boolean') record.archived = input.archived
         const updated = await createProjectSessionRepository(client).updateSession(ownerId, id, {
           ...(title ? { title } : {}),
           ...(typeof input.archived === 'boolean' ? { archived: input.archived } : {}),
+          ...(tags !== undefined ? { tags } : {}),
         })
         if (updated) {
           record.updatedAt = updated.updatedAt
           record.title = updated.title
+          record.archived = updated.archived
+          record.tags = updated.tags
         }
+        if (title) await sendRpc(id, { type: 'set_session_name', name: title }, ownedRecord)
         await saveState()
         return json({ session: storedSessionResponse(record, await createProjectSessionRepository(client).listProjects(ownerId)) })
       }
@@ -3693,7 +3724,7 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     const ownedSessions = (await createProjectSessionRepository(await applicationDatabase()).listSessions(authenticatedUser!.id, { includeArchived: true }))
     for (const stored of ownedSessions) {
       const record = sessions.find((candidate) => candidate.id === stored.id && candidate.userId === authenticatedUser!.id) ?? {
-        id: stored.id, project: stored.project, title: stored.title, createdAt: stored.createdAt, updatedAt: stored.updatedAt, userId: stored.userId,
+        id: stored.id, project: stored.project, title: stored.title, createdAt: stored.createdAt, updatedAt: stored.updatedAt, userId: stored.userId, tags: stored.tags,
       }
       try {
         const response = await sendRpc(record.id, { type: 'get_messages' }, record) as RpcMessage
@@ -3712,7 +3743,7 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
     const ownedSessions = await createProjectSessionRepository(await applicationDatabase()).listSessions(authenticatedUser!.id, { includeArchived: true })
     for (const stored of ownedSessions) {
       const record = sessions.find((candidate) => candidate.id === stored.id && candidate.userId === authenticatedUser!.id) ?? {
-        id: stored.id, project: stored.project, title: stored.title, createdAt: stored.createdAt, updatedAt: stored.updatedAt, userId: stored.userId,
+        id: stored.id, project: stored.project, title: stored.title, createdAt: stored.createdAt, updatedAt: stored.updatedAt, userId: stored.userId, tags: stored.tags,
       }
       try {
         const response = await sendRpc(record.id, { type: 'get_session_stats' }, record) as RpcMessage
