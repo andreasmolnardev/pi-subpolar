@@ -19,6 +19,30 @@ export interface ManifestReport {
   serialization?: string;
 }
 
+export type MigrationVerificationErrorCode =
+  | "INVALID_MANIFEST"
+  | "MISSING_PAYLOAD"
+  | "UNEXPECTED_PAYLOAD"
+  | "CHECKSUM_MISMATCH";
+
+export interface MigrationVerificationError {
+  code: MigrationVerificationErrorCode;
+  id?: string;
+}
+
+export interface MigrationStepVerification {
+  id: string;
+  order: number;
+  valid: boolean;
+  code?: Exclude<MigrationVerificationErrorCode, "INVALID_MANIFEST" | "UNEXPECTED_PAYLOAD">;
+}
+
+export interface MigrationVerificationReport {
+  valid: boolean;
+  errors: readonly MigrationVerificationError[];
+  results: readonly MigrationStepVerification[];
+}
+
 export interface DryRunRequest {
   operation: "migration" | "backup" | "restore";
   manifest: unknown;
@@ -87,6 +111,48 @@ export function createManifestReport(input: ManifestInput | unknown): ManifestRe
 
 export function validateManifestReport(manifest: unknown): ManifestReport {
   return validationReport(manifest);
+}
+
+/** Verify migration payloads without executing or accessing them through I/O. */
+export async function verifyMigrationSteps(
+  manifest: unknown,
+  payloads: Map<string, Uint8Array>,
+): Promise<MigrationVerificationReport> {
+  const report = validationReport(manifest);
+  if (!report.valid || !report.manifest) {
+    return { valid: false, errors: [{ code: "INVALID_MANIFEST" }], results: [] };
+  }
+
+  const results: MigrationStepVerification[] = [];
+  const errors: MigrationVerificationError[] = [];
+  const expectedIds = new Set<string>();
+
+  for (const step of report.manifest.migration.steps) {
+    expectedIds.add(step.id);
+    if (!payloads.has(step.id)) {
+      results.push({ id: step.id, order: step.order, valid: false, code: "MISSING_PAYLOAD" });
+      errors.push({ code: "MISSING_PAYLOAD", id: step.id });
+      continue;
+    }
+
+    const payload = payloads.get(step.id) as Uint8Array;
+    const payloadBuffer = new ArrayBuffer(payload.byteLength);
+    new Uint8Array(payloadBuffer).set(payload);
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", payloadBuffer);
+    const checksum = `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    if (checksum !== step.checksum) {
+      results.push({ id: step.id, order: step.order, valid: false, code: "CHECKSUM_MISMATCH" });
+      errors.push({ code: "CHECKSUM_MISMATCH", id: step.id });
+    } else {
+      results.push({ id: step.id, order: step.order, valid: true });
+    }
+  }
+
+  for (const id of Array.from(payloads.keys()).sort()) {
+    if (!expectedIds.has(id)) errors.push({ code: "UNEXPECTED_PAYLOAD", id });
+  }
+
+  return { valid: errors.length === 0, errors, results };
 }
 
 export function createDryRunReport(request: DryRunRequest): DryRunReport {

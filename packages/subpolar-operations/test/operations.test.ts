@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildOperationsManifest, createDryRunReport, createManifestReport, serializeManifestReport } from "../src/index.ts";
+import { buildOperationsManifest, createDryRunReport, createManifestReport, serializeManifestReport, verifyMigrationSteps } from "../src/index.ts";
 import type { OperationsManifest } from "@subpolar/contracts";
 
 const input = {
@@ -33,5 +33,68 @@ describe("operations consumer", () => {
     const restore = { ...input, restore: { mode: "replace" as const, dryRun: true, overwrite: true, requiresApproval: true, approvalId: "approval-1" } };
     expect(createDryRunReport({ operation: "restore", manifest: restore }).refusal?.code).toBe("DESTRUCTIVE_RESTORE_APPROVAL_REQUIRED");
     expect(createDryRunReport({ operation: "restore", manifest: restore, approved: true }).performed).toBe(false);
+  });
+
+  test("verifies payloads in manifest order without changing the inputs", async () => {
+    const manifest = buildOperationsManifest({
+      ...input,
+      migration: {
+        ...input.migration,
+        steps: [
+          { id: "step-a", order: 1, kind: "data", description: "A", checksum: `sha256:${"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}`, reversible: true },
+          { id: "step-b", order: 2, kind: "schema", description: "B", checksum: `sha256:${"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}`, reversible: true },
+        ],
+      },
+    });
+    const payloads = new Map([
+      ["step-b", new Uint8Array()],
+      ["step-a", new TextEncoder().encode("abc")],
+    ]);
+    const before = Array.from(payloads.entries());
+
+    await expect(verifyMigrationSteps(manifest, payloads)).resolves.toEqual({
+      valid: true,
+      errors: [],
+      results: [
+        { id: "step-a", order: 1, valid: true },
+        { id: "step-b", order: 2, valid: true },
+      ],
+    });
+    expect(Array.from(payloads.entries())).toEqual(before);
+  });
+
+  test("reports stable checksum, missing, and unexpected payload codes", async () => {
+    const manifest = buildOperationsManifest({
+      ...input,
+      migration: {
+        ...input.migration,
+        steps: [{ id: "step-a", order: 1, kind: "data", description: "A", checksum: `sha256:${"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}`, reversible: true }],
+      },
+    });
+    const result = await verifyMigrationSteps(manifest, new Map([
+      ["step-a", new TextEncoder().encode("not abc")],
+      ["extra", new Uint8Array([1])],
+    ]));
+    expect(result).toEqual({
+      valid: false,
+      errors: [
+        { code: "CHECKSUM_MISMATCH", id: "step-a" },
+        { code: "UNEXPECTED_PAYLOAD", id: "extra" },
+      ],
+      results: [{ id: "step-a", order: 1, valid: false, code: "CHECKSUM_MISMATCH" }],
+    });
+
+    const missing = await verifyMigrationSteps(manifest, new Map());
+    expect(missing.errors).toEqual([{ code: "MISSING_PAYLOAD", id: "step-a" }]);
+  });
+
+  test("validates the manifest before inspecting payloads", async () => {
+    const invalid = { ...input, limits: { ...input.limits, maxArtifacts: 0 } };
+    const payloads = new Map([["unexpected", new Uint8Array([1])]]);
+    expect(await verifyMigrationSteps(invalid, payloads)).toEqual({
+      valid: false,
+      errors: [{ code: "INVALID_MANIFEST" }],
+      results: [],
+    });
   });
 });
