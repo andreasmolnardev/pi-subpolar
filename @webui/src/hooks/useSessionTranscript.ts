@@ -23,6 +23,7 @@ const wsUrl = (url: string) => {
 
 export function useSessionTranscript(apiUrl: string | null | undefined, sessionID: string | undefined, directory?: string) {
   const queryClient = useQueryClient(); const socketRef = useRef<WebSocket | null>(null); const cursor = useRef<string | null>(null)
+  const loadAllRef = useRef<{ messages: MessageWithParts[]; resolve: (messages: MessageWithParts[]) => void; reject: (error: Error) => void } | null>(null)
   const loadingOlder = useRef(false); const toolOwners = useRef(new Map<string, { messageId: string; partId: string }>()); const accumulators = useRef(new Map<string, AssistantMessageAccumulator>()); const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null); const [reconnectAttempt, setReconnectAttempt] = useState(0); const [isLoading, setLoading] = useState(true); const [isConnected, setConnected] = useState(false); const [isReconnecting, setReconnecting] = useState(false); const [hasOlder, setHasOlder] = useState(false)
   const key = useMemo(() => messagesQueryKey(apiUrl, sessionID, directory), [apiUrl, sessionID, directory])
   const query = useQuery<MessageWithParts[]>({ queryKey: key, queryFn: async () => [], enabled: false })
@@ -157,10 +158,11 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
     if (!apiUrl || !sessionID) return
     let closed = false; const socket = new WebSocket(`${wsUrl(apiUrl)}/sessions/${encodeURIComponent(sessionID)}/events`); socketRef.current = socket
     socket.onopen = () => { setConnected(true); setReconnecting(false); socket.send(JSON.stringify({ type: 'history.load', limit: 30 })) }
-    socket.onmessage = (message) => { const value = asObject(JSON.parse(message.data)); if (value.type === 'history.chunk') { const incoming = (value.messages ?? []) as MessageWithParts[]; cursor.current = value.before ?? null; setHasOlder(Boolean(value.hasMore)); queryClient.setQueryData<MessageWithParts[]>(key, (old = []) => value.mode === 'prepend' ? [...incoming.filter((x) => !old.some((y) => y.info.id === x.info.id)), ...old] : incoming); setLoading(false) } else if (value.type === 'transcript.event') applyEvent(value) }
+    socket.onmessage = (message) => { const value = asObject(JSON.parse(message.data)); if (value.type === 'history.chunk') { const incoming = (value.messages ?? []) as MessageWithParts[]; cursor.current = value.before ?? null; setHasOlder(Boolean(value.hasMore)); queryClient.setQueryData<MessageWithParts[]>(key, (old = []) => value.mode === 'prepend' ? [...incoming.filter((x) => !old.some((y) => y.info.id === x.info.id)), ...old] : incoming); setLoading(false); const loadingAll = loadAllRef.current; if (loadingAll) { loadingAll.messages = [...incoming, ...loadingAll.messages.filter((old) => !incoming.some((item) => item.info.id === old.info.id))]; if (value.hasMore && cursor.current) socket.send(JSON.stringify({ type: 'history.load', before: cursor.current, limit: 30 })); else { loadAllRef.current = null; loadingAll.resolve(loadingAll.messages) } } } else if (value.type === 'transcript.event') applyEvent(value) }
     socket.onclose = () => {
       setConnected(false)
-      if (!closed) {
+       if (loadAllRef.current) { loadAllRef.current.reject(new Error('Transcript connection closed before loading all messages')); loadAllRef.current = null }
+       if (!closed) {
         setReconnecting(true)
         reconnectTimer.current = setTimeout(() => { if (!closed) { setLoading(true); setReconnectAttempt((value) => value + 1) } }, 1000)
       }
@@ -169,5 +171,12 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
   }, [apiUrl, sessionID, key, queryClient, applyEvent, reconnectAttempt])
 
   const loadOlder = useCallback(() => { if (!cursor.current || loadingOlder.current || socketRef.current?.readyState !== WebSocket.OPEN) return; loadingOlder.current = true; socketRef.current.send(JSON.stringify({ type: 'history.load', before: cursor.current, limit: 30 })); setTimeout(() => { loadingOlder.current = false }, 300) }, [])
-  return { messages: query.data, isLoading, isConnected, isReconnecting, hasOlder, loadOlder }
+  const loadAll = useCallback(() => new Promise<MessageWithParts[]>((resolve, reject) => {
+    const current = queryClient.getQueryData<MessageWithParts[]>(key) ?? []
+    if (!cursor.current || !hasOlder) { resolve(current); return }
+    if (socketRef.current?.readyState !== WebSocket.OPEN) { reject(new Error('Transcript is not connected')); return }
+    loadAllRef.current = { messages: current, resolve, reject }
+    socketRef.current.send(JSON.stringify({ type: 'history.load', before: cursor.current, limit: 30 }))
+  }), [hasOlder, key, queryClient])
+  return { messages: query.data, isLoading, isConnected, isReconnecting, hasOlder, loadOlder, loadAll }
 }

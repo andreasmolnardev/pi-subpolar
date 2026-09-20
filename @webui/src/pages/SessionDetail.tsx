@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getProject, hasProjectId, listProjects } from "@/api/projects";
 import { MessageThread } from "@/components/message/MessageThread";
 import { ChatInputBar, type ChatInputBarHandle } from "@/components/chat/ChatInputBar";
-import { ChevronDown, CornerUpLeft } from "lucide-react";
+import { ChevronDown, CornerUpLeft, Download } from "lucide-react";
 import { Header } from "@/components/ui/header";
 import { SessionList } from "@/components/session/SessionList";
 import { ProjectNotFoundDialog } from "@/components/project/ProjectNotFoundDialog";
@@ -57,6 +57,7 @@ import {
   type StoredPendingSessionPrompt,
 } from "@/lib/pending-session-prompt";
 import { newSessionPath } from "@/lib/new-session-route";
+import { downloadTranscript, exportTranscript, type TranscriptExportFormat } from "@/lib/transcriptExport";
 
 const compareMessageIds = (id1: string, id2: string): number => {
   const num1 = parseInt(id1, 10)
@@ -114,6 +115,7 @@ export function SessionDetail() {
   const [, setPendingPromptVersion] = useState(0);
   const [sessionsPopoverOpen, setSessionsPopoverOpen] = useState(false);
   const [minimizedQuestion, setMinimizedQuestion] = useState<QuestionRequest | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<TranscriptExportFormat | null>(null);
 
   const isMobile = useMobile();
   const { keyboardHeight } = useVisualViewport();
@@ -498,6 +500,24 @@ export function SessionDetail() {
     promptInputRef.current?.setPromptValue(restoredPrompt)
   }, []);
 
+  const handleExport = useCallback(async (format: TranscriptExportFormat) => {
+    if (!session) return
+    setExportingFormat(format)
+    const toastId = showToast.loading('Loading complete transcript...')
+    try {
+      const allMessages = await transcript.loadAll()
+      const result = exportTranscript(session, allMessages, format)
+      downloadTranscript(result.content, result.filename, format)
+      showToast.dismiss(toastId)
+      showToast.success(`Transcript downloaded as ${format.toUpperCase()}`)
+    } catch (error) {
+      showToast.dismiss(toastId)
+      showToast.error(error instanceof Error ? error.message : 'Unable to export transcript')
+    } finally {
+      setExportingFormat(null)
+    }
+  }, [session, transcript.loadAll])
+
   if (!sessionId) {
     return <Navigate to="/" replace />;
   }
@@ -573,7 +593,8 @@ export function SessionDetail() {
                 )}
                 <Popover open={sessionsPopoverOpen} onOpenChange={setSessionsPopoverOpen}>
                   <PopoverTrigger asChild>
-                    <button
+                     <button
+                       aria-label={`Switch session: ${sessionTitle}`}
                       className="flex min-w-0 items-center gap-1 rounded px-1 -mx-1 transition-colors hover:bg-accent"
                       title="Switch session"
                     >
@@ -606,7 +627,7 @@ export function SessionDetail() {
             <div className="flex items-center gap-1">
               <PendingActionsGroup />
             </div>
-            <ContextUsageIndicator
+             <ContextUsageIndicator
               apiUrl={apiUrl}
               sessionID={sessionId}
               directory={repoDirectory}
@@ -614,6 +635,20 @@ export function SessionDetail() {
               isReconnecting={isReconnecting}
               messages={messages}
             />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" aria-label="Export transcript" disabled={exportingFormat !== null}>
+                  <Download className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel>Export transcript</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => void handleExport('markdown')}>Markdown</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void handleExport('text')}>Plain text</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void handleExport('json')}>JSON</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <SessionMoreButton />
           </Header.Actions>
         </Header>

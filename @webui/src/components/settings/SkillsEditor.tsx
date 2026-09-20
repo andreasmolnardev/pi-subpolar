@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { SkillDialog } from './SkillDialog'
 import { DeleteDialog } from '@/components/ui/delete-dialog'
 import { settingsApi } from '@/api/settings'
+import { FetchError } from '@/api/fetchWrapper'
 import type { OpenCodeConfigInput, SkillFileInfo, CreateSkillRequest, UpdateSkillRequest, SkillScope } from '@subpolar/shared'
 import { toast } from 'sonner'
 
@@ -121,7 +122,9 @@ export function SkillsEditor({ skills, managedSkills = [], onChange }: SkillsEdi
       setEditingSkill(null)
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : 'Failed to update skill')
+      toast.error(error instanceof FetchError && error.statusCode === 409
+        ? 'Skill changed elsewhere. Reload it before updating.'
+        : error instanceof Error ? error.message : 'Failed to update skill')
     },
   })
 

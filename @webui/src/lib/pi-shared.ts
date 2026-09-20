@@ -115,7 +115,27 @@ export function getQuestionText(input: { questions?: unknown }): string {
 
 // Type-only compatibility surface for source components that remain cloned but are not Pi-backed.
 export type AgentSkillAccess = any
-export type SkillFileInfo = any
+export type SkillScope = 'global' | 'agent' | 'project'
+export type SkillContextMode = 'always-loaded' | 'discoverable' | 'explicit-only' | 'disabled'
+export interface SkillFileInfo {
+  id?: string
+  ownerId?: string
+  name: string
+  scope: SkillScope
+  mode?: SkillContextMode
+  version?: number
+  metadata?: Record<string, string>
+  body: string
+  reference?: string
+  agentId?: string
+  projectId?: string
+  description: string
+  repoId?: number | string
+  repoName?: string
+  source?: string
+  inputSchema?: unknown
+  location?: string
+}
 export type TTSConfig = any
 export type STTConfig = any
 export type OpenCodeConfigContent = any
@@ -127,9 +147,8 @@ export type IntegrationSettings = any
 export type DefaultModels = any
 export type AgentDefinition = any
 export type SkillDiscoveryMode = any
-export type CreateSkillRequest = any
-export type UpdateSkillRequest = any
-export type SkillScope = any
+export type CreateSkillRequest = { id: string; name: string; scope: SkillScope; mode?: SkillContextMode; metadata?: Record<string, string>; body: string; reference?: string; agentId?: string; projectId?: string; description?: string; repoId?: number | string; version?: 1 }
+export type UpdateSkillRequest = { version: number; name?: string; mode?: SkillContextMode; metadata?: Record<string, string>; body?: string; reference?: string; description?: string; repoId?: number | string }
 export type GeneralChatStatus = any
 export type GeneralChatInitRequest = any
 export type NotificationPreferences = any

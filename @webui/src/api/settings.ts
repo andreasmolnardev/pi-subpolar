@@ -326,7 +326,7 @@ export const settingsApi = {
   getSkill: async (name: string, scope: SkillScope, repoId?: number): Promise<SkillFileInfo> => {
     const params = new URLSearchParams({ scope })
     if (repoId) params.set('repoId', String(repoId))
-    return fetchWrapper(`${API_BASE_URL}/api/settings/skills/${name}?${params}`)
+    return fetchWrapper(`${API_BASE_URL}/api/settings/skills/${encodeURIComponent(name)}?${params}`)
   },
 
   createSkill: async (data: CreateSkillRequest): Promise<SkillFileInfo> => {

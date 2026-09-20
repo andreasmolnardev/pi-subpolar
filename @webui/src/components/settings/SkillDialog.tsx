@@ -75,15 +75,20 @@ export function SkillDialog({ open, onOpenChange, onSubmit, editingSkill }: Skil
         name: editingSkill.name,
         scope: editingSkill.scope,
         repoId: editingSkill.scope === 'project' ? editingSkill.repoId : undefined,
+        version: (editingSkill.version ?? 1) + 1,
+        metadata: editingSkill.metadata ?? {},
         description: values.description,
         body: values.body,
       })
     } else {
       onSubmit({
         name: values.name,
+        id: values.name,
         description: values.description,
         body: values.body,
         scope: values.scope,
+        mode: 'discoverable',
+        metadata: {},
         repoId: values.scope === 'project' ? selectedRepoId : undefined,
       })
     }
