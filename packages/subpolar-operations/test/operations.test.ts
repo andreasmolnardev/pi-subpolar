@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { buildOperationsManifest, createDryRunReport, createManifestReport, serializeManifestReport, verifyMigrationSteps } from "../src/index.ts";
+import { buildOperationsManifest, createBackupArtifacts, createDryRunReport, createManifestReport, restoreBackupArtifacts, serializeManifestReport, verifyMigrationSteps } from "../src/index.ts";
 import type { OperationsManifest } from "@subpolar/contracts";
+import { mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 const input = {
   operationId: "backup:one", generatedAt: "2026-09-20T00:00:00.000Z",
@@ -96,5 +99,77 @@ describe("operations consumer", () => {
       errors: [{ code: "INVALID_MANIFEST" }],
       results: [],
     });
+  });
+
+  test("backs up and restores deterministic filesystem and memory roots", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subpolar-operations-"));
+    await mkdir(join(root, "nested"));
+    await writeFile(join(root, "nested", "a.txt"), "alpha");
+    const backup = await createBackupArtifacts([
+      { class: "metadata", root },
+      { class: "configuration", root: new Map([["settings.json", new TextEncoder().encode('{"ok":true}')]]) },
+    ], { backupId: "backup-1", createdAt: "2026-09-20T00:00:00.000Z", limits: { maxArtifacts: 5, maxArtifactBytes: 100, maxTotalBytes: 200 } });
+    const second = await createBackupArtifacts([
+      { class: "metadata", root },
+      { class: "configuration", root: new Map([["settings.json", new TextEncoder().encode('{"ok":true}')]]) },
+    ], { backupId: "backup-1", createdAt: "2026-09-20T00:00:00.000Z", limits: { maxArtifacts: 5, maxArtifactBytes: 100, maxTotalBytes: 200 } });
+    expect(serializeManifestReport(backup.archive.manifest)).toBe(serializeManifestReport(second.archive.manifest));
+    const target = await mkdtemp(join(tmpdir(), "subpolar-restore-"));
+    const result = await restoreBackupArtifacts(backup.archive, { targetRoot: target });
+    expect(result.performed).toBe(true);
+    expect(await readFile(join(target, "metadata", "nested", "a.txt"), "utf8")).toBe("alpha");
+  });
+
+  test("refuses secrets, limits, checksum failures, unsafe paths, and symlinks", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subpolar-unsafe-"));
+    await writeFile(join(root, "token.txt"), "no");
+    await expect(createBackupArtifacts([{ class: "metadata", root }], { backupId: "b", createdAt: input.generatedAt, limits: { maxArtifacts: 2, maxArtifactBytes: 10, maxTotalBytes: 20 } })).rejects.toThrow("secret");
+    await expect(createBackupArtifacts([{ class: "metadata", root: new Map([["../escape", new Uint8Array([1])]]) }], { backupId: "b", createdAt: input.generatedAt, limits: { maxArtifacts: 2, maxArtifactBytes: 10, maxTotalBytes: 20 } })).rejects.toThrow("invalid artifact path");
+    await expect(createBackupArtifacts([{ class: "metadata", root: new Map([["large", new Uint8Array(11)]]) }], { backupId: "b", createdAt: input.generatedAt, limits: { maxArtifacts: 2, maxArtifactBytes: 10, maxTotalBytes: 20 } })).rejects.toThrow("byte limit");
+    const link = join(root, "link.txt");
+    await symlink(join(root, "missing"), link);
+    await expect(createBackupArtifacts([{ class: "metadata", root }], { backupId: "b", createdAt: input.generatedAt, limits: { maxArtifacts: 10, maxArtifactBytes: 100, maxTotalBytes: 200 } })).rejects.toThrow("symlink");
+  });
+
+  test("requires approval for destructive restore and refuses checksum mismatch", async () => {
+    const archive = await createBackupArtifacts([{ class: "metadata", root: new Map([["file", new Uint8Array([1, 2, 3])]]) }], { backupId: "b", createdAt: input.generatedAt, limits: { maxArtifacts: 2, maxArtifactBytes: 10, maxTotalBytes: 20 } });
+    const target = await mkdtemp(join(tmpdir(), "subpolar-approval-"));
+    const overwriteArchive = { ...archive.archive, manifest: { ...archive.archive.manifest, restore: { ...archive.archive.manifest.restore, mode: "replace" as const, overwrite: true, requiresApproval: true, approvalId: "a" } } };
+    expect((await restoreBackupArtifacts(overwriteArchive, { targetRoot: target, overwrite: true, dryRun: true })).errors[0].code).toBe("APPROVAL_REQUIRED");
+    const approved = await restoreBackupArtifacts(overwriteArchive, { targetRoot: target, overwrite: true, dryRun: true, approved: true });
+    expect(approved.performed).toBe(false);
+    const broken = new Map(archive.archive.payloads);
+    broken.set("artifact-000001", new Uint8Array([9]));
+    const checksum = await restoreBackupArtifacts({ ...archive.archive, payloads: broken }, { targetRoot: target });
+    expect(checksum.errors[0].code).toBe("CHECKSUM_MISMATCH");
+  });
+
+  test("rolls back and cleans staging when a payload fails during restore", async () => {
+    const archive = await createBackupArtifacts([{ class: "metadata", root: new Map([
+      ["first", new Uint8Array([1])],
+      ["second", new Uint8Array([2])],
+    ]) }], { backupId: "b", createdAt: input.generatedAt, limits: { maxArtifacts: 3, maxArtifactBytes: 10, maxTotalBytes: 20 } });
+    const target = await mkdtemp(join(tmpdir(), "subpolar-atomic-"));
+    await writeFile(join(target, "sentinel"), "unchanged");
+    let stagingReads = 0;
+    const failingPayloads = new Map(archive.archive.payloads);
+    const payloads = {
+      get: (id: string) => {
+        const value = failingPayloads.get(id);
+        if (++stagingReads > archive.archive.manifest.backup.artifacts.length + 1) throw new Error("injected payload failure");
+        return value;
+      },
+      has: (id: string) => failingPayloads.has(id),
+      entries: () => failingPayloads.entries(),
+      keys: () => failingPayloads.keys(),
+      values: () => failingPayloads.values(),
+      get size() { return failingPayloads.size; },
+      [Symbol.iterator]: () => failingPayloads[Symbol.iterator](),
+    } as ReadonlyMap<string, Uint8Array>;
+    const result = await restoreBackupArtifacts({ ...archive.archive, payloads }, { targetRoot: target });
+    expect(result.valid).toBe(false);
+    expect(await readFile(join(target, "sentinel"), "utf8")).toBe("unchanged");
+    expect(await readdir(target)).toEqual(["sentinel"]);
+    expect((await readdir(dirname(target))).filter((name) => name.startsWith(".subpolar-restore-"))).toEqual([]);
   });
 });
