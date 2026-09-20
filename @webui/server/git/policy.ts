@@ -2,9 +2,11 @@ import { realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from '../project-filesystem.ts'
 import type { ProjectRecord } from '../project-store.ts'
-import { GitServiceError } from './contracts.ts'
+import { GitServiceError, type GitMutationApproval, type GitMutationOperation } from './contracts.ts'
 
 export type OwnedProjectLookup = (userId: string, projectId: string) => Promise<ProjectRecord | null>
+export type GitMutationAuthorizer = (input: { userId: string; projectId: string; operation: GitMutationOperation; approval: GitMutationApproval }) => boolean | Promise<boolean>
+export type GitMutationPolicyOptions = { allowMutations?: boolean; approvalToken?: string; authorizeMutation?: GitMutationAuthorizer }
 
 export function safeRelativePath(value: string | undefined): string | undefined {
   if (value === undefined || value === '') return undefined
@@ -23,7 +25,7 @@ export function safeRef(value: string | undefined): string | undefined {
 }
 
 export class GitPathPolicy {
-  constructor(private readonly lookup: OwnedProjectLookup, private readonly workspaceRoot = configuredWorkspaceRoot()) {}
+  constructor(private readonly lookup: OwnedProjectLookup, private readonly workspaceRoot = configuredWorkspaceRoot(), private readonly mutations: GitMutationPolicyOptions = {}) {}
 
   async project(userId: string, projectId: string): Promise<{ project: ProjectRecord; root: string }> {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(projectId)) throw new GitServiceError('PROJECT_NOT_FOUND', 'Project not found')
@@ -52,5 +54,13 @@ export class GitPathPolicy {
     const canonical = canonicalProjectPath(value)
     if (!isPathWithin(this.workspaceRoot, canonical) || !isPathWithin(root, canonical)) throw new GitServiceError('PATH_DENIED', 'Worktree is not owned')
     return canonical
+  }
+
+  async authorizeMutation(userId: string, projectId: string, operation: GitMutationOperation, approval: GitMutationApproval | undefined): Promise<void> {
+    if (this.mutations.allowMutations !== true) throw new GitServiceError('MUTATION_DENIED', 'Git mutation is not enabled')
+    if (!approval) throw new GitServiceError('APPROVAL_REQUIRED', 'Git mutation approval is required')
+    const tokenOkay = this.mutations.approvalToken !== undefined && approval.token === this.mutations.approvalToken
+    const callbackOkay = this.mutations.authorizeMutation ? await this.mutations.authorizeMutation({ userId, projectId, operation, approval }) : false
+    if (!tokenOkay && !callbackOkay) throw new GitServiceError('APPROVAL_REQUIRED', 'Git mutation approval is invalid')
   }
 }

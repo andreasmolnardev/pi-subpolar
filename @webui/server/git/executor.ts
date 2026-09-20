@@ -9,11 +9,12 @@ export type GitCommandResult = { stdout: string; stderr: string; code: number; t
 export type GitExecutor = (args: readonly string[], options: GitExecutorOptions) => Promise<GitCommandResult>
 
 export class GitExecutionError extends Error {
-  constructor(readonly kind: 'failed' | 'timeout' | 'output', message = 'Git operation failed') { super(message); this.name = 'GitExecutionError' }
+  constructor(readonly kind: 'failed' | 'timeout' | 'output', message = 'Git operation failed', readonly stdout = '', readonly stderr = '', readonly exitCode?: number) { super(message); this.name = 'GitExecutionError' }
 }
 
 /** Executes only the fixed Git binary with a minimal, non-credential environment. */
 export const executeGit: GitExecutor = (args, options) => new Promise((resolve, reject) => {
+  if (args.some((arg) => typeof arg !== 'string' || arg.includes('\0'))) { reject(new GitExecutionError('failed', 'Invalid Git arguments')); return }
   if (options.signal?.aborted) { reject(new GitExecutionError('timeout', 'Git operation cancelled')); return }
   const timeoutMs = options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS
   const maxBytes = options.maxOutputBytes ?? DEFAULT_GIT_OUTPUT_BYTES
@@ -42,5 +43,5 @@ export const executeGit: GitExecutor = (args, options) => new Promise((resolve, 
   child.stdout.on('data', (chunk: Buffer) => { stdout = append(stdout, chunk); if (stdout.length + stderr.length > maxBytes) limit() })
   child.stderr.on('data', (chunk: Buffer) => { stderr = append(stderr, chunk); if (stdout.length + stderr.length > maxBytes) limit() })
   child.on('error', () => finish(new GitExecutionError('failed')))
-  child.on('close', (code) => code === 0 ? finish(undefined, { stdout: stdout.toString('utf8'), stderr: stderr.toString('utf8'), code }) : finish(new GitExecutionError('failed')))
+  child.on('close', (code) => code === 0 ? finish(undefined, { stdout: stdout.toString('utf8'), stderr: stderr.toString('utf8'), code }) : finish(new GitExecutionError('failed', 'Git operation failed', stdout.toString('utf8'), stderr.toString('utf8'), code ?? undefined)))
 })
