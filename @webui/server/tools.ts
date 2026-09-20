@@ -33,6 +33,7 @@ export const TOOL_CONTEXT_MODES: readonly ToolContextMode[] = ['always', 'discov
 export const SKILL_CONTEXT_MODES: readonly SkillContextMode[] = ['always-loaded', 'discoverable', 'explicit-only', 'disabled']
 export const DECLARED_CAPABILITIES = ['subagent/run', 'read', 'write', 'bash'] as const
 const memoryMutationTools = new Set(['memory/write', 'memory/update', 'memory/delete'])
+const profileManagementTools = new Set(['list_agent_profiles', 'create_agent_profile', 'edit_agent_profile', 'delete_agent_profile'])
 const browserMutationGroups = new Set(['form-interaction', 'upload', 'download', 'submit', 'destructive'])
 export function memoryPolicyAllows(agent: { policies: Pick<AgentPolicySet, 'memory'>; template?: AgentDefinition['template'] }, toolId: string): boolean {
   return agent.policies.memory === true && !(memoryMutationTools.has(toolId) && (agent.template === 'plan' || agent.template === 'reviewer'))
@@ -134,6 +135,10 @@ export function configureSubagentToolRunner(runner: SubagentToolRunner | undefin
 
 const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>> = [
   { tool_id: 'subagent/run', namespace: 'builtin', description: 'Run an authorized isolated subagent task', adapter: 'internal', target: 'subagent', operation: 'run', input_schema: { type: 'object', properties: { targetAgent: { type: 'string', minLength: 1 }, prompt: { type: 'string', minLength: 1 }, capabilities: { type: 'array', items: { type: 'string' } }, coding: { type: 'boolean' } }, required: ['targetAgent', 'prompt'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'subagent/run' } },
+  { tool_id: 'list_agent_profiles', namespace: 'builtin', description: 'List agent profiles owned by the current user', adapter: 'internal', target: 'agent-profiles', operation: 'list', input_schema: { type: 'object', properties: {}, additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: { capability: 'agent-profiles' } },
+  { tool_id: 'create_agent_profile', namespace: 'builtin', description: 'Create an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'create', input_schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 80 }, description: { type: 'string', maxLength: 1000 }, mode: { type: 'string', enum: ['primary', 'subagent'] }, prompt: { type: 'string', maxLength: 100000 }, systemPrompt: { type: 'string', maxLength: 100000 }, enabled: { type: 'boolean' }, template: { type: 'string', enum: ['general', 'coding', 'plan', 'reviewer'] }, model: { type: 'string', maxLength: 200 }, thinking: { type: 'string', enum: ['off', 'minimal', 'low', 'medium', 'high'] }, approval_mode: { type: 'string', enum: ['auto', 'ask', 'deny'] }, policies: { type: 'object' }, project_overrides: { type: 'object' }, tool_context_modes: { type: 'object' }, skill_context_modes: { type: 'object' } }, required: ['name'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
+  { tool_id: 'edit_agent_profile', namespace: 'builtin', description: 'Edit an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'edit', input_schema: { type: 'object', properties: { agentId: { type: 'string', minLength: 1, maxLength: 100 }, name: { type: 'string', minLength: 1, maxLength: 80 }, description: { type: 'string', maxLength: 1000 }, mode: { type: 'string', enum: ['primary', 'subagent'] }, prompt: { type: 'string', maxLength: 100000 }, systemPrompt: { type: 'string', maxLength: 100000 }, enabled: { type: 'boolean' }, template: { type: 'string', enum: ['general', 'coding', 'plan', 'reviewer'] }, model: { type: 'string', maxLength: 200 }, thinking: { type: 'string', enum: ['off', 'minimal', 'low', 'medium', 'high'] }, approval_mode: { type: 'string', enum: ['auto', 'ask', 'deny'] }, policies: { type: 'object' }, project_overrides: { type: 'object' }, tool_context_modes: { type: 'object' }, skill_context_modes: { type: 'object' } }, required: ['agentId'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
+  { tool_id: 'delete_agent_profile', namespace: 'builtin', description: 'Delete an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'delete', input_schema: { type: 'object', properties: { agentId: { type: 'string', minLength: 1, maxLength: 100 } }, required: ['agentId'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'delete', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
   { tool_id: 'search-tool', namespace: 'builtin', description: 'Search tools available to the active agent', adapter: 'internal', target: 'tool-router', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
   { tool_id: 'web-search', namespace: 'builtin', description: 'Search the public web through an approved OpenCode-compatible provider', adapter: 'internal', target: 'web-search', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 1000 }, provider: { type: 'string', enum: ['exa', 'parallel'] }, resultCount: { type: 'integer', minimum: 1, maximum: 10 }, contextSize: { type: 'integer', minimum: 1, maximum: 32000 }, type: { type: 'string' }, livecrawl: { type: 'string' }, objective: { type: 'string', maxLength: 1000 }, search_queries: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 1000 } } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'object', properties: { provider: { type: 'string' }, results: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' }, snippet: { type: 'string' } }, required: ['title', 'url', 'snippet'] } } }, required: ['provider', 'results'] }, risk: 'external', requires_approval: true, enabled: true, metadata: { capability: 'web-search' } },
   { tool_id: 'read', namespace: 'builtin', description: 'Read files from the selected project', adapter: 'internal', target: 'pi', operation: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } }, required: ['path'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
@@ -537,6 +542,87 @@ export async function respondToApproval(client: PocketBase, userId: string, appr
   return toApproval(resolved.approval)
 }
 
+function profileProjection(record: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: record.id,
+    user_id: record.user_id,
+    name: record.name,
+    description: record.description ?? '',
+    mode: record.mode ?? 'primary',
+    prompt: record.prompt ?? '',
+    system_prompt: record.system_prompt ?? record.systemPrompt ?? '',
+    enabled: record.enabled !== false,
+    ...(record.template ? { template: record.template } : {}),
+    ...(record.model ? { model: record.model } : {}),
+    ...(record.thinking ? { thinking: record.thinking } : {}),
+    ...(record.approval_mode ? { approval_mode: record.approval_mode } : {}),
+    ...(record.policies ? { policies: record.policies } : {}),
+    ...(record.project_overrides ? { project_overrides: record.project_overrides } : {}),
+    ...(record.tool_context_modes ? { tool_context_modes: record.tool_context_modes } : {}),
+    ...(record.skill_context_modes ? { skill_context_modes: record.skill_context_modes } : {}),
+    created_at: record.created_at,
+    updated_at: record.updated_at,
+  }
+}
+
+function profileFields(input: Record<string, unknown>, partial: boolean): Record<string, unknown> {
+  const name = typeof input.name === 'string' ? input.name.trim() : undefined
+  if (!partial && (!name || !/^[a-zA-Z0-9_-]+$/.test(name))) throw new Error('A valid agent profile name is required')
+  if (partial && name !== undefined && (!name || !/^[a-zA-Z0-9_-]+$/.test(name))) throw new Error('A valid agent profile name is required')
+  const fields: Record<string, unknown> = {}
+  if (name !== undefined) fields.name = name
+  for (const key of ['description', 'prompt', 'system_prompt', 'model'] as const) {
+    const value = input[key] ?? (key === 'system_prompt' ? input.systemPrompt : undefined)
+    if (value !== undefined) {
+      if (typeof value !== 'string') throw new Error(`Agent profile ${key} must be text`)
+      fields[key] = value
+    }
+  }
+  if (typeof input.mode === 'string' && (input.mode === 'primary' || input.mode === 'subagent')) fields.mode = input.mode
+  if (typeof input.enabled === 'boolean') fields.enabled = input.enabled
+  if (typeof input.template === 'string' && ['general', 'coding', 'plan', 'reviewer'].includes(input.template)) fields.template = input.template
+  if (typeof input.thinking === 'string' && ['off', 'minimal', 'low', 'medium', 'high'].includes(input.thinking)) fields.thinking = input.thinking
+  if (typeof input.approval_mode === 'string' && ['auto', 'ask', 'deny'].includes(input.approval_mode)) fields.approval_mode = input.approval_mode
+  for (const key of ['policies', 'project_overrides', 'tool_context_modes', 'skill_context_modes'] as const) {
+    if (input[key] !== undefined) {
+      if (!input[key] || typeof input[key] !== 'object' || Array.isArray(input[key])) throw new Error(`Agent profile ${key} must be an object`)
+      fields[key] = input[key]
+    }
+  }
+  return fields
+}
+
+export async function manageAgentProfile(client: PocketBase, operation: string, input: unknown, userId: string): Promise<unknown> {
+  const args = recordObject(input)
+  if (operation === 'list') {
+    const agents = await listAgents(client, userId)
+    return agents.map((agent) => profileProjection(agent as unknown as Record<string, unknown>))
+  }
+  const agentId = typeof args.agentId === 'string' ? args.agentId.trim() : ''
+  if (operation === 'delete') {
+    if (!agentId) throw new Error('agentId is required')
+    const existing = await client.collection('agents').getOne(agentId).catch(() => null)
+    if (!existing || existing.user_id !== userId) throw new Error('Agent profile not found')
+    if (existing.name === 'master') throw new Error('The master profile cannot be deleted')
+    await client.collection('agents').delete(agentId)
+    return { deleted: true, agentId }
+  }
+  if (operation === 'edit') {
+    if (!agentId) throw new Error('agentId is required')
+    const existing = await client.collection('agents').getOne(agentId).catch(() => null)
+    if (!existing || existing.user_id !== userId) throw new Error('Agent profile not found')
+    const update = { ...profileFields(args, true), updated_at: Date.now() }
+    const record = await client.collection('agents').update(agentId, update)
+    return profileProjection(record)
+  }
+  const fields = profileFields(args, false)
+  const duplicate = await client.collection('agents').getFirstListItem(`user_id = "${escapeFilter(userId)}" && name = "${escapeFilter(String(fields.name))}"`).catch(() => null)
+  if (duplicate) throw new Error('An agent profile with this name already exists')
+  const now = Date.now()
+  const record = await client.collection('agents').create({ user_id: userId, description: '', mode: 'primary', prompt: '', system_prompt: '', enabled: true, ...fields, created_at: now, updated_at: now })
+  return profileProjection(record)
+}
+
 
 
 async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext & { agentId?: string; projectId?: string }): Promise<unknown> {
@@ -562,6 +648,10 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     const browserContext: BrowserContext = { ownerId: context.userId, projectId: context.projectId, sessionId: context.sessionId, agentName: context.agentName, readOnly: context.agentName === 'plan' || context.agentName === 'reviewer' }
     return browser.execute(browserContext, tool.operation, { ...args, browserSessionId })
   }
+  if (tool.target === 'agent-profiles') {
+    if (context?.agentName !== 'master' || !context.userId) throw new Error('Agent profile management requires the master agent')
+    return manageAgentProfile(client, tool.operation, input, context.userId)
+  }
   if (tool.target === 'web-search' && tool.operation === 'search') return webSearch(input as WebSearchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
   const definitions = {
     read: createReadToolDefinition(cwd),
@@ -579,7 +669,7 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
 
 async function invokeExternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext & { agentId?: string; projectId?: string }): Promise<unknown> {
   if (tool.adapter === 'internal') {
-    if (tool.target === 'pi' || tool.target === 'memory') return invokeInternalTool(client, tool, input, cwd, callId, context)
+    if (['pi', 'memory', 'browser', 'web-search', 'subagent', 'agent-profiles'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
     return { routed: true, toolId: tool.tool_id, operation: tool.operation, input }
   }
   if (tool.adapter === 'mcp') {
@@ -680,6 +770,10 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
   if (validationError) {
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'error', error_code: 'VALIDATION_FAILED' })
     return { ok: false as const, toolId: canonicalId, error: { code: 'VALIDATION_FAILED', message: validationError } }
+  }
+  if (profileManagementTools.has(canonicalId) && agent.name !== 'master') {
+    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MASTER_REQUIRED' })
+    return { ok: false as const, toolId: canonicalId, error: { code: 'MASTER_REQUIRED', message: 'Agent profile management requires the master agent' } }
   }
   if (canonicalId.startsWith('memory/') && effective.policies.memory !== true) {
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MEMORY_DISABLED' })
