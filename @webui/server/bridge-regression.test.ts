@@ -42,4 +42,54 @@ describe('bridge model delivery ordering', () => {
     expect(sessionRoutes).toContain("'follow_up'")
     expect(sessionRoutes).toContain("clientId === 'clear'")
   })
+
+  it('uses the automation repository for serialized cancellation and rejects ownership PATCH fields', () => {
+    const automationRoutes = section("if (path[1] === 'automations' && authenticatedUser)", "if (path[1] === 'inbox' && authenticatedUser)")
+    expect(automationRoutes).toContain("serializationScope: 'process'")
+    expect(automationRoutes).toContain('automations.cancelRun')
+    expect(automationRoutes).toContain('automationWorkerFor(client).execute')
+    expect(automationRoutes).toContain('automationWorkerFor(client).executeDue()')
+    expect(automationRoutes).toContain('Unsupported automation field')
+    expect(automationRoutes).not.toContain("automation_runs').update")
+    expect(bridge).toContain('automationWorkerFor(client).executeDue()')
+  })
+
+  it('dispatches path-specific run cancellation without reading a request body', () => {
+    const automationRoutes = section("if (path[1] === 'automations' && authenticatedUser)", "if (path[1] === 'inbox' && authenticatedUser)")
+    const cancelRoute = section("path.length === 4 && path[3] === 'cancel'", "path.length === 4 && path[3] === 'history'")
+
+    expect(cancelRoute).toContain("path.length === 6 && path[3] === 'runs' && path[5] === 'cancel'")
+    expect(cancelRoute).toContain("path.length === 6 ? decodeURIComponent(path[4]) : (await body(request)).run_id")
+    expect(cancelRoute.indexOf('const runId =')).toBeLessThan(cancelRoute.indexOf('const run = await client.collection'))
+    expect(cancelRoute).toContain('run.owner_id !== authenticatedUser.id')
+    expect(automationRoutes.match(/path\.length === 6 && path\[3\] === 'runs' && path\[5\] === 'cancel'/g)).toHaveLength(1)
+  })
+
+  it('validates trigger keys before creating an automation run', () => {
+    const automationRoutes = section("if (path[1] === 'automations' && authenticatedUser)", "if (path[1] === 'inbox' && authenticatedUser)")
+    expect(automationRoutes).toContain("const key = input.trigger_key === undefined ? `manual:${Date.now()}` : validateTriggerKey(input.trigger_key)")
+    expect(automationRoutes).toContain('validateTriggerKey(input.trigger_key)')
+    expect(bridge).toContain("const TRIGGER_KEY_ERROR = 'Invalid trigger_key'")
+    expect(automationRoutes).toContain("'INVALID_TRIGGER_KEY'")
+    expect(bridge).toContain('value.length > 128')
+    expect(bridge).toContain('SECRET_LIKE_TRIGGER_KEY')
+  })
+})
+
+describe('session pagination route', () => {
+  it('bounds and stabilizes the session page before returning legacy sessions', () => {
+    const route = section("if (path[1] === 'sessions' && path.length === 2 && request.method === 'GET')", "if (path[1] === 'sessions' && path.length === 2 && request.method === 'POST')")
+    expect(bridge).toContain('SESSION_PAGE_MAX_LIMIT')
+    expect(route).toContain('updatedAt: last.updatedAt')
+    expect(route).toContain('a.id.localeCompare(b.id)')
+    expect(route).toContain('hasNext: Boolean(nextCursor)')
+    expect(route).toContain('repository.listSessions(authenticatedUser!.id')
+    expect(route).toContain('session.title')
+  })
+
+  it('rejects malformed cursors before querying session records', () => {
+    const route = section("if (path[1] === 'sessions' && path.length === 2 && request.method === 'GET')", "if (path[1] === 'sessions' && path.length === 2 && request.method === 'POST')")
+    expect(route.indexOf("if (requestedCursor && !cursor) return json")).toBeLessThan(route.indexOf('repository.listSessions'))
+    expect(route).toContain("const project = cursor?.project ?? url.searchParams.get('project')")
+  })
 })

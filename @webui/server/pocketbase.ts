@@ -106,6 +106,10 @@ function field(name: string, type: string, extra: Record<string, unknown> = {}):
   return { name, type, ...extra }
 }
 
+function indexName(index: string): string | undefined {
+  return /\bcreate\s+(?:unique\s+)?index\s+([\w-]+)/i.exec(index)?.[1]?.toLowerCase()
+}
+
 async function ensureCollection(
   client: PocketBase,
   name: string,
@@ -129,11 +133,19 @@ async function ensureCollection(
   const currentIndexes = Array.isArray(existing.indexes) ? existing.indexes.filter((item): item is string => typeof item === 'string') : []
   const known = new Set(currentFields.map((item) => String(item.name)))
   const missing = fields.filter((item) => !known.has(String(item.name)))
-  const missingIndexes = indexes.filter((index) => !currentIndexes.includes(index))
-  if (missing.length > 0 || missingIndexes.length > 0) {
+  const desiredNames = new Set(indexes.map(indexName).filter((name): name is string => name !== undefined))
+  const reconciledIndexes = [
+    ...currentIndexes.filter((index) => {
+      const name = indexName(index)
+      return name === undefined || !desiredNames.has(name)
+    }),
+    ...indexes,
+  ]
+  const indexesChanged = reconciledIndexes.length !== currentIndexes.length || reconciledIndexes.some((index, position) => index !== currentIndexes[position])
+  if (missing.length > 0 || indexesChanged) {
     await collections.update(String(existing.id), {
       ...(missing.length > 0 ? { fields: [...currentFields, ...missing] } : {}),
-      ...(missingIndexes.length > 0 ? { indexes: [...currentIndexes, ...missingIndexes] } : {}),
+      ...(indexesChanged ? { indexes: reconciledIndexes } : {}),
     })
   }
   if (verifyUniqueIndexes) await verifyUniqueIndexesPresent(collections, name, indexes)
@@ -141,9 +153,11 @@ async function ensureCollection(
 
 function indexCoversUniqueColumns(index: string, collection: string, columns: readonly string[]): boolean {
   const normalized = index.toLowerCase().replaceAll('`', '').replaceAll('"', '').replace(/\s+/g, ' ')
-  const table = new RegExp(`\\bon\\s+${collection.toLowerCase()}\\s*\\(([^)]*)\\)`).exec(normalized)?.[1]
-  if (!/create\s+unique\s+index/.test(normalized) || !table) return false
-  return table.split(',').map((column) => column.trim()).join(',') === columns.join(',')
+  const prefix = new RegExp(`\\bon\\s+${collection.toLowerCase()}\\s*\\(`).exec(normalized)
+  if (!/create\s+unique\s+index/.test(normalized) || !prefix) return false
+  const table = normalized.slice(prefix.index + prefix[0].length, normalized.lastIndexOf(')'))
+  const expected = columns.join(',').toLowerCase().replace(/\s+/g, ' ').trim()
+  return table.split(',').map((column) => column.trim()).join(',') === expected
 }
 
 async function verifyUniqueIndexesPresent(
@@ -154,9 +168,9 @@ async function verifyUniqueIndexesPresent(
   const collection = await collections.getOne(name)
   const value = collection as RecordModel & Record<string, unknown>
   const currentIndexes = Array.isArray(value.indexes) ? value.indexes.filter((item): item is string => typeof item === 'string') : []
-  for (const index of indexes) {
-    const match = /on\s+([\w-]+)\s*\(([^)]*)\)/i.exec(index)
-    const columns = match ? match[2].split(',').map((column) => column.trim()) : []
+  for (const index of indexes.filter((value) => /create\s+unique\s+index/i.test(value))) {
+    const match = /on\s+([\w-]+)\s*\(/i.exec(index)
+    const columns = match ? index.slice(index.indexOf('(', match.index) + 1, index.lastIndexOf(')')).split(',').map((column) => column.trim()) : []
     const verified = Boolean(match && columns.length > 0 && currentIndexes.some((candidate) => indexCoversUniqueColumns(candidate, match[1], columns)))
     if (!verified) {
       throw new Error(`PocketBase unique index could not be verified for ${name}`)
@@ -279,6 +293,36 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('idempotency_key', 'text'),
   ], ['CREATE UNIQUE INDEX idx_memory_owner_idempotency ON memory_records (owner_id, idempotency_key)', 'CREATE INDEX idx_memory_owner_updated ON memory_records (owner_id, updated_at)', 'CREATE INDEX idx_memory_owner_scope ON memory_records (owner_id, scope)'], true)
 
+  await ensureCollection(client, 'skills', [
+    field('ownerId', 'text', { required: true }),
+    field('skillId', 'text', { required: true }),
+    field('identityKey', 'text', { required: true }),
+    field('name', 'text', { required: true }),
+    field('scope', 'select', { required: true, values: ['global', 'agent', 'project'], maxSelect: 1 }),
+    field('agentId', 'text'),
+    field('projectId', 'text'),
+    field('mode', 'select', { required: true, values: ['always-loaded', 'discoverable', 'explicit-only', 'disabled'], maxSelect: 1 }),
+    field('version', 'number', { required: true }),
+    field('metadata', 'json', { required: true }),
+    field('body', 'text', { required: true }),
+    field('reference', 'text'),
+  ], ['CREATE UNIQUE INDEX idx_skills_owner_identity ON skills (ownerId, identityKey)', 'CREATE INDEX idx_skills_owner_scope ON skills (ownerId, scope)'], true)
+
+  await ensureCollection(client, 'skill_versions', [
+    field('ownerId', 'text', { required: true }),
+    field('skillHeadId', 'text', { required: true }),
+    field('skillId', 'text', { required: true }),
+    field('name', 'text', { required: true }),
+    field('scope', 'select', { required: true, values: ['global', 'agent', 'project'], maxSelect: 1 }),
+    field('agentId', 'text'),
+    field('projectId', 'text'),
+    field('mode', 'select', { required: true, values: ['always-loaded', 'discoverable', 'explicit-only', 'disabled'], maxSelect: 1 }),
+    field('version', 'number', { required: true }),
+    field('metadata', 'json', { required: true }),
+    field('body', 'text', { required: true }),
+    field('reference', 'text'),
+  ], ['CREATE UNIQUE INDEX idx_skill_versions_owner_identity_version ON skill_versions (ownerId, skillHeadId, version)', 'CREATE INDEX idx_skill_versions_owner_skill ON skill_versions (ownerId, skillId)'], true)
+
   await ensureCollection(client, 'gateway_credentials', [
     field('owner_id', 'text', { required: true }),
     field('principal', 'text', { required: true }),
@@ -293,6 +337,24 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('revoked_at', 'number'),
     field('last_used_at', 'number'),
   ], ['CREATE UNIQUE INDEX idx_gateway_credentials_prefix ON gateway_credentials (prefix)'])
+
+  await ensureCollection(client, 'automations', [
+    field('owner_id', 'text', { required: true }), field('name', 'text', { required: true }), field('prompt', 'text', { required: true }),
+    field('agent_id', 'text', { required: true }), field('project_id', 'text'), field('timezone', 'text', { required: true }), field('schedule', 'json', { required: true }),
+    field('retry_policy', 'json'), field('concurrency_policy', 'select', { values: ['allow', 'skip', 'queue'], maxSelect: 1 }), field('state', 'select', { required: true, values: ['active', 'paused', 'disabled', 'deleted'], maxSelect: 1 }),
+    field('next_run_at', 'number'), field('last_run_at', 'number'), field('created_at', 'number', { required: true }), field('updated_at', 'number', { required: true }),
+  ], ['CREATE INDEX idx_automations_owner_next ON automations (owner_id, state, next_run_at)'])
+  await ensureCollection(client, 'automation_runs', [
+    field('automation_id', 'text', { required: true }), field('owner_id', 'text', { required: true }), field('trigger_key', 'text', { required: true }),
+    field('state', 'select', { required: true, values: ['pending', 'leased', 'running', 'succeeded', 'failed', 'retrying', 'cancelled', 'unknown', 'interrupted'], maxSelect: 1 }),
+    field('attempt', 'number', { required: true }), field('lease_id', 'text'), field('lease_expires_at', 'number'), field('started_at', 'number'), field('finished_at', 'number'), field('result', 'json'), field('error_message', 'text'), field('created_at', 'number', { required: true }),
+  ], ['CREATE UNIQUE INDEX idx_automation_runs_trigger ON automation_runs (owner_id, automation_id, trigger_key)', 'CREATE INDEX idx_automation_runs_owner ON automation_runs (owner_id, created_at)'], true)
+  await ensureCollection(client, 'inbox_items', [
+    field('owner_id', 'text', { required: true }), field('project_id', 'text'), field('kind', 'select', { required: true, values: ['approval_required', 'agent_question', 'task_completed', 'task_failed', 'review_required', 'automation_result', 'browser_approval'], maxSelect: 1 }),
+    field('reference_id', 'text', { required: true }), field('identity_key', 'text'), field('title', 'text', { required: true }), field('body', 'text'), field('deep_link', 'json'), field('resolved', 'bool', { required: true }), field('underlying_state', 'text'), field('metadata', 'json'), field('created_at', 'number', { required: true }), field('resolved_at', 'number'),
+  ], ["CREATE UNIQUE INDEX idx_inbox_dedupe ON inbox_items (owner_id, COALESCE(project_id, ''), kind, reference_id)", 'CREATE INDEX idx_inbox_owner ON inbox_items (owner_id, resolved, created_at)'], true)
+  await ensureCollection(client, 'notification_subscriptions', [field('owner_id', 'text', { required: true }), field('channel', 'select', { required: true, values: ['push', 'email'], maxSelect: 1 }), field('target', 'text', { required: true }), field('enabled', 'bool', { required: true }), field('created_at', 'number', { required: true })], ['CREATE INDEX idx_notification_subscriptions_owner ON notification_subscriptions (owner_id)'])
+  await ensureCollection(client, 'notification_deliveries', [field('owner_id', 'text', { required: true }), field('inbox_id', 'text', { required: true }), field('subscription_id', 'text', { required: true }), field('delivery_key', 'text', { required: true }), field('state', 'select', { required: true, values: ['pending', 'delivered', 'failed'], maxSelect: 1 }), field('attempt', 'number', { required: true }), field('lease_id', 'text'), field('lease_expires_at', 'number'), field('next_attempt_at', 'number'), field('last_attempt_at', 'number'), field('failure_class', 'select', { values: ['retryable', 'permanent'], maxSelect: 1 }), field('error_message', 'text'), field('created_at', 'number', { required: true }), field('updated_at', 'number', { required: true })], ['CREATE UNIQUE INDEX idx_notification_deliveries_key ON notification_deliveries (delivery_key)', 'CREATE INDEX idx_notification_deliveries_inbox ON notification_deliveries (owner_id, inbox_id, created_at)', 'CREATE INDEX idx_notification_deliveries_due ON notification_deliveries (state, next_attempt_at, lease_expires_at)'], true)
 }
 
 function escapeFilter(value: string): string {

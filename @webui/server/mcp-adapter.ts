@@ -176,6 +176,14 @@ function object(value: unknown): RecordValue {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : {}
 }
 
+const MCP_NAME = /^[a-z][a-z0-9._-]{0,127}$/
+
+function validateMcpSchema(value: unknown, label: string, limit: number): RecordValue {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new McpAdapterError('MCP_PROTOCOL_ERROR', `${label} must be a JSON object`, { method: 'tools/list' })
+  jsonBytes(value, label, limit)
+  return value as RecordValue
+}
+
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
@@ -821,11 +829,13 @@ export function normalizeMcpTool(raw: unknown, options: NormalizeMcpToolsOptions
   if (!name) throw new McpAdapterError('MCP_PROTOCOL_ERROR', 'MCP tools/list returned a tool without a name', { method: 'tools/list' })
   const maxNameLength = positiveInteger(options.maxNameLength, 256)
   if (name.length > maxNameLength) throw new McpAdapterError('MCP_LIMIT_EXCEEDED', `MCP tool name exceeds ${maxNameLength} characters`, { method: 'tools/list' })
+  if (!MCP_NAME.test(name)) throw new McpAdapterError('MCP_PROTOCOL_ERROR', `MCP tool name is malformed: ${redactSensitiveText(name)}`, { method: 'tools/list' })
   const description = typeof record.description === 'string' ? record.description.trim() : ''
   const maxDescriptionLength = positiveInteger(options.maxDescriptionLength, 8_192)
-  const inputSchema = object(record.inputSchema ?? record.input_schema)
+  const inputSchemaValue = record.inputSchema ?? record.input_schema
+  const inputSchema = inputSchemaValue === undefined ? { type: 'object', properties: {}, additionalProperties: true } : validateMcpSchema(inputSchemaValue, `Input schema for ${name}`, positiveInteger(options.maxSchemaBytes, DEFAULT_LIMITS.maxResponseBytes))
   const outputSchemaValue = record.outputSchema ?? record.output_schema
-  const outputSchema = outputSchemaValue === undefined ? undefined : object(outputSchemaValue)
+  const outputSchema = outputSchemaValue === undefined ? undefined : validateMcpSchema(outputSchemaValue, `Output schema for ${name}`, positiveInteger(options.maxSchemaBytes, DEFAULT_LIMITS.maxResponseBytes))
   const maxSchemaBytes = positiveInteger(options.maxSchemaBytes, DEFAULT_LIMITS.maxResponseBytes)
   jsonBytes(inputSchema, `Input schema for ${name}`, maxSchemaBytes)
   if (outputSchema) jsonBytes(outputSchema, `Output schema for ${name}`, maxSchemaBytes)
@@ -868,13 +878,21 @@ export function resolveMcpToolReference(tool: McpToolReference, defaults: Partia
       : /^https?:\/\//i.test(nonEmptyString(value('url')) ?? tool.target)
         ? (value('sse') === true ? 'sse' : 'http')
         : defaults.transport ?? 'stdio'
+  if (configuredTransport !== undefined && transport !== configuredTransport) throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `Unsupported MCP transport for ${tool.tool_id}`)
   const command = nonEmptyString(value('command')) ?? (transport === 'stdio' ? nonEmptyString(tool.target) : undefined)
   const url = nonEmptyString(value('url')) ?? (transport !== 'stdio' ? nonEmptyString(tool.target) : undefined)
+  if (transport === 'stdio' && !value('command') && /^[a-z][a-z0-9+.-]*:\/\//i.test(tool.target)) throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `Unsupported MCP target for ${tool.tool_id}`)
   if (transport === 'stdio' && !command) throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `No stdio command configured for ${tool.tool_id}`)
   if (transport !== 'stdio' && !url) throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `No ${transport} URL configured for ${tool.tool_id}`)
+  if (url) {
+    try { validateHttpUrl(new URL(url), defaults.networkPolicy) } catch (error) { throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `Invalid MCP target for ${tool.tool_id}`, { cause: error }) }
+  }
   const argsValue = value('args')
-  const args = Array.isArray(argsValue) ? argsValue.filter((item): item is string => typeof item === 'string') : undefined
+  if (argsValue !== undefined && !Array.isArray(argsValue)) throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `MCP args for ${tool.tool_id} must be an array`)
+  if (Array.isArray(argsValue) && argsValue.some((item) => typeof item !== 'string')) throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `MCP args for ${tool.tool_id} must contain strings only`)
+  const args = Array.isArray(argsValue) ? argsValue as string[] : undefined
   const toolName = nonEmptyString(value('toolName')) ?? nonEmptyString(tool.operation) ?? tool.tool_id.split('/').pop() ?? tool.tool_id
+  if (!MCP_NAME.test(toolName)) throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `MCP tool operation is malformed for ${tool.tool_id}`)
   const namespace = nonEmptyString(value('namespace')) ?? nonEmptyString(tool.namespace)
   const config: McpServerConfig = {
     ...defaults,

@@ -101,6 +101,17 @@ import {
   WorktreeController,
   BrowserSessionService,
   BrowserRuntimeError,
+  AutomationRepository,
+  createAutomationWorker,
+  expireAutomationLeases,
+  markInterruptedRuns,
+  type AutomationExecutor,
+  type AutomationRecord,
+  type AutomationRun,
+  InboxRepository,
+  NotificationRepository,
+  createPushNotificationAdapter,
+  type NotificationAdapter,
 } from './server/index.ts'
 import { effectiveAgentConfiguration } from './server/tools.ts'
 import {
@@ -193,6 +204,9 @@ let applicationCollectionsReady: Promise<void> | undefined
 let inProcessToolGateway: ToolGateway | undefined
 let subagentController: SubagentController | undefined
 let subagentWorktrees: WorktreeController | undefined
+let automationWorker: ReturnType<typeof createAutomationWorker> | undefined
+let automationScheduler: ReturnType<typeof setInterval> | undefined
+let automationMaintenanceInitialized = false
 let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccountService>> | undefined
 let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
 const migratedUsers = new Set<string>()
@@ -1082,6 +1096,33 @@ function storedSessionResponse(record: SessionRecord, ownedProjects: readonly Pr
   return { ...record, archived: record.archived ?? false, projectId, directory: record.directory ?? project.path }
 }
 
+const SESSION_PAGE_DEFAULT_LIMIT = 25
+const SESSION_PAGE_MAX_LIMIT = 100
+const SESSION_SEARCH_MAX_LENGTH = 200
+const SESSION_CURSOR_MAX_LENGTH = 2048
+type SessionCursor = { updatedAt: number; id: string; order: 'asc' | 'desc'; limit: number; search: string; project?: string; directory?: string }
+
+function encodeSessionCursor(cursor: SessionCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url')
+}
+
+function decodeSessionCursor(value: string): SessionCursor | null {
+  try {
+    if (value.length > SESSION_CURSOR_MAX_LENGTH) return null
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<SessionCursor>
+    if ((parsed.order !== 'asc' && parsed.order !== 'desc') || typeof parsed.updatedAt !== 'number' || typeof parsed.id !== 'string' || typeof parsed.limit !== 'number' || typeof parsed.search !== 'string') return null
+    return parsed as SessionCursor
+  } catch {
+    return null
+  }
+}
+
+function sessionPageLimit(value: string | null): number {
+  const parsed = value === null || value.trim() === '' ? SESSION_PAGE_DEFAULT_LIMIT : Number(value)
+  if (!Number.isFinite(parsed)) return SESSION_PAGE_DEFAULT_LIMIT
+  return Math.min(SESSION_PAGE_MAX_LIMIT, Math.max(1, Math.floor(parsed)))
+}
+
 function rpcData(value: unknown): unknown {
   const response = object(value)
   return response.data ?? value
@@ -1146,11 +1187,13 @@ async function transcriptHistory(sessionId: string, selection: SessionRecord) {
   return { ...payload, messages: projectEntries(payload.entries, payload.leafId, sessionId, selection) }
 }
 
-function json(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), {
+function json(value: unknown, status = 200, correlationId?: string): Response {
+  const response = new Response(JSON.stringify(value), {
     status,
     headers: { 'content-type': 'application/json; charset=utf-8' },
   })
+  if (correlationId) response.headers.set('x-request-id', correlationId)
+  return response
 }
 
 class TaskRequestError extends Error {
@@ -1201,6 +1244,111 @@ async function executeSubagentHost(input: { task: import('./server/task-control-
     session.close()
     if (worktree && subagentWorktrees) await subagentWorktrees.remove(worktree)
   }
+}
+
+const executeAutomationHost: AutomationExecutor = async (run: AutomationRun, automation: AutomationRecord, signal: AbortSignal): Promise<unknown> => {
+  const client = await applicationDatabase()
+  const repository = createProjectSessionRepository(client)
+  const sessionId = `automation-${run.id}`
+  const stored = await repository.getSession(automation.owner_id, sessionId) ?? await repository.createSession(automation.owner_id, {
+    id: sessionId,
+    projectId: automation.project_id ?? null,
+    title: automation.name,
+    profile: automation.agent_id,
+  })
+  const record = localSessionRecord(stored)
+  const project = automation.project_id
+    ? await repository.getProject(automation.owner_id, automation.project_id)
+    : null
+  const configuredProject: Project = project ? { name: project.name, path: project.path } : generalChatProject()
+  if (automation.project_id && !project) throw new Error('Automation project is unavailable')
+  const session = rpcSession(sessionId, automation.owner_id, record, configuredProject, automation.agent_id)
+  const key = activeKey(automation.owner_id, sessionId)
+  const abort = () => { void session.send({ type: 'abort' }).catch(() => undefined) }
+  signal.addEventListener('abort', abort, { once: true })
+  try {
+    if (signal.aborted) throw new Error('Automation cancelled')
+    await session.send({ type: 'prompt', message: automation.prompt })
+    return { text: session.agentSession.getLastAssistantText(), sessionId }
+  } finally {
+    signal.removeEventListener('abort', abort)
+    session.close()
+    if (active.get(key) === session) active.delete(key)
+  }
+}
+
+const runtimeNotificationAdapter: NotificationAdapter = async (subscription, item) => {
+  if (subscription.channel !== 'push') throw Object.assign(new Error('Email notification delivery is not configured'), { code: 'EMAIL_DELIVERY_UNAVAILABLE' })
+  return createPushNotificationAdapter()(subscription, item)
+}
+
+function automationWorkerFor(client: Awaited<ReturnType<typeof applicationDatabase>>): ReturnType<typeof createAutomationWorker> {
+  if (!automationWorker) automationWorker = createAutomationWorker(new AutomationRepository(client, { serializationScope: 'process', notificationAdapter: runtimeNotificationAdapter }), executeAutomationHost)
+  return automationWorker
+}
+
+function routeError(correlationId: string, code: string, message: string, status: number): Response {
+  return json({ error: message, code, requestId: correlationId }, status, correlationId)
+}
+
+function routeLimit(value: string | null, fallback = 50): number {
+  const parsed = value === null ? fallback : Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 100) : fallback
+}
+
+const TRIGGER_KEY_ERROR = 'Invalid trigger_key'
+const SECRET_LIKE_TRIGGER_KEY = /(?:^|[-_.:])(secret|token|password|apikey|api[-_]?key)(?:$|[-_.:=])/i
+
+function validateTriggerKey(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value) || SECRET_LIKE_TRIGGER_KEY.test(value)) {
+    throw new Error(TRIGGER_KEY_ERROR)
+  }
+  return value
+}
+
+async function ownedProjectIdForRoute(client: Awaited<ReturnType<typeof applicationDatabase>>, ownerId: string, value: unknown): Promise<string | undefined | null> {
+  if (value === undefined || value === null || value === '' || value === '0') return undefined
+  if (typeof value !== 'string') return null
+  const repository = createProjectSessionRepository(client)
+  const direct = await repository.getProject(ownerId, value)
+  if (direct) return direct.id
+  if (/^\d+$/.test(value)) {
+    const projects = await repository.listProjects(ownerId)
+    return projects[Number(value) - 1]?.id ?? null
+  }
+  return null
+}
+
+function notificationPreferenceValue(value: unknown): Record<string, unknown> {
+  const candidate = object(value)
+  const events = object(candidate.events)
+  return {
+    enabled: candidate.enabled === true,
+    events: {
+      permissionAsked: events.permissionAsked !== false,
+      questionAsked: events.questionAsked !== false,
+      sessionError: events.sessionError !== false,
+      sessionIdle: events.sessionIdle === true,
+    },
+  }
+}
+
+async function runAutomationSchedulerTick(): Promise<void> {
+  const client = await applicationDatabase()
+  if (!automationMaintenanceInitialized) {
+    await markInterruptedRuns(client, { serializationScope: 'process' })
+    automationMaintenanceInitialized = true
+  }
+  await expireAutomationLeases(client, Date.now(), { serializationScope: 'process' })
+  await automationWorkerFor(client).executeDue()
+  await new NotificationRepository(client).sweepDue(runtimeNotificationAdapter)
+}
+
+function startAutomationScheduler(): void {
+  if (automationScheduler) return
+  automationScheduler = setInterval(() => {
+    void runAutomationSchedulerTick().catch((error) => console.warn(`Automation scheduler failed: ${redactedDiagnostic(error)}`))
+  }, 10000)
 }
 
 class PiSdkSession {
@@ -1878,6 +2026,222 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
       return rotated ? json({ credential: publicGatewayCredential(rotated.credential), secret: rotated.secret }, 201) : json({ error: { code: 'GATEWAY_CREDENTIAL_NOT_FOUND', message: 'Gateway credential not found' } }, 404)
     }
     if (path.length === 4 && request.method === 'DELETE') return json({ ok: await revokeGatewayCredential(client, authenticatedUser.id, decodeURIComponent(path[3] ?? '')) })
+  }
+
+  if (path[1] === 'automations' && authenticatedUser) {
+    const client = await applicationDatabase()
+    const automations = new AutomationRepository(client, { serializationScope: 'process' })
+    try {
+      if (path.length === 3 && path[2] === 'runs' && request.method === 'GET') {
+        const limit = routeLimit(url.searchParams.get('limit'))
+        const offsetValue = Number(url.searchParams.get('offset') ?? 0)
+        const offset = Number.isInteger(offsetValue) && offsetValue >= 0 ? Math.min(offsetValue, 10000) : 0
+        const runsCollection = client.collection('automation_runs') as unknown as { getList?: (page: number, perPage: number, options: Record<string, unknown>) => Promise<{ items: Array<Record<string, unknown>> }>; getFullList: (options: Record<string, unknown>) => Promise<Array<Record<string, unknown>>> }
+        const page = Math.floor(offset / 100) + 1
+        const pageResult = await runsCollection.getList?.(page, 100, { filter: `owner_id = "${escapeFilter(authenticatedUser.id)}"`, sort: '-created_at' })
+        const rawRuns = pageResult?.items ?? await runsCollection.getFullList({ filter: `owner_id = "${escapeFilter(authenticatedUser.id)}"`, sort: '-created_at' })
+        const definitions = new Map((await automations.listOwned(authenticatedUser.id)).map((item) => [item.id, item]))
+        const projectValue = url.searchParams.get('repoId') ?? url.searchParams.get('projectId') ?? undefined
+        const projectId = await ownedProjectIdForRoute(client, authenticatedUser.id, projectValue)
+        if (projectValue !== undefined && projectId === null) return routeError(correlationId, 'PROJECT_NOT_FOUND', 'Project not found', 404)
+        const jobFilter = url.searchParams.get('jobId') ?? url.searchParams.get('automationId')
+        const triggerFilter = url.searchParams.get('triggerSource')
+        const runs = rawRuns
+          .filter((item) => item.owner_id === authenticatedUser.id && definitions.has(String(item.automation_id)))
+          .filter((item) => !url.searchParams.get('status') || item.state === url.searchParams.get('status'))
+          .filter((item) => !jobFilter || String(item.automation_id) === jobFilter)
+          .filter((item) => projectId === undefined || definitions.get(String(item.automation_id))?.project_id === projectId)
+          .filter((item) => !triggerFilter || (triggerFilter === 'manual' ? String(item.trigger_key).startsWith('manual') : triggerFilter === 'automation' ? String(item.trigger_key).startsWith('schedule') : true))
+          .slice(pageResult ? offset % 100 : offset, pageResult ? (offset % 100) + limit : offset + limit)
+          .map((item) => ({ ...item, automation: definitions.get(String(item.automation_id)) }))
+        return json({ runs, limit, offset }, 200, correlationId)
+      }
+      if (path.length === 2 && request.method === 'GET') {
+        const projectValue = url.searchParams.get('projectId') ?? url.searchParams.get('project_id') ?? undefined
+        const projectId = await ownedProjectIdForRoute(client, authenticatedUser.id, projectValue)
+        if (projectValue !== undefined && projectId === null) return routeError(correlationId, 'PROJECT_NOT_FOUND', 'Project not found', 404)
+        const values = await automations.listOwned(authenticatedUser.id)
+        const filtered = projectId === undefined ? values : values.filter((item) => item.project_id === projectId)
+        const limit = routeLimit(url.searchParams.get('limit'), 100)
+        return json({ automations: filtered.slice(0, limit), jobs: filtered.slice(0, limit) }, 200, correlationId)
+      }
+      if (path.length === 2 && request.method === 'POST') {
+        const input = await body(request)
+        if (typeof input.name !== 'string' || typeof input.prompt !== 'string' || typeof input.agent_id !== 'string' || typeof input.timezone !== 'string' || !input.schedule || typeof input.schedule !== 'object') return routeError(correlationId, 'INVALID_AUTOMATION_INPUT', 'name, prompt, agent_id, timezone, and schedule are required', 400)
+        const ownedAgents = await listAgents(client, authenticatedUser.id)
+        if (!ownedAgents.some((agent) => agent.id === input.agent_id || agent.name === input.agent_id)) return routeError(correlationId, 'AGENT_NOT_FOUND', 'Agent is not owned by the authenticated user', 403)
+        const projectId = await ownedProjectIdForRoute(client, authenticatedUser.id, input.project_id)
+        if (projectId === null) return routeError(correlationId, 'PROJECT_NOT_FOUND', 'Project is not owned by the authenticated user', 403)
+        const created = await automations.create(authenticatedUser.id, { name: input.name, prompt: input.prompt, agent_id: input.agent_id, timezone: input.timezone, schedule: input.schedule as never, ...(projectId === undefined ? {} : { project_id: projectId }), ...(input.retry_policy && typeof input.retry_policy === 'object' ? { retry_policy: input.retry_policy as never } : {}), ...(input.concurrency_policy === 'allow' || input.concurrency_policy === 'skip' || input.concurrency_policy === 'queue' ? { concurrency_policy: input.concurrency_policy } : {}) })
+        if (input.enabled === false) await automations.cancel(authenticatedUser.id, created.id)
+        return json({ automation: created, job: created }, 201, correlationId)
+      }
+      if (path.length === 3) {
+        const id = decodeURIComponent(path[2])
+        if (request.method === 'GET') { const found = await automations.getOwned(authenticatedUser.id, id); return found ? json({ automation: found, job: found }, 200, correlationId) : routeError(correlationId, 'AUTOMATION_NOT_FOUND', 'Automation not found', 404) }
+        if (request.method === 'DELETE') {
+          const found = await automations.getOwned(authenticatedUser.id, id)
+          if (!found) return routeError(correlationId, 'AUTOMATION_NOT_FOUND', 'Automation not found', 404)
+          await client.collection('automations').update(id, { state: 'deleted', updated_at: Date.now() })
+          return json({ ok: true }, 200, correlationId)
+        }
+        if (request.method === 'PATCH' || request.method === 'PUT') {
+          const input = await body(request)
+          if (Object.keys(input).some((key) => !['name', 'prompt', 'agent_id', 'project_id', 'timezone', 'schedule', 'retry_policy', 'concurrency_policy', 'enabled'].includes(key))) return routeError(correlationId, 'UNSUPPORTED_AUTOMATION_FIELD', 'Unsupported automation field', 400)
+          if (typeof input.enabled === 'boolean' && Object.keys(input).length === 1) {
+            const found = await automations.getOwned(authenticatedUser.id, id)
+            if (!found) return routeError(correlationId, 'AUTOMATION_NOT_FOUND', 'Automation not found', 404)
+            if (input.enabled === false) await automations.cancel(authenticatedUser.id, id)
+            else await client.collection('automations').update(id, { state: 'active', updated_at: Date.now() })
+            const updated = await automations.getOwned(authenticatedUser.id, id)
+            return updated ? json({ automation: updated, job: updated }, 200, correlationId) : routeError(correlationId, 'AUTOMATION_NOT_FOUND', 'Automation not found', 404)
+          }
+          if (typeof input.agent_id === 'string' && !(await listAgents(client, authenticatedUser.id)).some((agent) => agent.id === input.agent_id || agent.name === input.agent_id)) return routeError(correlationId, 'AGENT_NOT_FOUND', 'Agent is not owned by the authenticated user', 403)
+          const projectId = await ownedProjectIdForRoute(client, authenticatedUser.id, input.project_id)
+          if (projectId === null) return routeError(correlationId, 'PROJECT_NOT_FOUND', 'Project is not owned by the authenticated user', 403)
+          const { enabled, ...automationPatch } = input
+          const patch = { ...automationPatch, ...(input.project_id !== undefined ? { project_id: projectId } : {}) }
+          const updated = await automations.update(authenticatedUser.id, id, patch as never)
+          if (!updated) return routeError(correlationId, 'AUTOMATION_NOT_FOUND', 'Automation not found', 404)
+          if (typeof enabled === 'boolean') {
+            if (enabled === false) await automations.cancel(authenticatedUser.id, id)
+            else await client.collection('automations').update(id, { state: 'active', updated_at: Date.now() })
+          }
+          const result = await automations.getOwned(authenticatedUser.id, id)
+          return result ? json({ automation: result, job: result }, 200, correlationId) : routeError(correlationId, 'AUTOMATION_NOT_FOUND', 'Automation not found', 404)
+        }
+      }
+      if (path.length === 4 && path[3] === 'run' && request.method === 'POST') {
+        const automationId = decodeURIComponent(path[2])
+        const target = await automations.getOwned(authenticatedUser.id, automationId)
+        if (!target) return routeError(correlationId, 'AUTOMATION_NOT_FOUND', 'Automation not found', 404)
+        const input = await body(request)
+        const key = input.trigger_key === undefined ? `manual:${Date.now()}` : validateTriggerKey(input.trigger_key)
+        const queued = await automations.trigger(authenticatedUser.id, automationId, key)
+        const run = await automationWorkerFor(client).execute(authenticatedUser.id, queued.id)
+        return json({ run }, run.state === 'pending' || run.state === 'retrying' ? 202 : 200, correlationId)
+      }
+      if ((path.length === 4 && path[3] === 'cancel' || path.length === 5 && path[3] === 'runs' && path[4] === 'cancel' || path.length === 6 && path[3] === 'runs' && path[5] === 'cancel') && request.method === 'POST') {
+        const automationId = decodeURIComponent(path[2])
+        const runId = path.length === 6 ? decodeURIComponent(path[4]) : (await body(request)).run_id
+        if (typeof runId !== 'string' || !runId.trim()) return routeError(correlationId, 'AUTOMATION_RUN_REQUIRED', 'run_id is required', 400)
+        const run = await client.collection('automation_runs').getOne(runId).catch(() => null) as Record<string, unknown> | null
+        if (!run || run.owner_id !== authenticatedUser.id || run.automation_id !== automationId) return routeError(correlationId, 'AUTOMATION_RUN_NOT_FOUND', 'Automation run not found', 404)
+        const cancelled = await automations.cancelRun(authenticatedUser.id, runId)
+        if (cancelled) await automationWorkerFor(client).executeDue()
+        return cancelled ? json({ run: cancelled }, 200, correlationId) : routeError(correlationId, 'AUTOMATION_RUN_NOT_FOUND', 'Automation run not found', 404)
+      }
+      if (path.length === 4 && path[3] === 'history' && request.method === 'GET') return json({ runs: (await automations.history(authenticatedUser.id, decodeURIComponent(path[2]))).slice(0, routeLimit(url.searchParams.get('limit'))) }, 200, correlationId)
+      if (path.length === 5 && path[3] === 'runs' && request.method === 'GET') {
+        const automationId = decodeURIComponent(path[2])
+        const runId = decodeURIComponent(path[4])
+        const owned = await automations.getOwned(authenticatedUser.id, automationId)
+        const run = owned ? (await automations.history(authenticatedUser.id, automationId)).find((candidate) => candidate.id === runId) : undefined
+        return run ? json({ run }, 200, correlationId) : routeError(correlationId, 'AUTOMATION_RUN_NOT_FOUND', 'Automation run not found', 404)
+      }
+    } catch (error) {
+      const code = error instanceof RequestSecurityError ? error.code : error instanceof Error && error.message === TRIGGER_KEY_ERROR ? 'INVALID_TRIGGER_KEY' : error instanceof Error && error.message.includes('not found') ? 'AUTOMATION_NOT_FOUND' : 'AUTOMATION_REQUEST_FAILED'
+      const status = error instanceof RequestSecurityError ? error.status : code === 'AUTOMATION_NOT_FOUND' ? 404 : 400
+      return routeError(correlationId, code, error instanceof Error ? error.message : 'Automation request failed', status)
+    }
+  }
+
+  if (path[1] === 'inbox' && authenticatedUser) {
+    const client = await applicationDatabase()
+    const inbox = new InboxRepository(client)
+    try {
+      if (path.length === 2 && request.method === 'GET') return json({ items: await inbox.list(authenticatedUser.id, url.searchParams.get('projectId') ?? undefined) })
+      if (path.length === 4 && path[3] === 'resolve' && request.method === 'POST') { const item = await inbox.resolve(authenticatedUser.id, decodeURIComponent(path[2])); return item ? json({ item }) : json({ error: 'Inbox item not found' }, 404) }
+      if (path.length === 3 && request.method === 'POST') {
+        const input = await body(request)
+        if (typeof input.kind !== 'string' || typeof input.reference_id !== 'string' || typeof input.title !== 'string') return json({ error: 'kind, reference_id, and title are required' }, 400)
+        if (typeof input.project_id === 'string' && !(await createProjectSessionRepository(client).getProject(authenticatedUser.id, input.project_id))) return json({ error: 'Project is not owned by the authenticated user' }, 403)
+        return json({ item: await inbox.upsert({
+          owner_id: authenticatedUser.id,
+          kind: input.kind as never,
+          reference_id: input.reference_id,
+          title: input.title,
+          ...(typeof input.body === 'string' ? { body: input.body } : {}),
+          ...(typeof input.project_id === 'string' ? { project_id: input.project_id } : {}),
+          ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+          ...(input.deep_link !== undefined ? { deep_link: input.deep_link as Record<string, string> } : {}),
+          ...(input.reopen === true ? { reopen: true } : {}),
+          ...(typeof input.underlying_state === 'string' ? { underlying_state: input.underlying_state } : {}),
+        }) }, 201)
+      }
+    } catch (error) { return json({ error: error instanceof Error ? error.message : 'Inbox request failed' }, 400) }
+  }
+
+  if (path[1] === 'notifications' && authenticatedUser) {
+    try {
+      const client = await applicationDatabase()
+      const notifications = new NotificationRepository(client)
+      if (path.length === 2 && request.method === 'GET') return json({ subscriptions: await notifications.list(authenticatedUser.id) }, 200, correlationId)
+      if (path.length === 2 && request.method === 'POST') {
+        const input = await body(request)
+        if ((input.channel !== 'push' && input.channel !== 'email') || typeof input.target !== 'string') return routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'channel and target are required', 400)
+        return json({ subscription: await notifications.subscribe(authenticatedUser.id, { channel: input.channel, target: input.target }) }, 201, correlationId)
+      }
+      if (path.length === 3 && path[2] === 'subscribe' && (request.method === 'POST' || request.method === 'DELETE')) {
+        const input = await body(request)
+        if (typeof input.endpoint !== 'string' || !input.endpoint.trim()) return routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'endpoint is required', 400)
+        const rows = await client.collection('notification_subscriptions').getFullList({ filter: `owner_id = "${escapeFilter(authenticatedUser.id)}"` }) as Array<Record<string, unknown>>
+        const existing = rows.find((item) => item.owner_id === authenticatedUser.id && item.target === input.endpoint)
+        if (request.method === 'DELETE') {
+          if (!existing) return routeError(correlationId, 'NOTIFICATION_SUBSCRIPTION_NOT_FOUND', 'Notification subscription not found', 404)
+          await client.collection('notification_subscriptions').delete(String(existing.id))
+          return json({ success: true }, 200, correlationId)
+        }
+        if (existing) return json({ subscription: existing }, 200, correlationId)
+        return json({ subscription: await notifications.subscribe(authenticatedUser.id, { channel: 'push', target: input.endpoint }) }, 201, correlationId)
+      }
+      if (path.length === 3 && path[2] === 'subscriptions' && request.method === 'GET') return json({ subscriptions: await notifications.list(authenticatedUser.id) }, 200, correlationId)
+      if (path.length === 3 && path[2] === 'subscriptions' && request.method === 'POST') {
+        const input = await body(request)
+        if ((input.channel !== 'push' && input.channel !== 'email') || typeof input.target !== 'string') return routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'channel and target are required', 400)
+        return json({ subscription: await notifications.subscribe(authenticatedUser.id, { channel: input.channel, target: input.target }) }, 201, correlationId)
+      }
+      if (path.length === 4 && path[2] === 'subscriptions' && request.method === 'DELETE') {
+        const subscription = await client.collection('notification_subscriptions').getOne(decodeURIComponent(path[3])).catch(() => null) as Record<string, unknown> | null
+        if (!subscription || subscription.owner_id !== authenticatedUser.id) return routeError(correlationId, 'NOTIFICATION_SUBSCRIPTION_NOT_FOUND', 'Notification subscription not found', 404)
+        await client.collection('notification_subscriptions').delete(String(subscription.id))
+        return json({ success: true }, 200, correlationId)
+      }
+      if (path.length === 3 && path[2] === 'subscriptions' && request.method === 'DELETE') {
+        const input = await body(request)
+        if (typeof input.endpoint !== 'string' || !input.endpoint.trim()) return routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'endpoint is required', 400)
+        const rows = await client.collection('notification_subscriptions').getFullList({ filter: `owner_id = "${escapeFilter(authenticatedUser.id)}"` }) as Array<Record<string, unknown>>
+        const subscription = rows.find((item) => item.owner_id === authenticatedUser.id && item.target === input.endpoint)
+        if (!subscription) return routeError(correlationId, 'NOTIFICATION_SUBSCRIPTION_NOT_FOUND', 'Notification subscription not found', 404)
+        await client.collection('notification_subscriptions').delete(String(subscription.id))
+        return json({ success: true }, 200, correlationId)
+      }
+      if (path.length === 3 && path[2] === 'preferences' && request.method === 'GET') {
+        const record = await getUserPreferences(client, authenticatedUser.id)
+        return json({ preferences: notificationPreferenceValue(record?.preferences && object(record.preferences).notifications), updatedAt: record?.updated_at ?? Date.now() }, 200, correlationId)
+      }
+      if (path.length === 3 && path[2] === 'preferences' && request.method === 'PATCH') {
+        const input = await body(request)
+        const record = await getUserPreferences(client, authenticatedUser.id)
+        const current = object(record?.preferences)
+        const requested = object(input.preferences ?? input)
+        const saved = await saveUserPreferences(client, authenticatedUser.id, { ...current, notifications: notificationPreferenceValue({ ...object(current.notifications), ...requested, events: { ...object(object(current.notifications).events), ...object(requested.events) } }) })
+        return json({ preferences: notificationPreferenceValue(object(saved.preferences).notifications), updatedAt: saved.updated_at ?? Date.now() }, 200, correlationId)
+      }
+      if (path.length === 3 && path[2] === 'delivery-status' && request.method === 'GET') {
+        const limit = routeLimit(url.searchParams.get('limit'))
+        const rows = (await client.collection('notification_deliveries').getList(1, limit, { filter: `owner_id = "${escapeFilter(authenticatedUser.id)}"`, sort: '-created_at' })).items as Array<Record<string, unknown>>
+        const deliveries = rows.filter((item) => item.owner_id === authenticatedUser.id).slice(0, limit).map((item) => ({ id: item.id, inbox_id: item.inbox_id, subscription_id: item.subscription_id, state: item.state, error_message: item.error_message, created_at: item.created_at }))
+        return json({ deliveries }, 200, correlationId)
+      }
+      if (path.length === 3 && path[2] === 'vapid-public-key' && request.method === 'GET') {
+        const publicKey = process.env.VAPID_PUBLIC_KEY?.trim()
+        return publicKey ? json({ publicKey }, 200, correlationId) : routeError(correlationId, 'NOTIFICATION_PUSH_UNAVAILABLE', 'Push notifications are not configured', 503)
+      }
+      if (path.length === 3 && path[2] === 'test' && request.method === 'POST') return routeError(correlationId, 'NOTIFICATION_TEST_UNAVAILABLE', 'Notification test delivery is not configured', 501)
+    } catch (error) {
+      return routeError(correlationId, 'NOTIFICATION_REQUEST_FAILED', error instanceof Error ? error.message : 'Notification request failed', 400)
+    }
   }
 
   if (path[1] === 'agents' && authenticatedUser) {
@@ -2863,7 +3227,14 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
 
   if (path[1] === 'sessions' && path.length === 2 && request.method === 'GET') {
     const client = await applicationDatabase()
-    const project = url.searchParams.get('project') ?? undefined
+    const requestedCursor = url.searchParams.get('cursor')
+    const cursor = requestedCursor ? decodeSessionCursor(requestedCursor) : null
+    if (requestedCursor && !cursor) return json({ error: 'Invalid session cursor' }, 400)
+    const project = cursor?.project ?? url.searchParams.get('project') ?? undefined
+    const requestedDirectory = cursor?.directory ?? url.searchParams.get('directory') ?? undefined
+    const search = (cursor?.search ?? url.searchParams.get('search')?.trim().toLocaleLowerCase() ?? '').slice(0, SESSION_SEARCH_MAX_LENGTH)
+    const order = cursor?.order ?? (url.searchParams.get('order') === 'asc' ? 'asc' : 'desc')
+    const limit = cursor ? sessionPageLimit(String(cursor.limit)) : sessionPageLimit(url.searchParams.get('limit'))
     const repository = createProjectSessionRepository(client)
     const userProjects = await repository.listProjects(authenticatedUser!.id)
     const owned = await repository.listSessions(authenticatedUser!.id, { project, includeArchived: true })
@@ -2873,12 +3244,33 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
       if (local) Object.assign(local, record)
       return record
     }).filter((session) => {
-      const requestedDirectory = url.searchParams.get('directory')
       if (!requestedDirectory) return true
       const project = session.project === 'General Chat' ? generalChatProject() : userProjects.find((candidate) => candidate.name === session.project)
       return (session.directory ?? project?.path) === resolve(requestedDirectory)
+    }).map((record) => storedSessionResponse(record, userProjects)).filter((session) => {
+      if (!search) return true
+      return [session.id, session.title, session.project, session.directory].some((value) => String(value ?? '').toLocaleLowerCase().includes(search))
+    }).sort((a, b) => {
+      const updated = a.updatedAt - b.updatedAt
+      if (updated !== 0) return order === 'asc' ? updated : -updated
+      const id = a.id.localeCompare(b.id)
+      return order === 'asc' ? id : -id
     })
-    return json({ sessions: records.map((record) => storedSessionResponse(record, userProjects)).sort((a, b) => b.updatedAt - a.updatedAt) })
+    const start = cursor
+      ? records.findIndex((session) => order === 'asc'
+        ? session.updatedAt > cursor.updatedAt || (session.updatedAt === cursor.updatedAt && session.id > cursor.id)
+        : session.updatedAt < cursor.updatedAt || (session.updatedAt === cursor.updatedAt && session.id < cursor.id))
+      : 0
+    const pageItems = records.slice(start < 0 ? records.length : start, (start < 0 ? records.length : start) + limit)
+    const last = pageItems[pageItems.length - 1]
+    const nextCursor = last && (start < 0 ? 0 : start) + pageItems.length < records.length
+      ? encodeSessionCursor({ updatedAt: last.updatedAt, id: last.id, order, limit, search, ...(project ? { project } : {}), ...(requestedDirectory ? { directory: requestedDirectory } : {}) })
+      : undefined
+    return json({
+      sessions: pageItems,
+      ...(nextCursor ? { nextCursor } : {}),
+      page: { limit, order, hasNext: Boolean(nextCursor), ...(nextCursor ? { nextCursor } : {}) },
+    })
   }
 
   if (path[1] === 'sessions' && path.length === 2 && request.method === 'POST') {
@@ -3487,5 +3879,7 @@ const _server = Bun.serve<SocketData>({
     },
   },
 })
+
+startAutomationScheduler()
 
 void _server

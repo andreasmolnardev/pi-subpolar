@@ -5,13 +5,20 @@
  * operation. Pi exposes only the central `subpolar-tools` gateway; the bridge
  * performs policy checks, approvals, auditing, and HTTP execution.
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve, join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 type AnyObject = Record<string, any>
 type Provider = { openapi: string | AnyObject; headers?: AnyObject; baseUrl?: string; operations?: string[] | Record<string, any> }
+
+export const OPENAPI_DISCOVERY_LIMITS = { maxDocumentBytes: 4 * 1024 * 1024, maxProviders: 32, maxPaths: 500, maxOperations: 1000 } as const
+const MAX_DOCUMENT_BYTES = OPENAPI_DISCOVERY_LIMITS.maxDocumentBytes
+const MAX_PROVIDERS = OPENAPI_DISCOVERY_LIMITS.maxProviders
+const MAX_PATHS = OPENAPI_DISCOVERY_LIMITS.maxPaths
+const MAX_OPERATIONS = OPENAPI_DISCOVERY_LIMITS.maxOperations
+const NAME = /^[a-z][a-z0-9._-]{0,63}$/
 
 function object(value: unknown): AnyObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as AnyObject : {}
@@ -57,6 +64,7 @@ function loadDocument(source: string | AnyObject, cwd: string): AnyObject {
   const trimmed = source.trim()
   if (trimmed.includes('\n') || trimmed.startsWith('{') || /^(openapi|swagger):\s*/i.test(trimmed)) return object(parseYaml(source))
   const path = resolve(cwd, trimmed)
+  if (!existsSync(path) || statSync(path).size > MAX_DOCUMENT_BYTES) throw new Error('OpenAPI document exceeds the configured limit')
   const text = readFileSync(path, 'utf8')
   return /\.ya?ml$/i.test(path) ? object(parseYaml(text)) : object(JSON.parse(text))
 }
@@ -97,8 +105,8 @@ async function registerOperation(providerName: string, provider: Provider, docum
   const servers = Array.isArray(document.servers) ? document.servers : []
   const serverUrl = provider.baseUrl ?? servers[0]?.url
   if (typeof serverUrl !== 'string' || !/^https?:\/\//i.test(serverUrl)) return
-  const operationId = typeof operation.operationId === 'string' ? operation.operationId : ''
-  if (!operationId) return
+  const operationId = typeof operation.operationId === 'string' ? operation.operationId.trim() : ''
+  if (!operationId || !NAME.test(providerName) || !/^[a-z][a-z0-9._:-]{0,127}$/.test(operationId)) return
   const selection = provider.operations
   if (Array.isArray(selection) && !selection.includes(operationId)) return
   if (selection && !Array.isArray(selection) && selection[operationId] === false) return
@@ -137,13 +145,19 @@ async function syncConfiguredTools(cwd: string): Promise<void> {
   const providers: Record<string, Provider> = {}
   for (const file of files) Object.assign(providers, configProviders(file))
 
+  let providerCount = 0
+  let operationCount = 0
   for (const [providerName, provider] of Object.entries(providers)) {
+    if (++providerCount > MAX_PROVIDERS) break
     try {
       const document = loadDocument(provider.openapi, cwd)
+      if (!document.openapi && !document.swagger) throw new Error('OpenAPI document version is required')
+      if (Object.keys(object(document.paths)).length > MAX_PATHS) throw new Error('OpenAPI document contains too many paths')
       for (const [path, pathItemValue] of Object.entries(object(document.paths))) {
         const pathItem = object(pathItemValue)
         for (const [method, operationValue] of Object.entries(pathItem)) {
           if (!['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'trace'].includes(method)) continue
+          if (++operationCount > MAX_OPERATIONS) throw new Error('OpenAPI document contains too many operations')
           await registerOperation(providerName, provider, document, path, method, object(operationValue), cwd)
         }
       }

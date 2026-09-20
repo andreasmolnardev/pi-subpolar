@@ -5,6 +5,13 @@ export const EVENT_LOG_MAX_ROWS = 5000
 export const EVENT_LOG_MAX_BYTES = 8 * 1024 * 1024
 const MAX_PAYLOAD_BYTES = 64 * 1024
 
+export type EventCursorOptions = {
+  maxRows?: number
+  maxBytes?: number
+  maxAgeMs?: number
+  now?: () => number
+}
+
 export type DurableEvent = {
   id: number
   ownerId: string
@@ -44,14 +51,21 @@ export function ensureEventCursorSchema(database: Database): void {
   `)
 }
 
-export function createEventCursor(database: Database, limits = { maxRows: EVENT_LOG_MAX_ROWS, maxBytes: EVENT_LOG_MAX_BYTES }) {
+export function createEventCursor(database: Database, limits: EventCursorOptions = {}) {
   ensureEventCursorSchema(database)
+  const maxRows = limits.maxRows ?? EVENT_LOG_MAX_ROWS
+  const maxBytes = limits.maxBytes ?? EVENT_LOG_MAX_BYTES
+  const maxAgeMs = typeof limits.maxAgeMs === 'number' && Number.isFinite(limits.maxAgeMs) && limits.maxAgeMs >= 0 ? limits.maxAgeMs : null
+  const now = limits.now ?? Date.now
 
-  function prune(): void {
-    database.query('DELETE FROM durable_events WHERE id NOT IN (SELECT id FROM durable_events ORDER BY id DESC LIMIT ?)').run(limits.maxRows)
+  function prune(currentTime = now()): void {
+    database.query('DELETE FROM durable_events WHERE id NOT IN (SELECT id FROM durable_events ORDER BY id DESC LIMIT ?)').run(maxRows)
     const row = database.query('SELECT COALESCE(SUM(payload_bytes), 0) AS bytes FROM durable_events').get() as { bytes: number }
-    if (row.bytes > limits.maxBytes) {
-      database.query(`DELETE FROM durable_events WHERE id <= COALESCE((SELECT MAX(id) FROM durable_events WHERE (SELECT SUM(payload_bytes) FROM durable_events AS newer WHERE newer.id >= durable_events.id) > ?), -1)`).run(limits.maxBytes)
+    if (row.bytes > maxBytes) {
+      database.query(`DELETE FROM durable_events WHERE id <= COALESCE((SELECT MAX(id) FROM durable_events WHERE (SELECT SUM(payload_bytes) FROM durable_events AS newer WHERE newer.id >= durable_events.id) > ?), -1)`).run(maxBytes)
+    }
+    if (maxAgeMs !== null) {
+      database.query('DELETE FROM durable_events WHERE occurred_at < ?').run(currentTime - maxAgeMs)
     }
   }
 
@@ -59,10 +73,11 @@ export function createEventCursor(database: Database, limits = { maxRows: EVENT_
     const safe = redactSensitive(value)
     let payload = JSON.stringify(safe)
     if (payload.length > MAX_PAYLOAD_BYTES) payload = JSON.stringify({ type: 'event.redacted', properties: { reason: 'payload_too_large' } })
+    const occurredAt = now()
     database.query('INSERT INTO durable_events (owner_id, session_id, type, payload, occurred_at, payload_bytes) VALUES (?, ?, ?, ?, ?, ?)').run(
-      ownerId, sessionId, typeof safe === 'object' && safe !== null && typeof (safe as { type?: unknown }).type === 'string' ? (safe as { type: string }).type : 'event', payload, Date.now(), payload.length,
+      ownerId, sessionId, typeof safe === 'object' && safe !== null && typeof (safe as { type?: unknown }).type === 'string' ? (safe as { type: string }).type : 'event', payload, occurredAt, payload.length,
     )
-    prune()
+    prune(occurredAt)
     const row = database.query('SELECT id, owner_id, session_id, type, payload, occurred_at FROM durable_events WHERE rowid = last_insert_rowid()').get() as EventRow
     return eventFromRow(row)
   }

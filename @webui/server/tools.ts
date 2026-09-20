@@ -19,6 +19,7 @@ import { discardPendingApprovalInput, retainPendingApprovalInput, takePendingApp
 import type { ToolGatewayContext } from './tool-gateway.ts'
 import { PocketBaseMemoryService, type MemoryContext, type MemoryScope } from './memory.ts'
 import { BrowserSessionService, BrowserRuntimeError, browserProfileAllows, type BrowserContext } from './browser/index.ts'
+import { webSearch, type WebSearchInput } from './web-search.ts'
 
 export type ToolAdapter = 'internal' | 'http' | 'openapi' | 'mcp'
 export type ToolEffect = 'allow' | 'deny' | 'approval'
@@ -73,6 +74,7 @@ export type ToolDefinition = {
   requires_approval: boolean
   enabled: boolean
   metadata: Record<string, unknown>
+  context_mode?: ToolContextMode
   created_at?: number
   updated_at?: number
 }
@@ -133,6 +135,7 @@ export function configureSubagentToolRunner(runner: SubagentToolRunner | undefin
 const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>> = [
   { tool_id: 'subagent/run', namespace: 'builtin', description: 'Run an authorized isolated subagent task', adapter: 'internal', target: 'subagent', operation: 'run', input_schema: { type: 'object', properties: { targetAgent: { type: 'string', minLength: 1 }, prompt: { type: 'string', minLength: 1 }, capabilities: { type: 'array', items: { type: 'string' } }, coding: { type: 'boolean' } }, required: ['targetAgent', 'prompt'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'subagent/run' } },
   { tool_id: 'search-tool', namespace: 'builtin', description: 'Search tools available to the active agent', adapter: 'internal', target: 'tool-router', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
+  { tool_id: 'web-search', namespace: 'builtin', description: 'Search the public web through an approved OpenCode-compatible provider', adapter: 'internal', target: 'web-search', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 1000 }, provider: { type: 'string', enum: ['exa', 'parallel'] }, resultCount: { type: 'integer', minimum: 1, maximum: 10 }, contextSize: { type: 'integer', minimum: 1, maximum: 32000 }, type: { type: 'string' }, livecrawl: { type: 'string' }, objective: { type: 'string', maxLength: 1000 }, search_queries: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 1000 } } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'object', properties: { provider: { type: 'string' }, results: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' }, snippet: { type: 'string' } }, required: ['title', 'url', 'snippet'] } } }, required: ['provider', 'results'] }, risk: 'external', requires_approval: true, enabled: true, metadata: { capability: 'web-search' } },
   { tool_id: 'read', namespace: 'builtin', description: 'Read files from the selected project', adapter: 'internal', target: 'pi', operation: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } }, required: ['path'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
   { tool_id: 'grep', namespace: 'builtin', description: 'Search file contents in the selected project', adapter: 'internal', target: 'pi', operation: 'grep', input_schema: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' }, glob: { type: 'string' }, ignoreCase: { type: 'boolean' }, literal: { type: 'boolean' }, context: { type: 'number' }, limit: { type: 'number' } }, required: ['pattern'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
   { tool_id: 'find', namespace: 'builtin', description: 'Find files in the selected project', adapter: 'internal', target: 'pi', operation: 'find', input_schema: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' }, limit: { type: 'number' } }, required: ['pattern'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
@@ -155,6 +158,7 @@ function toTool(value: unknown): ToolDefinition {
   const record = recordObject(value)
   const adapter = String(record.adapter)
   const risk = String(record.risk)
+  const metadata = redactToolMetadata(recordObject(record.metadata))
   return {
     id: typeof record.id === 'string' ? record.id : undefined,
     tool_id: canonicalToolId(String(record.tool_id), adapter as ToolAdapter, String(record.namespace ?? '')),
@@ -168,7 +172,8 @@ function toTool(value: unknown): ToolDefinition {
     risk: risk === 'write' || risk === 'delete' || risk === 'external' ? risk : 'read',
     requires_approval: record.requires_approval === true,
     enabled: record.enabled !== false,
-    metadata: recordObject(record.metadata),
+    metadata,
+    context_mode: validToolContextMode(record.context_mode) ?? validToolContextMode(metadata.contextMode) ?? 'discoverable',
     created_at: typeof record.created_at === 'number' ? record.created_at : undefined,
     updated_at: typeof record.updated_at === 'number' ? record.updated_at : undefined,
   }
@@ -297,6 +302,51 @@ export function canonicalToolId(toolId: string, adapter?: ToolAdapter, namespace
   return toolId
 }
 
+const registryName = /^[a-z][a-z0-9._-]{0,63}$/
+const registryOperation = /^[a-z][a-z0-9._:-]{0,127}$/
+const registryAdapters = new Set<ToolAdapter>(['internal', 'http', 'openapi', 'mcp'])
+const registryRisks = new Set<ToolRisk>(['read', 'write', 'delete', 'external'])
+
+function validToolContextMode(value: unknown): ToolContextMode | undefined {
+  return TOOL_CONTEXT_MODES.includes(value as ToolContextMode) ? value as ToolContextMode : undefined
+}
+
+function validSchema(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a JSON object`)
+  const schema = value as Record<string, unknown>
+  if (JSON.stringify(schema).length > 1 * 1024 * 1024) throw new Error(`${label} exceeds the configured size limit`)
+  return schema
+}
+
+function redactToolMetadata(value: Record<string, unknown>): Record<string, unknown> {
+  const headers = recordObject(value.headers)
+  const safeHeaders = Object.fromEntries(Object.entries(headers).map(([name, header]) => [
+    name,
+    /authorization|cookie|token|secret|password|api[-_]?key|credential/i.test(name) ? '[REDACTED]' : header,
+  ]))
+  return redactSensitive({ ...value, ...(Object.keys(headers).length ? { headers: safeHeaders } : {}) }) as Record<string, unknown>
+}
+
+export function validateToolDefinition(definition: Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>): Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'> {
+  if (!registryAdapters.has(definition.adapter)) throw new Error(`Unsupported tool adapter: ${String(definition.adapter)}`)
+  if (!registryRisks.has(definition.risk)) throw new Error(`Unsupported tool risk: ${String(definition.risk)}`)
+  if (!registryName.test(definition.namespace)) throw new Error('Tool namespace is malformed')
+  if (!registryOperation.test(definition.operation)) throw new Error('Tool operation is malformed')
+  const tool_id = canonicalToolId(definition.tool_id, definition.adapter, definition.namespace)
+  if (definition.adapter !== 'internal' && tool_id !== `${definition.namespace}/${definition.operation}`) throw new Error('Tool ID must be namespace/operation')
+  if (definition.adapter === 'internal' && !tool_id) throw new Error('Tool ID is required')
+  if (definition.adapter !== 'internal' && !/^https?:\/\//i.test(definition.target) && definition.adapter !== 'mcp') throw new Error('HTTP tools require an HTTP(S) target')
+  if (!definition.target.trim()) throw new Error('Tool target is required')
+  return {
+    ...definition,
+    tool_id,
+    input_schema: validSchema(definition.input_schema, 'Input schema'),
+    output_schema: validSchema(definition.output_schema, 'Output schema'),
+    context_mode: validToolContextMode(definition.context_mode) ?? 'discoverable',
+    metadata: redactToolMetadata(definition.metadata),
+  }
+}
+
 function generatedSkillName(toolId: string): string {
   return `tool-${toolId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`
 }
@@ -331,13 +381,21 @@ export async function ensureToolRegistry(client: PocketBase): Promise<void> {
 }
 
 export async function upsertRegisteredTool(client: PocketBase, definition: Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>): Promise<ToolDefinition> {
-  const tool_id = canonicalToolId(definition.tool_id, definition.adapter, definition.namespace)
-  const data = { ...definition, tool_id, updated_at: Date.now() }
-  const existing = await client.collection('tool_registry').getFirstListItem(`tool_id = "${escapeFilter(tool_id)}"`).catch(() => null)
+  let validated: Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>
+  try {
+    validated = validateToolDefinition(definition)
+  } catch (error) {
+    await writeAudit(client, { user_id: 'system', tool_id: String(definition.tool_id), status: 'error', error_code: 'REGISTRATION_REJECTED', error_message: redactSensitiveText(error instanceof Error ? error.message : 'Tool registration rejected') })
+    throw error
+  }
+  const data = { ...validated, tool_id: validated.tool_id, updated_at: Date.now(), metadata: { ...validated.metadata, contextMode: validated.context_mode } }
+  const existing = await client.collection('tool_registry').getFirstListItem(`tool_id = "${escapeFilter(validated.tool_id)}"`).catch(() => null)
   const record = existing
     ? await client.collection('tool_registry').update(existing.id, data)
     : await client.collection('tool_registry').create({ ...data, created_at: Date.now() })
-  return toTool(record)
+  const result = toTool(record)
+  await writeAudit(client, { user_id: 'system', tool_id: result.tool_id, status: 'success', result_summary: `Registered ${result.adapter} tool` })
+  return result
 }
 
 export async function ensureUserDefaults(client: PocketBase, userId: string): Promise<AgentDefinition> {
@@ -421,7 +479,7 @@ function toolContextMode(agent: AgentDefinition, toolId: string): ToolContextMod
   return agent.tool_context_modes[toolId] ?? (agent.template ? 'disabled' : 'always')
 }
 
-export async function listToolsForAgent(client: PocketBase, userId: string, agentName = 'master', projectId?: string): Promise<Array<{ id: string; description: string; inputSchema: Record<string, unknown>; requiresApproval: boolean }>> {
+export async function listToolsForAgent(client: PocketBase, userId: string, agentName = 'master', projectId?: string): Promise<Array<{ id: string; description: string; inputSchema: Record<string, unknown>; requiresApproval: boolean; contextMode: ToolContextMode }>> {
   let agent = agentName === 'master'
     ? await findAgent(client, userId, agentName) ?? await ensureUserDefaults(client, userId)
     : await findAgent(client, userId, agentName)
@@ -437,7 +495,7 @@ export async function listToolsForAgent(client: PocketBase, userId: string, agen
     const contextMode = toolContextMode(agent, tool.tool_id)
     const effect = policyMap.get(tool.tool_id)
     if (contextMode === 'disabled' || contextMode === 'on-demand' || effect === 'deny' || (!effect && !agent.name.startsWith('master'))) return []
-    return [{ id: tool.tool_id, description: tool.description, inputSchema: tool.input_schema, requiresApproval: tool.requires_approval || effect === 'approval' }]
+    return [{ id: tool.tool_id, description: tool.description, inputSchema: tool.input_schema, requiresApproval: tool.requires_approval || effect === 'approval', contextMode: tool.context_mode ?? contextMode }]
   })
 }
 
@@ -504,6 +562,7 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     const browserContext: BrowserContext = { ownerId: context.userId, projectId: context.projectId, sessionId: context.sessionId, agentName: context.agentName, readOnly: context.agentName === 'plan' || context.agentName === 'reviewer' }
     return browser.execute(browserContext, tool.operation, { ...args, browserSessionId })
   }
+  if (tool.target === 'web-search' && tool.operation === 'search') return webSearch(input as WebSearchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
   const definitions = {
     read: createReadToolDefinition(cwd),
     write: createWriteToolDefinition(cwd),
@@ -589,7 +648,8 @@ async function invokeExternalTool(client: PocketBase, tool: ToolDefinition, inpu
 }
 
 export async function callTool(client: PocketBase, userId: string, agentName: string, toolId: string, input: unknown, sessionId?: string, override?: PermissionOverride, options: { cwd?: string; callId?: string; waitForApproval?: boolean; onApproval?: (approval: Approval) => void | Promise<void>; capabilities?: readonly string[] } = {}) {
-  const canonicalId = canonicalToolId(toolId)
+  let canonicalId: string
+  try { canonicalId = canonicalToolId(toolId) } catch { return { ok: false as const, toolId, error: { code: 'UNKNOWN_TOOL', message: 'Tool does not exist or is disabled' } } }
   if (options.capabilities?.some((capability) => !(DECLARED_CAPABILITIES as readonly string[]).includes(capability))) {
     return { ok: false as const, toolId: canonicalId, error: { code: 'CAPABILITY_INVALID', message: 'Unknown execution capability' } }
   }
