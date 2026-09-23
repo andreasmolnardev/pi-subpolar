@@ -20,6 +20,41 @@ import { fetchWrapper, FetchError } from './fetchWrapper'
 
 const DEFAULT_USER_ID = 'default'
 
+export type TeachToolKind = 'cli' | 'mcp' | 'openapi'
+
+export interface TeachToolDraft {
+  tool_id: string
+  namespace: string
+  description: string
+  adapter: string
+  target: string
+  operation: string
+  input_schema: Record<string, unknown>
+  output_schema: Record<string, unknown>
+  risk: string
+  requires_approval: boolean
+  enabled: boolean
+  context_mode: string
+  metadata: Record<string, unknown>
+}
+
+export interface TeachToolsRequest {
+  kind: TeachToolKind
+  goal: string
+  command?: string
+  fixedArgs?: string[]
+  cwd?: string
+  server?: Record<string, unknown>
+  openapi?: Record<string, unknown>
+}
+
+export interface TeachToolsResponse {
+  observations: string[]
+  drafts: TeachToolDraft[]
+}
+
+export type RegisteredToolProjection = TeachToolDraft
+
 export const settingsApi = {
   listAgents: async (): Promise<AgentDefinition[]> => fetchWrapper(`${API_BASE_URL}/api/agents`),
 
@@ -61,6 +96,22 @@ export const settingsApi = {
     return fetchWrapper(`${API_BASE_URL}/api/settings`, {
       method: 'DELETE',
       params: { userId },
+    })
+  },
+
+  teachTools: async (request: TeachToolsRequest): Promise<TeachToolsResponse> => {
+    return fetchWrapper(`${API_BASE_URL}/api/settings/tools/teach`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+  },
+
+  registerTool: async (tool: TeachToolDraft): Promise<RegisteredToolProjection> => {
+    return fetchWrapper(`${API_BASE_URL}/api/settings/tools/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool }),
     })
   },
 

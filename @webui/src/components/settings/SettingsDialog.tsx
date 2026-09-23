@@ -10,18 +10,20 @@ import { NotificationSettings } from '@/components/settings/NotificationSettings
 import { IntegrationsSettings } from '@/components/settings/IntegrationsSettings'
 import { ExtensionsSettings } from '@/components/settings/ExtensionsSettings'
 import { UsageSettings } from '@/components/settings/UsageSettings'
+import { TeachToolsSettings } from '@/components/settings/TeachToolsSettings'
 import { ProxySettings } from '@/components/settings/ProxySettings'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { Settings2, Keyboard, ChevronLeft, Key, User, Volume2, Bell, X, MessageSquare, Palette, Plug, BarChart3, Network } from 'lucide-react'
+import { Settings2, Keyboard, ChevronLeft, Key, User, Volume2, Bell, X, MessageSquare, Palette, Plug, BarChart3, Network, Wrench } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSettingsDialog } from '@/hooks/useSettingsDialog'
 
-type SettingsView = 'menu' | 'general' | 'chat' | 'appearance' | 'shortcuts' | 'providers' | 'integrations' | 'extensions' | 'account' | 'voice' | 'notifications' | 'usage' | 'proxy'
+type SettingsView = 'menu' | 'general' | 'chat' | 'appearance' | 'shortcuts' | 'providers' | 'integrations' | 'extensions' | 'account' | 'voice' | 'notifications' | 'usage' | 'proxy' | 'teach-tools'
 
 export function SettingsDialog() {
   const { isOpen, close, activeTab, setActiveTab } = useSettingsDialog()
   const [mobileView, setMobileView] = useState<SettingsView>('menu')
   const [sectionHistory, setSectionHistory] = useState<SettingsView[]>([])
+  const [teachToolsActive, setTeachToolsActive] = useState(false)
 
   const pushSectionHistory = useCallback((view: SettingsView) => {
     if (view === 'menu') return
@@ -46,7 +48,8 @@ export function SettingsDialog() {
     if (previousView) {
       setSectionHistory(previousHistory)
       setMobileView(previousView)
-      setActiveTab(previousView)
+      setTeachToolsActive(previousView === 'teach-tools')
+      if (previousView !== 'teach-tools') setActiveTab(previousView as Exclude<SettingsView, 'menu' | 'teach-tools'>)
       return
     }
 
@@ -58,6 +61,7 @@ export function SettingsDialog() {
     if (!isOpen) {
       setMobileView('menu')
       setSectionHistory([])
+      setTeachToolsActive(false)
       return
     }
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -82,11 +86,13 @@ export function SettingsDialog() {
     { id: 'extensions', icon: Plug, label: 'Extensions', description: 'View installed Pi extensions' },
     { id: 'usage', icon: BarChart3, label: 'Usage', description: 'Daily input, output, and cache-read tokens' },
     { id: 'proxy', icon: Network, label: 'Proxy', description: 'OpenAI-compatible message-only proxy' },
+    { id: 'teach-tools', icon: Wrench, label: 'Teach Tools', description: 'Generate and review tool drafts from CLI, MCP, or OpenAPI sources' },
   ]
 
   const handleOpenMobileView = useCallback((view: SettingsView) => {
     setMobileView(view)
-    setActiveTab(view)
+    setTeachToolsActive(view === 'teach-tools')
+    if (view !== 'teach-tools') setActiveTab(view as Exclude<SettingsView, 'menu' | 'teach-tools'>)
     pushSectionHistory(view)
   }, [setActiveTab, pushSectionHistory])
 
@@ -124,8 +130,14 @@ export function SettingsDialog() {
                 {menuItems.map((item) => (
                   <button
                     key={item.id}
-                    onClick={() => { setActiveTab(item.id as SettingsView); setMobileView(item.id as SettingsView); pushSectionHistory(item.id as SettingsView); }}
-                    className={`w-full text-left px-3 py-2 rounded-md mb-2 flex items-center gap-2 ${activeTab === item.id ? 'bg-blue-600 text-white' : 'text-muted-foreground hover:bg-gray-200'} transition-colors`}
+                    onClick={() => {
+                      const view = item.id as SettingsView
+                      setTeachToolsActive(view === 'teach-tools')
+                      if (view !== 'teach-tools') setActiveTab(view as Exclude<SettingsView, 'menu' | 'teach-tools'>)
+                      setMobileView(view)
+                      pushSectionHistory(view)
+                    }}
+                    className={`w-full text-left px-3 py-2 rounded-md mb-2 flex items-center gap-2 ${(item.id === 'teach-tools' ? teachToolsActive : activeTab === item.id) ? 'bg-blue-600 text-white' : 'text-muted-foreground hover:bg-gray-200'} transition-colors`}
                   >
                     <item.icon className="w-5 h-5" />
                     <span>{item.label}</span>
@@ -134,18 +146,20 @@ export function SettingsDialog() {
               </nav>
               {/* Content area */}
               <div className="flex-1 overflow-y-auto p-6">
-                {activeTab === 'account' && <AccountSettings />}
-                {activeTab === 'general' && <GeneralSettings />}
-                {activeTab === 'chat' && <ChatSettings />}
-                {activeTab === 'appearance' && <AppearanceSettings />}
-                {activeTab === 'notifications' && <NotificationSettings />}
-                {activeTab === 'voice' && <VoiceSettings />}
-                {activeTab === 'shortcuts' && <KeyboardShortcuts />}
-                {activeTab === 'providers' && <ProviderSettings />}
-                {activeTab === 'integrations' && <IntegrationsSettings />}
-                {activeTab === 'extensions' && <ExtensionsSettings />}
-                {activeTab === 'usage' && <UsageSettings />}
-                {activeTab === 'proxy' && <ProxySettings />}
+                {teachToolsActive ? <TeachToolsSettings /> : <>
+                  {activeTab === 'account' && <AccountSettings />}
+                  {activeTab === 'general' && <GeneralSettings />}
+                  {activeTab === 'chat' && <ChatSettings />}
+                  {activeTab === 'appearance' && <AppearanceSettings />}
+                  {activeTab === 'notifications' && <NotificationSettings />}
+                  {activeTab === 'voice' && <VoiceSettings />}
+                  {activeTab === 'shortcuts' && <KeyboardShortcuts />}
+                  {activeTab === 'providers' && <ProviderSettings />}
+                  {activeTab === 'integrations' && <IntegrationsSettings />}
+                  {activeTab === 'extensions' && <ExtensionsSettings />}
+                  {activeTab === 'usage' && <UsageSettings />}
+                  {activeTab === 'proxy' && <ProxySettings />}
+                </>}
               </div>
             </div>
           </div>
@@ -212,6 +226,7 @@ export function SettingsDialog() {
                {mobileView === 'extensions' && <div key="extensions"><ExtensionsSettings /></div>}
                {mobileView === 'usage' && <div key="usage"><UsageSettings /></div>}
                {mobileView === 'proxy' && <div key="proxy"><ProxySettings /></div>}
+               {mobileView === 'teach-tools' && <div key="teach-tools"><TeachToolsSettings /></div>}
            </div>
         </div>
 
