@@ -225,7 +225,10 @@ const MessageRow = memo(function MessageRow({
   const parts = msgWithParts.parts
   const streaming = isMessageStreaming(msg)
   const activeGenerationPartIndex = streaming ? getActiveGenerationPartIndex(parts) : undefined
-  const isQueued = msg.role === 'user' && pendingAssistantId && compareMessageIds(msg.id, pendingAssistantId) > 0
+  const queueDelivery = msg.role === 'user' && 'queueDelivery' in msg
+    ? (msg as Message & { queueDelivery?: 'sent' }).queueDelivery
+    : undefined
+  const isQueued = msg.role === 'user' && queueDelivery !== 'sent' && pendingAssistantId && compareMessageIds(msg.id, pendingAssistantId) > 0
   const isLastUserMessage = msg.role === 'user' && msg.id === lastUserMessageId
   const messageTextContent = getMessageTextContent(parts)
   const assistantMetadata = msg.role === 'assistant'
@@ -311,6 +314,11 @@ const MessageRow = memo(function MessageRow({
             {isQueued && (
               <span className="text-xs font-semibold bg-amber-500 text-amber-950 px-1.5 py-0.5 rounded">
                 QUEUED
+              </span>
+            )}
+            {queueDelivery === 'sent' && (
+              <span className="text-xs font-semibold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 rounded">
+                SENT
               </span>
             )}
           </div>

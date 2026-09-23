@@ -1353,6 +1353,7 @@ function startAutomationScheduler(): void {
 
 class PiSdkSession {
   private readonly listeners = new Set<(message: RpcMessage) => void>()
+  private readonly pendingQueueReceipts = new Map<string, { content: string; kind: 'steering' | 'follow_up' }>()
   private readonly ready: Promise<void>
   private runtimeAgentName: string
   private runtimePermissionOverride: PermissionOverride
@@ -1435,13 +1436,37 @@ class PiSdkSession {
     return existing ? SessionManager.open(existing.path, nativeSessionsDir(), cwd) : SessionManager.create(cwd, nativeSessionsDir(), { id: this.record.id })
   }
 
+  private acknowledgeQueueReceipt(event: AgentSessionEvent): string | undefined {
+    if (event.type !== 'message_start' || event.message.role !== 'user' || !this.record.userId) return undefined
+    const content = sessionMessageText(event.message).trim()
+    if (!content) return undefined
+
+    for (const [clientId, receipt] of this.pendingQueueReceipts) {
+      if (receipt.content !== content) continue
+      this.pendingQueueReceipts.delete(clientId)
+      try {
+        const entry = updateQueueEntry(database, this.record.userId, this.record.id, clientId, 'delivered')
+        if (entry) broadcastSse({ type: 'message.queue.updated', properties: { sessionID: this.record.id } }, this.record.userId)
+      } catch (error) {
+        console.warn(`Unable to acknowledge queued message ${clientId}: ${redactedDiagnostic(error)}`)
+      }
+      return clientId
+    }
+    return undefined
+  }
+
   private handle(event: AgentSessionEvent): void {
+    const sentQueueClientId = this.acknowledgeQueueReceipt(event)
     if (event.type === 'session_info_changed') {
       this.record.title = event.name?.trim() || 'Untitled session'
       this.record.updatedAt = Date.now()
       void saveState()
     }
-    const message = redactSensitive({ ...event, sessionID: this.record.id }) as RpcMessage
+    const message = redactSensitive({
+      ...event,
+      sessionID: this.record.id,
+      ...(sentQueueClientId ? { queueDelivery: 'sent', queueClientId: sentQueueClientId } : {}),
+    }) as RpcMessage
     const sessionID = this.record.id
     if (event.type === 'agent_start' || event.type === 'turn_start') {
       broadcastSse({ type: 'session.status', properties: { sessionID, status: { type: 'busy' } } }, this.record.userId)
@@ -1467,8 +1492,18 @@ class PiSdkSession {
     let data: unknown
     switch (type) {
       case 'prompt': await this.session.prompt(String(command.message ?? '')); break
-      case 'steer': await this.session.steer(String(command.message ?? '')); break
-      case 'follow_up': await this.session.followUp(String(command.message ?? '')); break
+      case 'steer': {
+        const clientId = typeof command.id === 'string' && command.id ? command.id : undefined
+        if (clientId) this.pendingQueueReceipts.set(clientId, { content: String(command.message ?? ''), kind: 'steering' })
+        try { await this.session.steer(String(command.message ?? '')) } catch (error) { if (clientId) this.pendingQueueReceipts.delete(clientId); throw error }
+        break
+      }
+      case 'follow_up': {
+        const clientId = typeof command.id === 'string' && command.id ? command.id : undefined
+        if (clientId) this.pendingQueueReceipts.set(clientId, { content: String(command.message ?? ''), kind: 'follow_up' })
+        try { await this.session.followUp(String(command.message ?? '')) } catch (error) { if (clientId) this.pendingQueueReceipts.delete(clientId); throw error }
+        break
+      }
       case 'abort': await this.session.abort(); break
       case 'clear_queue': data = this.session.clearQueue(); break
       case 'set_model': {
@@ -1516,7 +1551,6 @@ async function deliverNextQueuedFollowUp(session: PiSdkSession): Promise<void> {
   if (!claimed) return
   try {
     await session.send({ type: 'follow_up', message: entry.content, id: entry.clientId })
-    updateQueueEntry(database, ownerId, session.record.id, entry.clientId, 'delivered')
   } catch (error) {
     updateQueueEntry(database, ownerId, session.record.id, entry.clientId, 'failed', error instanceof Error ? error.message : 'Follow-up delivery failed')
   }
@@ -3599,9 +3633,7 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
         if (!reservation.created) return json({ entry: reservation.entry }, 200)
         try {
           await sendRpc(id, { type: 'steer', message: content, id: clientId }, ownedRecord)
-          const entry = updateQueueEntry(database, ownerId, id, clientId, 'delivered')
-          broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
-          return json({ entry }, 201)
+          return json({ entry: reservation.entry }, 201)
         } catch (error) {
           const entry = updateQueueEntry(database, ownerId, id, clientId, 'failed', error instanceof Error ? error.message : 'Steering failed')
           broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
@@ -3654,7 +3686,6 @@ async function handle(request: Request, correlationId = requestId(request)): Pro
               entry = updateQueueEntry(database, ownerId, id, clientId, 'steering')
               if (!entry) return json({ error: 'Queue entry not found' }, 404)
               await sendRpc(id, { type: 'steer', message: entry.content, id: entry.clientId }, ownedRecord)
-              entry = updateQueueEntry(database, ownerId, id, clientId, 'delivered')
             } catch (error) {
               entry = updateQueueEntry(database, ownerId, id, clientId, 'failed', error instanceof Error ? error.message : 'Steering failed')
             }

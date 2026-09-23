@@ -27,6 +27,7 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
   const loadingOlder = useRef(false); const toolOwners = useRef(new Map<string, { messageId: string; partId: string }>()); const accumulators = useRef(new Map<string, AssistantMessageAccumulator>()); const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null); const [reconnectAttempt, setReconnectAttempt] = useState(0); const [isLoading, setLoading] = useState(true); const [isConnected, setConnected] = useState(false); const [isReconnecting, setReconnecting] = useState(false); const [hasOlder, setHasOlder] = useState(false)
   const key = useMemo(() => messagesQueryKey(apiUrl, sessionID, directory), [apiUrl, sessionID, directory])
   const query = useQuery<MessageWithParts[]>({ queryKey: key, queryFn: async () => [], enabled: false })
+  const activeAssistantGroupId = useRef<string | null>(null)
   const applyEvent = useCallback((raw: unknown) => {
     const envelope = asObject(raw); const event = asObject(envelope.event ?? raw); const type = String(event.type ?? '')
     // Pi wraps streaming content in assistantMessageEvent. The bridge deliberately keeps
@@ -39,18 +40,26 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
         : typeof eventMessage.id === 'string' ? eventMessage.id
           : `live:${session}:assistant`
 
-    // User messages are persisted by the SDK too, but they must never enter the
-    // assistant streaming accumulator. Some SDK versions emit message_start for
-    // the user turn before the assistant starts; treating that event as an
-    // assistant is what makes the first prompt appear in the wrong row.
+    // User messages delimit assistant turns. Tool results are persisted by the
+    // SDK too, but they belong to the current assistant turn and must never
+    // create or reset a displayed message.
+    if (eventMessage.role === 'toolResult') return
     if (eventMessage.role === 'user') {
+      activeAssistantGroupId.current = null
       const text = messageText(eventMessage.content)
       const userMessageId = typeof eventMessage.id === 'string' ? eventMessage.id : `live:${session}:user`
       if (text) {
         queryClient.setQueryData<MessageWithParts[]>(key, (old = []) => {
           if (old.some((item) => item.info.id === userMessageId)) return old
           const nextMessage: MessageWithParts = {
-            info: { id: userMessageId, sessionID: session, role: 'user', time: { created: Date.now() }, content: text } as any,
+            info: {
+              id: userMessageId,
+              sessionID: session,
+              role: 'user',
+              time: { created: Date.now() },
+              content: text,
+              ...(event.queueDelivery === 'sent' ? { queueDelivery: 'sent' } : {}),
+            } as any,
             parts: [{ id: `${userMessageId}:content:0`, sessionID: session, messageID: userMessageId, type: 'text', text } as any],
           }
           // useSendPrompt inserts an optimistic row before the SDK event arrives.
@@ -73,6 +82,10 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
       return
     }
 
+    if (!activeAssistantGroupId.current) {
+      activeAssistantGroupId.current = eventMessageId
+    }
+    const assistantGroupId = activeAssistantGroupId.current
     let accumulator = accumulators.current.get(eventMessageId)
     if (eventType === 'message_start') {
       accumulator = new AssistantMessageAccumulator((eventMessage.role === 'assistant' && eventMessage.content ? eventMessage : { role: 'assistant', content: [] }) as AssistantMessage)
@@ -92,8 +105,8 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
     const accumulated = accumulator.value()
     const callId = inner.toolCallId ?? event.toolCallId
     const owned = typeof callId === 'string' ? toolOwners.current.get(callId) : undefined
-    const messageId = owned?.messageId ?? eventMessageId
-    const partId = owned?.partId ?? `${messageId}:content:${typeof contentIndex === 'number' ? contentIndex : 0}`
+    const messageId = owned?.messageId ?? assistantGroupId
+    const partId = owned?.partId ?? `${eventMessageId}:content:${typeof contentIndex === 'number' ? contentIndex : 0}`
     queryClient.setQueryData<MessageWithParts[]>(key, (old = []) => {
       let messages = [...old]; let message = messages.find((m) => m.info.id === messageId)
       if (!message) { message = { info: { id: messageId, sessionID: session, role: 'assistant', time: { created: Date.now() } } as any, parts: [] }; messages.push(message) }
@@ -132,7 +145,7 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
       // type is the source of truth; text is never interpreted by its words.
       if (eventType === 'message_end') {
         accumulated.content.forEach((block, index) => {
-          const id = `${messageId}:content:${index}`
+          const id = `${eventMessageId}:content:${index}`
           const existingIndex = parts.findIndex((value) => value.id === id)
           const value = block.type === 'text' ? block.text : block.type === 'thinking' ? block.thinking : ''
           const next: any = block.type === 'toolCall'
@@ -157,8 +170,8 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
   useEffect(() => {
     if (!apiUrl || !sessionID) return
     let closed = false; const socket = new WebSocket(`${wsUrl(apiUrl)}/sessions/${encodeURIComponent(sessionID)}/events`); socketRef.current = socket
-    socket.onopen = () => { setConnected(true); setReconnecting(false); socket.send(JSON.stringify({ type: 'history.load', limit: 30 })) }
-    socket.onmessage = (message) => { const value = asObject(JSON.parse(message.data)); if (value.type === 'history.chunk') { const incoming = (value.messages ?? []) as MessageWithParts[]; cursor.current = value.before ?? null; setHasOlder(Boolean(value.hasMore)); queryClient.setQueryData<MessageWithParts[]>(key, (old = []) => value.mode === 'prepend' ? [...incoming.filter((x) => !old.some((y) => y.info.id === x.info.id)), ...old] : incoming); setLoading(false); const loadingAll = loadAllRef.current; if (loadingAll) { loadingAll.messages = [...incoming, ...loadingAll.messages.filter((old) => !incoming.some((item) => item.info.id === old.info.id))]; if (value.hasMore && cursor.current) socket.send(JSON.stringify({ type: 'history.load', before: cursor.current, limit: 30 })); else { loadAllRef.current = null; loadingAll.resolve(loadingAll.messages) } } } else if (value.type === 'transcript.event') applyEvent(value) }
+    socket.onopen = () => { activeAssistantGroupId.current = null; accumulators.current.clear(); toolOwners.current.clear(); setConnected(true); setReconnecting(false); socket.send(JSON.stringify({ type: 'history.load', limit: 30 })) }
+    socket.onmessage = (message) => { const value = asObject(JSON.parse(message.data)); if (value.type === 'history.chunk') { const incoming = (value.messages ?? []) as MessageWithParts[]; cursor.current = value.before ?? null; setHasOlder(Boolean(value.hasMore)); if (value.mode !== 'prepend') { activeAssistantGroupId.current = null; accumulators.current.clear(); toolOwners.current.clear() } queryClient.setQueryData<MessageWithParts[]>(key, (old = []) => value.mode === 'prepend' ? [...incoming.filter((x) => !old.some((y) => y.info.id === x.info.id)), ...old] : incoming); setLoading(false); const loadingAll = loadAllRef.current; if (loadingAll) { loadingAll.messages = [...incoming, ...loadingAll.messages.filter((old) => !incoming.some((item) => item.info.id === old.info.id))]; if (value.hasMore && cursor.current) socket.send(JSON.stringify({ type: 'history.load', before: cursor.current, limit: 30 })); else { loadAllRef.current = null; loadingAll.resolve(loadingAll.messages) } } } else if (value.type === 'transcript.event') applyEvent(value) }
     socket.onclose = () => {
       setConnected(false)
        if (loadAllRef.current) { loadAllRef.current.reject(new Error('Transcript connection closed before loading all messages')); loadAllRef.current = null }

@@ -36,6 +36,27 @@ describe('Pi transcript projector', () => {
     expect(message.parts[3].state.status).toBe('pending')
   })
 
+  it('groups assistant segments until the next user message', () => {
+    const entries = [
+      entry('u1', undefined, { role: 'user', content: 'start' }),
+      entry('a1', 'u1', { role: 'assistant', timestamp: 1, content: [{ type: 'toolCall', id: 'A', name: 'read', arguments: {} }] }),
+      entry('r1', 'a1', { role: 'toolResult', toolCallId: 'A', content: [{ type: 'text', text: 'first result' }], isError: false }),
+      entry('a2', 'r1', { role: 'assistant', timestamp: 2, content: [{ type: 'toolCall', id: 'B', name: 'write', arguments: {} }] }),
+      entry('r2', 'a2', { role: 'toolResult', toolCallId: 'B', content: [{ type: 'text', text: 'second result' }], isError: false }),
+      entry('a3', 'r2', { role: 'assistant', timestamp: 3, content: [{ type: 'text', text: 'done' }] }),
+      entry('u2', 'a3', { role: 'user', content: 'continue' }),
+      entry('a4', 'u2', { role: 'assistant', timestamp: 4, content: [{ type: 'text', text: 'next' }] }),
+    ]
+
+    const messages = projectEntries(entries, 'a4', 's')
+    expect(messages.map((message) => message.info.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+    expect(messages[1]?.info.id).toBe('a1')
+    expect(messages[1]?.parts.map((part) => part.type)).toEqual(['tool', 'tool', 'text', 'step-finish'])
+    expect(messages[1]?.parts[0]?.state.status).toBe('completed')
+    expect(messages[1]?.parts[1]?.state.status).toBe('completed')
+    expect(messages[1]?.parts.filter((part) => part.type === 'step-finish')).toHaveLength(1)
+  })
+
   it('redacts tool inputs, results, metadata, and errors without changing tool shape', () => {
     const entries = [
       entry('u', undefined, { role: 'user', content: 'run' }),
