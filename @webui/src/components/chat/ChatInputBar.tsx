@@ -1,9 +1,10 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Clipboard, FileText, FolderKanban, Image, Link, Paperclip, Send, X } from "lucide-react";
+import { AlertTriangle, Clipboard, FileText, Image, Link, Paperclip, Plus, Send, X } from "lucide-react";
 import { GENERAL_CHAT_PROJECT_ID } from "@subpolar/shared/utils";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -21,7 +22,7 @@ import { getProject, listProjectMentions, listProjects, loadMentionContext, type
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { useSettings } from "@/hooks/useSettings";
 import { showToast } from "@/lib/toast";
-import { cn } from "@/lib/utils";
+
 import { MentionSuggestions, type MentionItem } from "@/components/message/MentionSuggestions";
 import { savePendingSessionPrompt } from "@/lib/pending-session-prompt";
 import { shouldBlockSessionCreation } from "@/lib/session-submit";
@@ -52,12 +53,6 @@ const LARGE_PASTE_THRESHOLD = 500;
 
 const createClientMessageID = () => `optimistic_user_${Date.now()}_${Math.random()}`;
 
-const PERMISSION_OPTIONS = [
-  { value: "default", label: "Default Permissions" },
-  { value: "ask", label: "Ask for Permissions" },
-  { value: "none", label: "No Permissions" },
-  { value: "allow_all", label: "Dangerously Allow All" },
-] as const;
 
 interface ChatInputBarProps {
   placeholder?: string;
@@ -66,6 +61,9 @@ interface ChatInputBarProps {
   defaultAgent?: string;
   defaultModel?: string;
   defaultPermission?: string;
+  projectId?: string;
+  agent?: string;
+  permission?: string;
   sendImmediately?: boolean;
   sessionID?: string;
   directory?: string;
@@ -84,6 +82,9 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     defaultAgent = "__default__",
     defaultModel,
     defaultPermission = "default",
+    projectId,
+    agent,
+    permission,
     sendImmediately = false,
     sessionID,
     directory,
@@ -101,10 +102,13 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const { preferences } = useSettings();
   const effectiveDefaultModel = defaultModel ?? preferences?.defaultModel ?? "__auto__";
 
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(defaultProjectId ?? null);
-  const [selectedAgent, setSelectedAgent] = useState(defaultAgent);
+  const [internalProjectId, setInternalProjectId] = useState<string | null>(defaultProjectId ?? null);
+  const [internalAgent, setInternalAgent] = useState(defaultAgent);
   const [selectedModel, setSelectedModel] = useState(effectiveDefaultModel);
-  const [selectedPermission, setSelectedPermission] = useState(defaultPermission);
+  const [internalPermission, setInternalPermission] = useState(defaultPermission);
+  const selectedProjectId = projectId ?? internalProjectId;
+  const selectedAgent = agent ?? internalAgent;
+  const selectedPermission = permission ?? internalPermission;
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
   const [hasPromptContent, setHasPromptContent] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
@@ -141,7 +145,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const selectedProject = targetProjectId === GENERAL_CHAT_PROJECT_ID.toString()
     ? generalChatProject
     : projects.find((p) => getProjectIdValue(p) === targetProjectId);
-  const isGeneralChatProject = targetProjectId === GENERAL_CHAT_PROJECT_ID.toString();
+
   const selectedDirectory = sessionID ? directory : selectedProject?.fullPath;
   const canMentionContext = Boolean(selectedDirectory);
 
@@ -270,11 +274,11 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const isWaitingForAnswer = isGeneratingMessage || sendPrompt.isPending;
 
   useEffect(() => {
-    setSelectedProjectId(defaultProjectId ?? null);
+    setInternalProjectId(defaultProjectId ?? null);
   }, [defaultProjectId]);
 
   useEffect(() => {
-    setSelectedAgent(defaultAgent);
+    setInternalAgent(defaultAgent);
   }, [defaultAgent]);
 
   useEffect(() => {
@@ -282,7 +286,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   }, [effectiveDefaultModel]);
 
   useEffect(() => {
-    setSelectedPermission(defaultPermission);
+    setInternalPermission(defaultPermission);
   }, [defaultPermission]);
 
   useEffect(() => {
@@ -743,7 +747,6 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     [commandQuery, commandSuggestions, handleSubmit, insertCommand, insertMention, mentionItems, mentionQuery, selectedCommandIndex, selectedMentionIndex],
   );
 
-  const selectedProjectName = isGeneralChatProject ? null : selectedProject?.name ?? null;
 
   return (
     <div className="w-full max-w-3xl mx-auto">
@@ -803,6 +806,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
             </Button>
           </div>
         )}
+
         <MentionSuggestions
           isOpen={mentionQuery !== null && mentionItems.length > 0}
           items={mentionItems}
@@ -832,105 +836,44 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
             className="w-full bg-transparent text-[18px] text-foreground placeholder-muted-foreground focus:outline-none resize-none rounded-lg"
           />
         <input ref={fileInputRef} type="file" className="hidden" accept="image/*,text/*,.md,.json,.csv,.xml,.js,.ts,.tsx,.jsx" onChange={(event) => { const file = event.target.files?.[0]; if (file) addLocalFile(file); event.target.value = ""; }} />
-        <div className="flex mt-3 items-center">
-          <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => fileInputRef.current?.click()} aria-label="Attach file"><Paperclip className="h-4 w-4" /></Button>
-          <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => void addProjectFile()} aria-label="Attach project file" disabled={!selectedDirectory}><FileText className="h-4 w-4" /></Button>
-          <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => void addWebsite()} aria-label="Add website context"><Link className="h-4 w-4" /></Button>
-          {!sessionID && (
-          <Select
-            value={selectedProjectId ?? undefined}
-            onValueChange={(v) => {
-              setSelectedProjectId(v);
-            }}
-          >
-            <SelectTrigger
-              className={cn(
-                "h-8 flex-shrink-0 border-0 focus:ring-0 focus:ring-offset-0 text-xs gap-1.5 rounded-md [&>svg:last-child]:hidden",
-                selectedProjectId && !isGeneralChatProject
-                  ? "bg-primary text-primary-foreground hover:bg-primary/90 w-auto px-2"
-                  : "bg-muted hover:bg-muted/80 w-8 px-0 justify-center",
-              )}
-            >
-              <FolderKanban className="h-4 w-4 flex-shrink-0" />
-              {selectedProjectName && (
-                <span className="max-w-[80px] truncate">{selectedProjectName}</span>
-              )}
-            </SelectTrigger>
-            <SelectContent className="max-h-[300px] overflow-y-auto">
-              {projects.map((project) => {
-                const projectId = getProjectIdValue(project);
-                if (!projectId) return null;
+        <div className="mt-3 flex items-center">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label="Add attachment">
+                <Plus className="h-4 w-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" side="top" className="w-52 p-1">
+              <Button type="button" variant="ghost" className="h-9 w-full justify-start" onClick={() => fileInputRef.current?.click()}>
+                <Paperclip className="mr-2 h-4 w-4" /> Attach file
+              </Button>
+              <Button type="button" variant="ghost" className="h-9 w-full justify-start" onClick={() => void addProjectFile()} disabled={!selectedDirectory}>
+                <FileText className="mr-2 h-4 w-4" /> Attach project file
+              </Button>
+              <Button type="button" variant="ghost" className="h-9 w-full justify-start" onClick={() => void addWebsite()}>
+                <Link className="mr-2 h-4 w-4" /> Add website context
+              </Button>
+            </PopoverContent>
+          </Popover>
 
-                return (
-                  <SelectItem key={projectId} value={projectId}>
-                    {project.name}
-                  </SelectItem>
-                );
-              })}
-            </SelectContent>
-          </Select>
-          )}
-
-          {!hideAgentSelect && (
-            <Select
-              value={selectedAgent}
-              onValueChange={setSelectedAgent}
-            >
-              <SelectTrigger className="h-8 text-xs border-0 bg-transparent focus:ring-0 focus:ring-offset-0 gap-2">
-                <SelectValue placeholder="Profile" />
-              </SelectTrigger>
-              <SelectContent className="max-h-[300px] overflow-y-auto">
-                <SelectItem value="__default__">Default profile</SelectItem>
-                {visibleAgents.map((agent) => (
-                  <SelectItem key={agent.name} value={agent.name}>
-                    {agent.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
+          <span className="w-full" />
 
           <Select value={selectedModel} onValueChange={setSelectedModel}>
-            <SelectTrigger className="h-8 text-xs border-0 bg-transparent focus:ring-0 focus:ring-offset-0 gap-2">
+            <SelectTrigger className="mr-2 h-8 w-auto border-0 bg-transparent text-xs shadow-none focus:ring-0">
               <SelectValue placeholder="Model" />
             </SelectTrigger>
             <SelectContent className="max-h-[300px] overflow-y-auto">
               <SelectItem value="__auto__">Auto Model</SelectItem>
               <SelectSeparator />
-              {Array.from(modelsByProvider.entries()).map((
-                [providerName, providerModels],
-                index,
-              ) => (
+              {Array.from(modelsByProvider.entries()).map(([providerName, providerModels], index) => (
                 <SelectGroup key={providerName}>
                   {index > 0 && <SelectSeparator />}
                   <SelectLabel>{providerName}</SelectLabel>
-                  {providerModels.map((model) => (
-                    <SelectItem key={model.id} value={model.id}>
-                      {model.name}
-                    </SelectItem>
-                  ))}
+                  {providerModels.map((model) => <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>)}
                 </SelectGroup>
               ))}
             </SelectContent>
           </Select>
-
-          <Select
-            value={selectedPermission}
-            onValueChange={setSelectedPermission}
-          >
-            <SelectTrigger className="h-8 text-xs border-0 bg-transparent focus:ring-0 focus:ring-offset-0 w-fit gap-2">
-              <SelectValue placeholder="Permissions" />
-            </SelectTrigger>
-            <SelectContent className="max-h-[300px] overflow-y-auto">
-              {PERMISSION_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <span className="w-full" />
 
           {hasPromptContent && !isWaitingForAnswer && (
             <Button
