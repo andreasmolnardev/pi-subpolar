@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { canonicalToolId, executeCliTool, manageAgentProfile, manageRegisteredTool, requiresManualApproval, validateToolDefinition } from './tools.ts'
+import { agentTemplateDefaults, canonicalToolId, executeCliTool, manageAgentProfile, manageRegisteredTool, requiresManualApproval, validateToolDefinition } from './tools.ts'
 
 const definition = (overrides: Record<string, unknown> = {}) => ({
   tool_id: 'acme/read', namespace: 'acme', description: 'Read data', adapter: 'openapi' as const,
@@ -8,7 +8,13 @@ const definition = (overrides: Record<string, unknown> = {}) => ({
 })
 
 describe('secure tool registry validation', () => {
-  it('canonicalizes external dotted IDs and rejects malformed namespace/operations', () => {
+  it('exposes only provider-neutral web capabilities by default', () => {
+    expect(agentTemplateDefaults('general').tool_context_modes).toMatchObject({ 'web.search': 'always', 'web.fetch': 'always' })
+    expect(agentTemplateDefaults('coding').tool_context_modes).toMatchObject({ 'web.search': 'always', 'web.fetch': 'always' })
+  })
+
+  it('canonicalizes legacy web search IDs and external dotted IDs', () => {
+    expect(canonicalToolId('web-search')).toBe('web.search')
     expect(canonicalToolId('read', 'openapi', 'acme')).toBe('acme/read')
     expect(() => validateToolDefinition(definition({ tool_id: 'acme/read-now', operation: 'Read now' }))).toThrow()
     expect(() => validateToolDefinition(definition({ namespace: 'Acme' }))).toThrow()

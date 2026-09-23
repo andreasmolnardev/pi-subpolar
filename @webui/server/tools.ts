@@ -21,7 +21,7 @@ import { discardPendingApprovalInput, retainPendingApprovalInput, takePendingApp
 import type { ToolGatewayContext } from './tool-gateway.ts'
 import { PocketBaseMemoryService, type MemoryContext, type MemoryScope } from './memory.ts'
 import { BrowserSessionService, BrowserRuntimeError, browserProfileAllows, type BrowserContext } from './browser/index.ts'
-import { webSearch, type WebSearchInput } from './web-search.ts'
+import { webFetch, webSearch, type WebFetchInput, type WebSearchInput } from './web-search.ts'
 import type { SkillRepository } from '../../packages/subpolar-contracts/src/index.ts'
 
 export type ToolAdapter = 'internal' | 'http' | 'openapi' | 'mcp'
@@ -153,7 +153,8 @@ const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>>
   { tool_id: 'delete_registered_tool', namespace: 'builtin', description: 'Delete an owned registered tool', adapter: 'internal', target: 'tool-registry', operation: 'delete', input_schema: { type: 'object', properties: { tool_id: { type: 'string', minLength: 1, maxLength: 160 } }, required: ['tool_id'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'delete', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
   { tool_id: 'create_cli_tool', namespace: 'builtin', description: 'Create an approved workspace-bounded CLI tool', adapter: 'internal', target: 'tool-registry', operation: 'create-cli', input_schema: { type: 'object', properties: { tool_id: { type: 'string', maxLength: 160 }, namespace: { type: 'string', maxLength: 64 }, description: { type: 'string', maxLength: 1000 }, executable: { type: 'string', enum: [...allowedCliExecutables] }, fixed_args: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 256 } }, max_args: { type: 'integer', minimum: 0, maximum: 32 }, timeout_ms: { type: 'integer', minimum: 100, maximum: 120000 }, max_output_bytes: { type: 'integer', minimum: 1024, maximum: 1048576 } }, required: ['tool_id', 'namespace', 'description', 'executable'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
   { tool_id: 'search-tool', namespace: 'builtin', description: 'Search tools available to the active agent', adapter: 'internal', target: 'tool-router', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
-  { tool_id: 'web-search', namespace: 'builtin', description: 'Search the public web through an approved OpenCode-compatible provider', adapter: 'internal', target: 'web-search', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 1000 }, provider: { type: 'string', enum: ['exa', 'parallel'] }, resultCount: { type: 'integer', minimum: 1, maximum: 10 }, contextSize: { type: 'integer', minimum: 1, maximum: 32000 }, type: { type: 'string' }, livecrawl: { type: 'string' }, objective: { type: 'string', maxLength: 1000 }, search_queries: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 1000 } } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'object', properties: { provider: { type: 'string' }, results: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' }, snippet: { type: 'string' } }, required: ['title', 'url', 'snippet'] } } }, required: ['provider', 'results'] }, risk: 'external', requires_approval: true, enabled: true, metadata: { capability: 'web-search' } },
+  { tool_id: 'web.search', namespace: 'builtin', description: 'Search the public web using the configured search provider', adapter: 'internal', target: 'web', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 1000 }, resultCount: { type: 'integer', minimum: 1, maximum: 10 }, contextSize: { type: 'integer', minimum: 1, maximum: 32000 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'object', properties: { results: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' }, snippet: { type: 'string' } }, required: ['title', 'url', 'snippet'] } } }, required: ['results'] }, risk: 'external', requires_approval: true, enabled: true, metadata: { capability: 'web' } },
+  { tool_id: 'web.fetch', namespace: 'builtin', description: 'Fetch bounded text content from a public web page', adapter: 'internal', target: 'web', operation: 'fetch', input_schema: { type: 'object', properties: { url: { type: 'string', minLength: 1, maxLength: 2048 }, maxCharacters: { type: 'integer', minimum: 1, maximum: 20000 } }, required: ['url'], additionalProperties: false }, output_schema: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' }, content: { type: 'string' } }, required: ['url', 'title', 'content'] }, risk: 'external', requires_approval: true, enabled: true, metadata: { capability: 'web' } },
   { tool_id: 'read', namespace: 'builtin', description: 'Read files from the selected project', adapter: 'internal', target: 'pi', operation: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } }, required: ['path'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
   { tool_id: 'grep', namespace: 'builtin', description: 'Search file contents in the selected project', adapter: 'internal', target: 'pi', operation: 'grep', input_schema: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' }, glob: { type: 'string' }, ignoreCase: { type: 'boolean' }, literal: { type: 'boolean' }, context: { type: 'number' }, limit: { type: 'number' } }, required: ['pattern'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
   { tool_id: 'find', namespace: 'builtin', description: 'Find files in the selected project', adapter: 'internal', target: 'pi', operation: 'find', input_schema: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' }, limit: { type: 'number' } }, required: ['pattern'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
@@ -257,7 +258,7 @@ function normalizeProjectOverrides(value: unknown): Record<string, AgentProjectO
 }
 function templateDefaults(template?: AgentDefinition['template']): Pick<AgentDefinition, 'model' | 'thinking' | 'approval_mode' | 'policies' | 'tool_context_modes' | 'skill_context_modes'> {
   const readOnly = template === 'coding' || template === 'plan' || template === 'reviewer'
-  const tool_context_modes: Record<string, ToolContextMode> = { read: 'always', grep: 'always', find: 'always', ls: 'always', 'search-tool': 'discoverable' }
+  const tool_context_modes: Record<string, ToolContextMode> = { read: 'always', grep: 'always', find: 'always', ls: 'always', 'search-tool': 'discoverable', 'web.search': 'always', 'web.fetch': 'always' }
   if (!template || !readOnly) Object.assign(tool_context_modes, { write: 'always', edit: 'always', bash: 'always' })
   else Object.assign(tool_context_modes, { write: 'disabled', edit: 'disabled', bash: 'disabled' })
   if (template === 'plan' || template === 'reviewer') tool_context_modes['memory/query'] = 'discoverable'
@@ -300,6 +301,7 @@ function memoryContext(context: ToolGatewayContext, agentId: string, projectId?:
 }
 
 const legacyToolIds: Record<string, string> = {
+  'web-search': 'web.search',
   'tools.list': 'search-tool',
   'pi.read': 'read',
   'pi.write': 'write',
@@ -586,9 +588,13 @@ export async function resolveSkillRuntimeContext(
 }
 
 function toolContextMode(agent: AgentDefinition, toolId: string): ToolContextMode {
+  // Keep the provider-neutral web capabilities available to existing profiles
+  // created before these tools were added; an explicit profile mode still wins.
+  if (agent.tool_context_modes[toolId]) return agent.tool_context_modes[toolId]
+  if (toolId === 'web.search' || toolId === 'web.fetch') return 'always'
   // Records created before context modes existed retain their policy behavior.
   // New templates remain fail-closed for IDs not explicitly configured.
-  return agent.tool_context_modes[toolId] ?? (agent.template ? 'disabled' : 'always')
+  return agent.template ? 'disabled' : 'always'
 }
 
 export async function listToolsForAgent(client: PocketBase, userId: string, agentName = 'master', projectId?: string): Promise<Array<{ id: string; description: string; inputSchema: Record<string, unknown>; requiresApproval: boolean; contextMode: ToolContextMode }>> {
@@ -871,7 +877,8 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     return manageRegisteredTool(client, tool.operation, input, context.userId)
   }
   if (tool.target === 'cli' && tool.operation === 'run') return executeCliTool(tool, input, cwd)
-  if (tool.target === 'web-search' && tool.operation === 'search') return webSearch(input as WebSearchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
+  if (tool.target === 'web' && tool.operation === 'search') return webSearch(input as WebSearchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
+  if (tool.target === 'web' && tool.operation === 'fetch') return webFetch(input as WebFetchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
   const definitions = {
     read: createReadToolDefinition(cwd),
     write: createWriteToolDefinition(cwd),
@@ -888,7 +895,7 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
 
 async function invokeExternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext & { agentId?: string; projectId?: string }): Promise<unknown> {
   if (tool.adapter === 'internal') {
-    if (['pi', 'memory', 'browser', 'web-search', 'subagent', 'agent-profiles', 'tool-registry', 'cli'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
+    if (['pi', 'memory', 'browser', 'web', 'web-search', 'subagent', 'agent-profiles', 'tool-registry', 'cli'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
     return { routed: true, toolId: tool.tool_id, operation: tool.operation, input }
   }
   if (tool.adapter === 'mcp') {
@@ -939,7 +946,12 @@ async function invokeExternalTool(client: PocketBase, tool: ToolDefinition, inpu
   }
   const requestUrl = new URL(configuredUrl)
   query.forEach((value, key) => requestUrl.searchParams.set(key, value))
-  const requestBody = args.body === undefined ? (parameters.length ? undefined : input) : args.body
+  const hasRequestBody = metadata.requestBody === true
+  const requestBody = args.body !== undefined
+    ? args.body
+    : hasRequestBody || parameters.length > 0
+      ? undefined
+      : input
   if (requestBody !== undefined) requestHeaders['content-type'] = 'application/json'
   const serializedBody = requestBody === undefined ? undefined : JSON.stringify(requestBody ?? {})
   if (serializedBody !== undefined && new TextEncoder().encode(serializedBody).byteLength > 1 * 1024 * 1024) {
@@ -1080,7 +1092,8 @@ function shortDescription(description: string): string {
 function toolUsage(tool: ToolDefinition): string {
   const properties = Object.keys(recordObject(tool.input_schema.properties))
   const args = properties.slice(0, 4).map((name) => `${name}: ...`).join(', ')
-  if (tool.namespace === 'builtin') return `${tool.tool_id}({${args}})`
+  const directlyCallable = Object.hasOwn(piToolIds, tool.tool_id) || tool.tool_id === 'search-tool'
+  if (directlyCallable) return `${tool.tool_id}({${args}})`
   return `subpolar-tools({action: "call", toolId: "${tool.tool_id}", input: {${args}}})`
 }
 

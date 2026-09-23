@@ -1,26 +1,26 @@
 import { createMcpAdapter, McpAdapterError, type McpCallResult } from './mcp-adapter.ts'
-import { networkPolicyFromMetadata, type NetworkPolicyOptions } from './network-policy.ts'
+import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse, type NetworkPolicyOptions } from './network-policy.ts'
 
 export type WebSearchProvider = 'exa' | 'parallel'
 
 export type WebSearchInput = {
   query: string
-  provider?: WebSearchProvider
   resultCount?: number
   contextSize?: number
-  type?: string
-  livecrawl?: string
-  objective?: string
-  search_queries?: string[]
 }
+
+export type WebFetchInput = { url: string; maxCharacters?: number }
 
 export type WebSearchResult = { title: string; url: string; snippet: string }
 
-export type WebSearchResponse = { provider: WebSearchProvider; results: WebSearchResult[] }
+export type WebSearchResponse = { results: WebSearchResult[] }
+
+export type WebFetchResponse = { url: string; title: string; content: string }
 
 export type WebSearchOptions = {
   fetch?: typeof globalThis.fetch
   provider?: WebSearchProvider
+  protocolVersion?: '2025-06-18' | '2026-07-28'
   networkPolicy?: NetworkPolicyOptions
   endpointOverrides?: Partial<Record<WebSearchProvider, string>>
   apiKeys?: Partial<Record<WebSearchProvider, string | undefined>>
@@ -63,15 +63,8 @@ function boundedInteger(value: unknown, name: string, min: number, max: number, 
 function inputArgs(input: WebSearchInput, provider: WebSearchProvider): Record<string, unknown> {
   const query = boundedString(input.query, 'query', WEB_SEARCH_LIMITS.maxQueryLength, true)!
   const numResults = boundedInteger(input.resultCount, 'resultCount', 1, WEB_SEARCH_LIMITS.maxResults, 5)
-  if (provider === 'exa') {
-    return { query, type: boundedString(input.type, 'type', 32) ?? 'auto', numResults, livecrawl: boundedString(input.livecrawl, 'livecrawl', 32) ?? 'fallback' }
-  }
-  const objective = boundedString(input.objective, 'objective', WEB_SEARCH_LIMITS.maxQueryLength) ?? query
-  const queries = input.search_queries ?? [query]
-  if (!Array.isArray(queries) || queries.length < 1 || queries.length > 5 || queries.some((item) => typeof item !== 'string' || !item.trim() || item.length > WEB_SEARCH_LIMITS.maxQueryLength)) {
-    throw new WebSearchError('INVALID_INPUT', 'search_queries must contain between 1 and 5 bounded queries')
-  }
-  return { objective, search_queries: queries.map((item) => item.trim()) }
+  if (provider === 'exa') return { query, type: 'auto', numResults, livecrawl: 'fallback' }
+  return { objective: query, search_queries: [query] }
 }
 
 function textValues(value: unknown): string[] {
@@ -123,20 +116,22 @@ function parseResults(result: McpCallResult, maxResults: number, contextSize: nu
 }
 
 export async function webSearch(input: WebSearchInput, options: WebSearchOptions = {}): Promise<WebSearchResponse> {
-  const configured = providerValue(input.provider) ?? options.provider ?? providerValue(process.env.SUBPOLAR_WEB_SEARCH_PROVIDER) ?? 'exa'
-  if (input.provider !== undefined && !providerValue(input.provider)) throw new WebSearchError('INVALID_INPUT', 'provider must be exa or parallel')
+  const configured = options.provider ?? providerValue(process.env.SUBPOLAR_WEB_SEARCH_PROVIDER) ?? 'exa'
   const contextSize = boundedInteger(input.contextSize, 'contextSize', 1, WEB_SEARCH_LIMITS.maxContextSize, 8_000)
   const args = inputArgs(input, configured)
   const provider = WEB_SEARCH_PROVIDERS[configured]
   const apiKey = options.apiKeys?.[configured] ?? process.env[provider.keyEnv]
+  const environmentProtocolVersion = process.env.SUBPOLAR_WEB_SEARCH_MCP_PROTOCOL_VERSION
+  const protocolVersion = options.protocolVersion
+    ?? (environmentProtocolVersion === '2026-07-28' ? '2026-07-28' : '2025-06-18')
   const adapter = createMcpAdapter({
     fetch: options.fetch,
-    defaults: { transport: 'http', networkPolicy: options.networkPolicy },
+    defaults: { transport: 'http', protocolVersion, networkPolicy: options.networkPolicy },
   })
   try {
     const result = await adapter.invoke({ tool_id: `web-search/${configured}`, namespace: 'web-search', target: options.endpointOverrides?.[configured] ?? provider.endpoint, operation: provider.toolName, metadata: { transport: 'http', toolName: provider.toolName, ...(apiKey ? { headers: configured === 'exa' ? { 'x-api-key': apiKey } : { authorization: `Bearer ${apiKey}` } } : {}) } }, args)
     if (result.isError) throw new WebSearchError('PROVIDER_UNAVAILABLE', 'Web search provider returned an error')
-    return { provider: configured, results: parseResults(result, boundedInteger(input.resultCount, 'resultCount', 1, WEB_SEARCH_LIMITS.maxResults, 5), contextSize) }
+    return { results: parseResults(result, boundedInteger(input.resultCount, 'resultCount', 1, WEB_SEARCH_LIMITS.maxResults, 5), contextSize) }
   } catch (error) {
     if (error instanceof WebSearchError) throw error
     const mcpCode = error instanceof McpAdapterError ? error.code : typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : undefined
@@ -144,6 +139,62 @@ export async function webSearch(input: WebSearchInput, options: WebSearchOptions
     throw new WebSearchError(code, code === 'NETWORK_ERROR' ? 'Web search provider is unavailable' : 'Web search provider returned an invalid response')
   } finally {
     await adapter.close()
+  }
+}
+
+export type WebFetchOptions = { fetch?: typeof globalThis.fetch; networkPolicy?: NetworkPolicyOptions }
+
+function htmlText(value: string): { title: string; content: string } {
+  const title = value.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i)?.[1] ?? ''
+  const content = value
+    .replace(/<(script|style|noscript|svg)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<br\s*\/?>|<\/(?:p|div|li|h[1-6]|article|section|tr)\s*>/gi, '\n')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*/g, '\n')
+    .trim()
+  return { title: title.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 500), content }
+}
+
+export async function webFetch(input: WebFetchInput, options: WebFetchOptions = {}): Promise<WebFetchResponse> {
+  const rawUrl = boundedString(input.url, 'url', 2048, true)!
+  const maxCharacters = boundedInteger(input.maxCharacters, 'maxCharacters', 1, 20_000, 10_000)
+  let url: URL
+  try {
+    url = new URL(rawUrl)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:' || url.username || url.password) throw new Error('invalid')
+  } catch {
+    throw new WebSearchError('INVALID_INPUT', 'url must be a valid credential-free HTTP(S) URL')
+  }
+  const basePolicy = options.networkPolicy ?? {}
+  const allowedHosts = basePolicy.allowedHosts?.length
+    ? basePolicy.allowedHosts
+    : [url.hostname]
+  if (!allowedHosts.some((host) => host.toLowerCase().replace(/\.$/, '') === url.hostname.toLowerCase().replace(/\.$/, ''))) {
+    throw new WebSearchError('INVALID_INPUT', 'url host is not allowed by the configured network policy')
+  }
+  const policy: NetworkPolicyOptions = {
+    ...basePolicy,
+    allowedHosts,
+    maxResponseBytes: Math.min(basePolicy.maxResponseBytes ?? 100_000, 100_000),
+  }
+  try {
+    const response = await fetchWithNetworkPolicy(url, { headers: { accept: 'text/html,text/plain,application/xhtml+xml' } }, policy, options.fetch)
+    if (!response.ok) throw new WebSearchError('PROVIDER_UNAVAILABLE', `Web page returned HTTP ${response.status}`)
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!/^(text\/|application\/(?:xhtml\+xml|json))/i.test(contentType)) throw new WebSearchError('PROTOCOL_ERROR', 'Web page did not return a supported text content type')
+    const body = await readBoundedResponse(response, 100_000)
+    const parsed = /html|xhtml/i.test(contentType) ? htmlText(body) : { title: '', content: body }
+    return { url: response.url || url.href, title: parsed.title, content: parsed.content.slice(0, maxCharacters) }
+  } catch (error) {
+    if (error instanceof WebSearchError) throw error
+    throw new WebSearchError('NETWORK_ERROR', 'Web page could not be fetched under the network policy')
   }
 }
 

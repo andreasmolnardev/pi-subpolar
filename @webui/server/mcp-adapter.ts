@@ -161,8 +161,17 @@ const DEFAULT_LIMITS: McpLimits = {
   maxStderrBytes: 16 * 1024,
 }
 
-const DEFAULT_PROTOCOL_VERSION = '2025-06-18'
+const DEFAULT_PROTOCOL_VERSION = '2026-07-28'
+const MODERN_PROTOCOL_VERSION = DEFAULT_PROTOCOL_VERSION
 const JSON_RPC_VERSION = '2.0' as const
+const MCP_META_PROTOCOL_VERSION = 'io.modelcontextprotocol/protocolVersion'
+const MCP_META_CLIENT_INFO = 'io.modelcontextprotocol/clientInfo'
+const MCP_META_CLIENT_CAPABILITIES = 'io.modelcontextprotocol/clientCapabilities'
+
+function encodeMcpHeaderValue(value: string): string {
+  if (/^[\x20-\x7e]*$/.test(value) && value === value.trim() && !(/^=\?base64\?.*\?=$/.test(value))) return value
+  return `=?base64?${Buffer.from(value, 'utf8').toString('base64')}?=`
+}
 
 type RecordValue = Record<string, unknown>
 
@@ -437,6 +446,9 @@ export class HttpMcpTransport implements McpTransport {
 
   async start(): Promise<void> {
     if (this.started && !this.closed) return
+    if (this.config.transport === 'sse' && (this.config.protocolVersion ?? DEFAULT_PROTOCOL_VERSION) === MODERN_PROTOCOL_VERSION) {
+      throw new McpAdapterError('MCP_CONFIGURATION_ERROR', 'The 2026-07-28 protocol does not support the legacy HTTP+SSE transport', { serverKey: serverKeyFor(this.config) })
+    }
     const rawUrl = nonEmptyString(this.config.url)
     if (!rawUrl) throw new McpAdapterError('MCP_CONFIGURATION_ERROR', `${this.kind} MCP transport requires a URL`, { serverKey: serverKeyFor(this.config) })
     let url: URL
@@ -456,7 +468,7 @@ export class HttpMcpTransport implements McpTransport {
       if (!response.ok) throw new McpAdapterError('MCP_CONNECTION_ERROR', `MCP SSE endpoint returned HTTP ${response.status}`, { serverKey: serverKeyFor(this.config) })
       if (!response.body) throw new McpAdapterError('MCP_PROTOCOL_ERROR', 'MCP SSE endpoint returned no response body', { serverKey: serverKeyFor(this.config) })
       const session = response.headers.get('mcp-session-id')
-      if (session) this.sessionId = session
+      if ((this.config.protocolVersion ?? DEFAULT_PROTOCOL_VERSION) !== MODERN_PROTOCOL_VERSION && session) this.sessionId = session
       void this.consumeSse(response.body).catch((error: unknown) => {
         const normalized = errorForTransport(error, 'MCP SSE stream failed', this.config)
         this.endpointReject?.(normalized)
@@ -478,11 +490,11 @@ export class HttpMcpTransport implements McpTransport {
     try {
       const response = await fetchWithNetworkPolicy(this.endpoint, {
         method: 'POST',
-        headers: this.requestHeaders('application/json, text/event-stream'),
+        headers: this.requestHeaders('application/json, text/event-stream', request),
         body: JSON.stringify(request),
       }, { ...this.config.networkPolicy, timeoutMs }, this.fetchImpl)
       const session = response.headers.get('mcp-session-id')
-      if (session) this.sessionId = session
+      if ((this.config.protocolVersion ?? DEFAULT_PROTOCOL_VERSION) !== MODERN_PROTOCOL_VERSION && session) this.sessionId = session
       if (!response.ok && response.status !== 202) {
         const text = await boundedText(response, this.limits.maxResponseBytes)
         throw new McpAdapterError('MCP_CONNECTION_ERROR', `MCP ${this.kind} request returned HTTP ${response.status}: ${redactSensitiveText(text)}`, { method: request.method, serverKey: serverKeyFor(this.config) })
@@ -532,10 +544,19 @@ export class HttpMcpTransport implements McpTransport {
     this.fail(new McpAdapterError('MCP_CONNECTION_ERROR', 'MCP HTTP/SSE transport was closed', { serverKey: serverKeyFor(this.config) }))
   }
 
-  private requestHeaders(accept: string): Record<string, string> {
+  private requestHeaders(accept: string, request?: JsonRpcRequest): Record<string, string> {
     const headers: Record<string, string> = { accept, 'content-type': 'application/json', ...resolveHeaders(this.config.headers) }
-    if (this.sessionId) headers['mcp-session-id'] = this.sessionId
-    headers['MCP-Protocol-Version'] = this.config.protocolVersion ?? DEFAULT_PROTOCOL_VERSION
+    const protocolVersion = this.config.protocolVersion ?? DEFAULT_PROTOCOL_VERSION
+    if (protocolVersion !== MODERN_PROTOCOL_VERSION && this.sessionId) headers['mcp-session-id'] = this.sessionId
+    headers['MCP-Protocol-Version'] = protocolVersion
+    if (protocolVersion === MODERN_PROTOCOL_VERSION && request) {
+      headers['Mcp-Method'] = request.method
+      const params = object(request.params)
+      const name = request.method === 'resources/read' ? params.uri
+        : request.method === 'tools/call' || request.method === 'prompts/get' ? params.name
+          : undefined
+      if (typeof name === 'string') headers['Mcp-Name'] = encodeMcpHeaderValue(name)
+    }
     return headers
   }
 
@@ -673,6 +694,8 @@ export class McpClient {
   private readonly transport: McpTransport
   private readonly config: McpServerConfig
   private readonly limits: McpLimits
+  private readonly clientName: string
+  private readonly clientVersion: string
   private nextId = 1
   private initialized = false
   private initialization?: Promise<RecordValue>
@@ -681,9 +704,16 @@ export class McpClient {
     this.transport = transport
     this.config = config
     this.limits = limitsFor({ ...config.limits, ...(options.limits ?? {}) })
+    this.clientName = config.clientName ?? options.clientName ?? 'pi-subpolar'
+    this.clientVersion = config.clientVersion ?? options.clientVersion ?? '1.0.0'
   }
 
   async initialize(): Promise<RecordValue> {
+    if (this.protocolVersion() === MODERN_PROTOCOL_VERSION) {
+      await this.transport.start()
+      this.initialized = true
+      return {}
+    }
     if (this.initialized) return {}
     if (this.initialization) return this.initialization
     const initialization = this.initializeOnce()
@@ -696,7 +726,7 @@ export class McpClient {
     const result = object(await this.requestResult('initialize', {
       protocolVersion: this.config.protocolVersion ?? DEFAULT_PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: this.config.clientName ?? 'pi-subpolar', version: this.config.clientVersion ?? '1.0.0' },
+      clientInfo: { name: this.clientName, version: this.clientVersion },
     }))
     await this.transport.notify('notifications/initialized')
     this.initialized = true
@@ -747,8 +777,20 @@ export class McpClient {
 
   private async requestResult(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<unknown> {
     const requestTimeout = timeoutFor(timeoutMs, this.limits)
-    const response = await this.transport.request(makeRequest(this.nextId++, method, params), requestTimeout)
+    const requestParams = this.protocolVersion() === MODERN_PROTOCOL_VERSION
+      ? { ...(params ?? {}), _meta: {
+          ...object(params?._meta),
+          [MCP_META_PROTOCOL_VERSION]: MODERN_PROTOCOL_VERSION,
+          [MCP_META_CLIENT_INFO]: { name: this.clientName, version: this.clientVersion },
+          [MCP_META_CLIENT_CAPABILITIES]: {},
+        } }
+      : params
+    const response = await this.transport.request(makeRequest(this.nextId++, method, requestParams), requestTimeout)
     return responseResult(response, method, serverKeyFor(this.config))
+  }
+
+  private protocolVersion(): string {
+    return this.config.protocolVersion ?? DEFAULT_PROTOCOL_VERSION
   }
 }
 
