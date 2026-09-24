@@ -110,6 +110,8 @@ export * from './provider-login-flow-store.ts'
 export * from './provider-runtime.ts'
 export * from './custom-providers.ts'
 export * from './gateway-credentials.ts'
+export * from './pocketbase-runtime-store.ts'
+export * from './pocketbase-proxy-credentials.ts'
 
 export * from './git/contracts.ts'
 export * from './git/executor.ts'

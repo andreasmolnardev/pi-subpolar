@@ -356,6 +356,33 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
   ], ["CREATE UNIQUE INDEX idx_inbox_dedupe ON inbox_items (owner_id, COALESCE(project_id, ''), kind, reference_id)", 'CREATE INDEX idx_inbox_owner ON inbox_items (owner_id, resolved, created_at)'], true)
   await ensureCollection(client, 'notification_subscriptions', [field('owner_id', 'text', { required: true }), field('channel', 'select', { required: true, values: ['push', 'email'], maxSelect: 1 }), field('target', 'text', { required: true }), field('enabled', 'bool', { required: true }), field('created_at', 'number', { required: true })], ['CREATE INDEX idx_notification_subscriptions_owner ON notification_subscriptions (owner_id)'])
   await ensureCollection(client, 'notification_deliveries', [field('owner_id', 'text', { required: true }), field('inbox_id', 'text', { required: true }), field('subscription_id', 'text', { required: true }), field('delivery_key', 'text', { required: true }), field('state', 'select', { required: true, values: ['pending', 'delivered', 'failed'], maxSelect: 1 }), field('attempt', 'number', { required: true }), field('lease_id', 'text'), field('lease_expires_at', 'number'), field('next_attempt_at', 'number'), field('last_attempt_at', 'number'), field('failure_class', 'select', { values: ['retryable', 'permanent'], maxSelect: 1 }), field('error_message', 'text'), field('created_at', 'number', { required: true }), field('updated_at', 'number', { required: true })], ['CREATE UNIQUE INDEX idx_notification_deliveries_key ON notification_deliveries (delivery_key)', 'CREATE INDEX idx_notification_deliveries_inbox ON notification_deliveries (owner_id, inbox_id, created_at)', 'CREATE INDEX idx_notification_deliveries_due ON notification_deliveries (state, next_attempt_at, lease_expires_at)'], true)
+
+  await ensureCollection(client, 'message_deliveries', [
+    field('owner_id', 'text', { required: true }), field('session_id', 'text', { required: true }), field('message_id', 'text', { required: true }),
+    field('content', 'text', { required: true }), field('metadata', 'json', { required: true }), field('state', 'select', { required: true, values: ['pending', 'running', 'completed', 'interrupted', 'unknown'], maxSelect: 1 }),
+    field('created_at', 'number', { required: true }), field('updated_at', 'number', { required: true }), field('response', 'json'),
+  ], ['CREATE UNIQUE INDEX idx_message_deliveries_key ON message_deliveries (owner_id, session_id, message_id)', 'CREATE INDEX idx_message_deliveries_pending ON message_deliveries (owner_id, session_id, state, updated_at)'], true)
+  await ensureCollection(client, 'message_queue', [
+    field('owner_id', 'text', { required: true }), field('session_id', 'text', { required: true }), field('client_id', 'text', { required: true }), field('content', 'text', { required: true }),
+    field('kind', 'select', { required: true, values: ['steering', 'follow_up'], maxSelect: 1 }), field('state', 'select', { required: true, values: ['steering', 'enqueued', 'delivered', 'failed', 'cancelled'], maxSelect: 1 }),
+    field('position', 'number', { required: true }), field('created_at', 'number', { required: true }), field('updated_at', 'number', { required: true }), field('error', 'text'),
+  ], ['CREATE UNIQUE INDEX idx_message_queue_key ON message_queue (owner_id, session_id, client_id)', 'CREATE INDEX idx_message_queue_ready ON message_queue (owner_id, session_id, state, position, created_at)'], true)
+  await ensureCollection(client, 'runtime_runs', [
+    field('owner_id', 'text', { required: true }), field('session_id', 'text', { required: true }), field('run_id', 'text', { required: true }), field('request_id', 'text'),
+    field('state', 'select', { required: true, values: ['starting', 'running', 'waiting_for_approval', 'completed', 'failed', 'interrupted', 'unknown'], maxSelect: 1 }),
+    field('created_at', 'number', { required: true }), field('updated_at', 'number', { required: true }), field('error', 'text'),
+  ], ['CREATE UNIQUE INDEX idx_runtime_runs_key ON runtime_runs (owner_id, session_id, run_id)', 'CREATE INDEX idx_runtime_runs_state ON runtime_runs (owner_id, session_id, state, updated_at)'], true)
+  await ensureCollection(client, 'durable_events', [
+    field('owner_id', 'text', { required: true }), field('cursor', 'number', { required: true }), field('session_id', 'text'), field('type', 'text', { required: true }),
+    field('payload', 'json', { required: true }), field('occurred_at', 'number', { required: true }), field('payload_bytes', 'number', { required: true }),
+  ], ['CREATE UNIQUE INDEX idx_durable_events_cursor ON durable_events (owner_id, cursor)', 'CREATE INDEX idx_durable_events_owner ON durable_events (owner_id, cursor)', 'CREATE INDEX idx_durable_events_retention ON durable_events (occurred_at)'], true)
+  await ensureCollection(client, 'proxy_credentials', [
+    field('owner_id', 'text', { required: true }), field('credential_id', 'text', { required: true }), field('prefix', 'text', { required: true }), field('secret_hash', 'text', { required: true }),
+    field('created_at', 'number', { required: true }), field('last_used_at', 'number'), field('revoked_at', 'number'),
+  ], ['CREATE UNIQUE INDEX idx_proxy_credentials_id ON proxy_credentials (credential_id)', 'CREATE UNIQUE INDEX idx_proxy_credentials_prefix ON proxy_credentials (prefix)'], true)
+  await ensureCollection(client, 'metadata_migrations', [
+    field('user_id', 'text', { required: true }), field('migration_name', 'text', { required: true }), field('migrated_at', 'number', { required: true }), field('result', 'json'),
+  ], ['CREATE UNIQUE INDEX idx_metadata_migrations_key ON metadata_migrations (user_id, migration_name)'], true)
 }
 
 function escapeFilter(value: string): string {
