@@ -2,14 +2,18 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'bun:test'
 
-const bridge = readFileSync(join(import.meta.dir, '..', 'bridge.ts'), 'utf8')
+const bridge = [
+  readFileSync(join(import.meta.dir, '..', 'bridge.ts'), 'utf8'),
+  readFileSync(join(import.meta.dir, 'bridge-request-handler.ts'), 'utf8'),
+].join('\n')
+const piSession = readFileSync(join(import.meta.dir, 'pi-sdk-session.ts'), 'utf8')
 
-function section(start: string, end: string): string {
-  const begin = bridge.indexOf(start)
-  const finish = bridge.indexOf(end, begin)
+function section(start: string, end: string, source = bridge): string {
+  const begin = source.indexOf(start)
+  const finish = source.indexOf(end, begin)
   expect(begin).toBeGreaterThanOrEqual(0)
   expect(finish).toBeGreaterThan(begin)
-  return bridge.slice(begin, finish)
+  return source.slice(begin, finish).replaceAll('deps.', '')
 }
 
 describe('bridge model delivery ordering', () => {
@@ -21,7 +25,7 @@ describe('bridge model delivery ordering', () => {
     expect(messagePost).toContain('profile: context.agentName')
     expect(run.indexOf("await sendRpc(id, { type: 'set_model'"))
       .toBeLessThan(run.indexOf('await persistSessionModel('))
-    expect(run).toContain('interruptMessageDelivery(claimedDelivery)')
+    expect(run).toContain('await store.interruptMessageDelivery(claimedDelivery)')
   })
 
   it('fails closed when subagent parent capabilities are omitted or empty', () => {
@@ -37,8 +41,8 @@ describe('bridge model delivery ordering', () => {
     const sessionRoutes = section("if (path[1] === 'sessions' && path.length >= 3)", "if (path[1] === 'extensions'")
     expect(sessionRoutes.indexOf('const ownedRecord =')).toBeLessThan(sessionRoutes.indexOf("path[3] === 'steer'"))
     expect(sessionRoutes).toContain("type: 'steer'")
-    expect(bridge).toContain('claimQueueEntry(database')
-    expect(sessionRoutes).toContain("updateQueueEntry(database, ownerId, id, clientId, 'steering')")
+    expect(bridge).toContain('store.claimQueueEntry')
+    expect(sessionRoutes).toContain("await store.updateQueueEntry(ownerId, id, clientId, 'steering')")
     expect(sessionRoutes).toContain("'follow_up'")
     expect(sessionRoutes).toContain("clientId === 'clear'")
   })
@@ -116,12 +120,14 @@ describe('durable skill routes', () => {
   })
 
   it('injects an owner-bound durable skill repository and redacted audit sink into Pi runtime loading', () => {
-    const initialization = section('private async initialize(): Promise<void> {', 'private async openOrCreateSession(): Promise<SessionManager>')
-    expect(initialization).toContain('createOwnerBoundSkillStore(client, userId)')
-    expect(initialization).toContain('createSkillContextAudit(client)')
-    expect(initialization).toContain('skillRepository:')
-    expect(initialization).toContain('skillAudit:')
-    expect(initialization).toContain('context.session?.project')
+    const initialization = section('private async initialize(): Promise<void> {', 'private async openOrCreateSession(): Promise<SessionManager>', piSession)
+    const host = section('const piSdkSessionHost:', 'function createPiSession')
+    expect(initialization).toContain('host.loadRuntime(client, userId, context)')
+    expect(host).toContain('createOwnerBoundSkillStore(client, userId)')
+    expect(host).toContain('createSkillContextAudit(client)')
+    expect(host).toContain('skillRepository:')
+    expect(host).toContain('skillAudit:')
+    expect(host).toContain('context.session?.project')
     expect(initialization).not.toContain('readSkills')
   })
 })
