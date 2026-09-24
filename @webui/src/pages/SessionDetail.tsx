@@ -311,6 +311,7 @@ export function SessionDetail() {
       model: prompt.model,
       agent: prompt.agent,
       permission: prompt.permission,
+      routing: prompt.routing,
     }, {
       onSuccess: (data: unknown) => {
         const state = getDeliveryState(data);
@@ -753,7 +754,7 @@ export function SessionDetail() {
                   data-testid="in-flight-prompt-state"
                   className="mb-2 rounded-xl border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-sm text-blue-900 dark:text-blue-100"
                 >
-                  Prompt delivery is in progress. It will not be sent again automatically.
+                  {inFlightPrompt.routing ? 'Routing...' : 'Prompt delivery is in progress. It will not be sent again automatically.'}
                 </div>
               )}
               {interruptedPrompt && (
@@ -811,7 +812,7 @@ export function SessionDetail() {
                 directory={repoDirectory}
                 defaultProjectId={repoId.toString()}
                 defaultAgent={sessionAgent.agent ? sessionAgent.agent : "__default__"}
-                defaultModel={sessionAgent.model ? `${sessionAgent.model.providerID}/${sessionAgent.model.modelID}` : "__auto__"}
+                defaultModel={sessionAgent.model ? `${sessionAgent.model.providerID}/${sessionAgent.model.modelID}` : undefined}
                 defaultPermission={sessionAgent.permission ?? "default"}
                 sessionID={sessionId}
                 disabled={!isConnected}

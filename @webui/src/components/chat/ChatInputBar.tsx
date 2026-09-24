@@ -47,6 +47,7 @@ export interface PendingSessionPrompt {
   model?: string;
   agent?: string;
   permission?: string;
+  routing?: boolean;
 }
 
 const LARGE_PASTE_THRESHOLD = 500;
@@ -64,12 +65,16 @@ interface ChatInputBarProps {
   projectId?: string;
   agent?: string;
   permission?: string;
+  model?: string;
+  onModelChange?: (model: string) => void;
+  routingEnabled?: boolean;
   sendImmediately?: boolean;
   sessionID?: string;
   directory?: string;
   disabled?: boolean;
   isSessionActive?: boolean;
   hideAgentSelect?: boolean;
+  hideModelSelect?: boolean;
   onPromptChange?: (hasContent: boolean) => void;
   onScrollToBottom?: () => void;
 }
@@ -85,12 +90,16 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     projectId,
     agent,
     permission,
+    model,
+    onModelChange,
+    routingEnabled = false,
     sendImmediately = false,
     sessionID,
     directory,
     disabled = false,
     isSessionActive = false,
     hideAgentSelect = false,
+    hideModelSelect = false,
     onPromptChange,
     onScrollToBottom,
   }: ChatInputBarProps,
@@ -105,6 +114,11 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const [internalProjectId, setInternalProjectId] = useState<string | null>(defaultProjectId ?? null);
   const [internalAgent, setInternalAgent] = useState(defaultAgent);
   const [selectedModel, setSelectedModel] = useState(effectiveDefaultModel);
+  const currentModel = model ?? selectedModel;
+  const internalModelChange = useCallback((value: string) => {
+    setSelectedModel(value);
+    onModelChange?.(value);
+  }, [onModelChange]);
   const [internalPermission, setInternalPermission] = useState(defaultPermission);
   const selectedProjectId = projectId ?? internalProjectId;
   const selectedAgent = agent ?? internalAgent;
@@ -249,7 +263,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     }
     return map;
   }, [models]);
-  const selectedModelSupportsImages = selectedModel === "__auto__" || models.find((model) => model.id === selectedModel)?.imageInput === true;
+  const selectedModelSupportsImages = currentModel === "__auto__" || models.find((model) => model.id === currentModel)?.imageInput === true;
 
   const selectedAgentForRequest = selectedAgent === "__default__" || (!hideAgentSelect && !visibleAgents.some((agent) => agent.name === selectedAgent))
     ? undefined
@@ -558,9 +572,10 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
              prompt,
              parts: attachmentParts.length ? [{ type: "text", content: prompt }, ...attachmentParts.filter((part) => part.type !== "text")] : undefined,
             messageID: clientId,
-            model: selectedModel === "__auto__" ? undefined : selectedModel,
+            model: currentModel === "__auto__" ? undefined : currentModel,
             agent: selectedAgentForRequest,
             permission: selectedPermissionForRequest,
+            routing: routingEnabled,
           },
           {
             onSuccess: () => {
@@ -574,7 +589,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
 
       const session = await createSession.mutateAsync({
         agent: selectedAgentForRequest,
-        model: selectedModel === "__auto__" ? undefined : selectedModel,
+        model: currentModel === "__auto__" ? undefined : currentModel,
         permission: selectedPermissionForRequest,
       });
 
@@ -583,9 +598,10 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
         const pendingPrompt = {
           prompt,
           messageID,
-          model: selectedModel === "__auto__" ? undefined : selectedModel,
+          model: currentModel === "__auto__" ? undefined : currentModel,
           agent: selectedAgentForRequest,
           permission: selectedPermissionForRequest,
+          routing: routingEnabled,
         } satisfies PendingSessionPrompt;
         savePendingSessionPrompt(session.id, pendingPrompt);
         setActiveSessionId(session.id);
@@ -610,9 +626,10 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       const pendingPrompt = {
         prompt,
         messageID,
-        model: selectedModel === "__auto__" ? undefined : selectedModel,
+        model: currentModel === "__auto__" ? undefined : currentModel,
         agent: selectedAgentForRequest,
         permission: selectedPermissionForRequest,
+        routing: routingEnabled,
       } satisfies PendingSessionPrompt;
       savePendingSessionPrompt(session.id, pendingPrompt);
       textareaRef.current!.value = "";
@@ -646,7 +663,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     onScrollToBottom,
     onSend,
     selectedAgentForRequest,
-    selectedModel,
+    currentModel,
     selectedPermissionForRequest,
     selectedProject,
     selectedDirectory,
@@ -858,7 +875,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
 
           <span className="w-full" />
 
-          <Select value={selectedModel} onValueChange={setSelectedModel}>
+          {!hideModelSelect && <Select value={currentModel} onValueChange={internalModelChange}>
             <SelectTrigger className="mr-2 h-8 w-auto border-0 bg-transparent text-xs shadow-none focus:ring-0">
               <SelectValue placeholder="Model" />
             </SelectTrigger>
@@ -873,7 +890,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
                 </SelectGroup>
               ))}
             </SelectContent>
-          </Select>
+          </Select>}
 
           {hasPromptContent && !isWaitingForAnswer && (
             <Button

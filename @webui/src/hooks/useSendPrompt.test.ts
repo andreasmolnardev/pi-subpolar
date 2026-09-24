@@ -101,11 +101,13 @@ describe('useSendPrompt', () => {
         prompt: 'Hello from a new session',
         messageID: 'optimistic_user_first-send',
         model: 'anthropic/claude-sonnet-4',
+        routing: true,
       })
     ).resolves.toEqual(expect.objectContaining({ queued: false }))
 
     expect(mockSendPrompt).toHaveBeenCalledWith('new-session', expect.objectContaining({
       messageID: 'optimistic_user_first-send',
+      routing: true,
     }))
     expect(mockSendPromptAsync).not.toHaveBeenCalled()
   })

@@ -363,6 +363,7 @@ export class SubpolarClient {
     const model = typeof data === 'object' && data && 'model' in data ? data.model : undefined
     const agent = typeof data === 'object' && data && 'agent' in data ? data.agent : undefined
     const permission = typeof data === 'object' && data && 'permission' in data ? data.permission : undefined
+    const routing = typeof data === 'object' && data && 'routing' in data && data.routing === true
     const messageID = typeof data === 'object' && data && 'messageID' in data ? data.messageID : undefined
     const message = await fetchWrapper<{ messageID?: string; state?: string }>(`${this.nativeBaseURL}/sessions/${sessionID}/messages`, {
       method: 'POST',
@@ -377,6 +378,7 @@ export class SubpolarClient {
           ...(agent ? { agent } : {}),
           ...(model ? { model } : {}),
           ...(permission ? { permission } : {}),
+          ...(routing ? { routing: true } : {}),
         },
       }),
       timeout: 0,

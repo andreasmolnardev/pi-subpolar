@@ -400,6 +400,7 @@ export const useSendPrompt = (apiUrl: string | null | undefined, directory?: str
       agent,
       permission,
       variant,
+      routing,
       messageID,
       queued,
     }: {
@@ -410,6 +411,7 @@ export const useSendPrompt = (apiUrl: string | null | undefined, directory?: str
       agent?: string;
       permission?: string;
       variant?: string;
+      routing?: boolean;
       messageID?: string;
       queued?: boolean;
     }) => {
@@ -497,6 +499,10 @@ export const useSendPrompt = (apiUrl: string | null | undefined, directory?: str
 
       if (variant) {
         requestData.variant = variant;
+      }
+
+      if (routing) {
+        (requestData as SendPromptRequest & { routing?: boolean }).routing = true;
       }
 
       if (queued) {

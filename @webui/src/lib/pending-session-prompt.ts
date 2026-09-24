@@ -31,6 +31,7 @@ export function loadPendingSessionPrompt(sessionID: string): StoredPendingSessio
       ...(typeof value.model === 'string' ? { model: value.model } : {}),
       ...(typeof value.agent === 'string' ? { agent: value.agent } : {}),
       ...(typeof value.permission === 'string' ? { permission: value.permission } : {}),
+      ...(value.routing === true ? { routing: true } : {}),
        ...(value.status === 'pending' || value.status === 'in-flight' || value.status === 'interrupted' || value.status === 'unknown'
          ? { status: value.status }
          : {}),

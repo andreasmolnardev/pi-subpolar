@@ -22,7 +22,7 @@ import type { DefaultModels } from '@/api/types/settings'
 const NO_MODEL_VALUE = '__none__'
 
 const DEFAULT_MODEL_FIELDS = [
-  { key: 'routing', label: 'Routing model', description: 'Chooses agents, tools, or model routes for a prompt.' },
+  { key: 'routing', label: 'Session routing model', description: 'Chooses the matching agent for a new conversation. If unset, the conversation model is used. It receives no tools and must return JSON.' },
   { key: 'compaction', label: 'Compaction model', description: 'Condenses long conversations when context is tight.' },
   { key: 'sessionNaming', label: 'Session naming model', description: 'Generates concise chat titles.' },
   { key: 'summary', label: 'Summary model', description: 'Produces session and handoff summaries.' },
