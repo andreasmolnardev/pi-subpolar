@@ -115,16 +115,16 @@ import {
 
 } from './server/index.ts'
 import { SkillConflictError, SkillNotFoundError, SkillValidationError } from '../packages/subpolar-contracts/src/index.ts'
-import { createSkillContextAudit, effectiveAgentConfiguration } from './server/tools.ts'
+import { createSkillContextAudit, effectiveAgentConfiguration } from './server/application/tools.ts'
 import {
   NewSessionRouteError,
   resolveNewSessionRoute,
-} from './server/new-session-route.ts'
+} from './server/application/new-session-route.ts'
 import {
   routeSessionRequest,
   parseRoutingModelSelection,
   type SessionRoutingCandidate,
-} from './server/session-routing.ts'
+} from './server/application/session-routing.ts'
 import {
   assertSafeBrowserMutation,
   isAllowedOrigin,
@@ -134,15 +134,15 @@ import {
   REQUEST_LIMITS,
   RequestSecurityError,
   rateLimitKey,
-} from './server/request-security.ts'
-import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse } from './server/network-policy.ts'
-import { redactSensitive, redactSensitiveText } from './server/security-redaction.ts'
+} from './server/core/request-security.ts'
+import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse } from './server/core/network-policy.ts'
+import { redactSensitive, redactSensitiveText } from './server/core/security-redaction.ts'
 import { handleVoiceRoute, localVoiceBackends, type VoiceBackends, redactVoiceSettings, VoiceAuthorizationError } from './server/voice/index.ts'
-import { permissionAskedProperties } from './server/approval-event.ts'
-import { escapeFilter } from './server/pocketbase.ts'
-import { proposeTools, registerToolDraft } from './server/tools-teach.ts'
-import { InvalidSessionTagsError, normalizeSessionTags } from './server/project-store.ts'
-import { createSuggestionService, type SuggestionProvider } from './server/suggestions.ts'
+import { permissionAskedProperties } from './server/application/approval-event.ts'
+import { escapeFilter } from './server/persistence/pocketbase.ts'
+import { proposeTools, registerToolDraft } from './server/application/tools-teach.ts'
+import { InvalidSessionTagsError, normalizeSessionTags } from './server/persistence/project-store.ts'
+import { createSuggestionService, type SuggestionProvider } from './server/application/suggestions.ts'
 import { createBridgeRequestHandler } from './server/bridge-request-handler.ts'
 
 import {
@@ -154,9 +154,9 @@ import {
   type RpcCommand,
   type RpcMessage,
   type SessionRecord,
-} from './server/pi-sdk-session.ts'
+} from './server/application/pi-sdk-session.ts'
 
-import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/project-filesystem.ts'
+import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/core/project-filesystem.ts'
 import { GitPathPolicy } from './server/git/policy.ts'
 import { GitReadService } from './server/git/service.ts'
 import { GitServiceError } from './server/git/contracts.ts'
@@ -166,17 +166,17 @@ import {
   createLegacyHealthPayload,
   type DiagnosticComponents,
   errorEnvelope,
-} from './server/contracts.ts'
+} from './server/core/contracts.ts'
 import {
   MessageDeliveryConflictError,
   messageDeliveryResponse,
   replayMessageDeliveryResponse,
   withDeliveryMetadata,
-} from './server/message-delivery.ts'
+} from './server/persistence/message-delivery.ts'
 import {
   QueueEntryConflictError,
   QueueEntryTransitionError,
-} from './server/message-queue.ts'
+} from './server/persistence/message-queue.ts'
 
 
 
@@ -1209,7 +1209,7 @@ function createPiSession(record: SessionRecord, project: Project, capabilities?:
   return new PiSdkSession(record, project, { host: piSdkSessionHost, capabilities })
 }
 
-async function executeSubagentHost(input: { task: import('./server/task-control-plane.ts').TaskRecord; signal: AbortSignal; capabilities: readonly string[]; cwd?: string }): Promise<unknown> {
+async function executeSubagentHost(input: { task: import('./server/application/task-control-plane.ts').TaskRecord; signal: AbortSignal; capabilities: readonly string[]; cwd?: string }): Promise<unknown> {
   const taskInput = object(input.task.input)
   const cwd = input.cwd ?? configuredWorkspaceRoot()
   let worktree: Awaited<ReturnType<WorktreeController['create']>> | undefined

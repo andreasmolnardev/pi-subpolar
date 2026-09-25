@@ -1,6 +1,6 @@
 import type PocketBase from 'pocketbase'
-import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse, type NetworkPolicyOptions } from '../network-policy.ts'
-import { redactSensitiveText } from '../security-redaction.ts'
+import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse, type NetworkPolicyOptions } from '../core/network-policy.ts'
+import { redactSensitiveText } from '../core/security-redaction.ts'
 
 export type BrowserLifecycle = 'open' | 'closed'
 export type BrowserTab = { id: string; url: string; title: string; text: string; status: number; openedAt: number }

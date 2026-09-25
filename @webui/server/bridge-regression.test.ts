@@ -26,7 +26,7 @@ const bridge = [
   readFileSync(join(import.meta.dir, 'bridge-request-handler.ts'), 'utf8'),
   ...routeModules,
 ].join('\n')
-const piSession = readFileSync(join(import.meta.dir, 'pi-sdk-session.ts'), 'utf8')
+const piSession = readFileSync(join(import.meta.dir, 'application', 'pi-sdk-session.ts'), 'utf8')
 
 function section(start: string, end: string, source = bridge): string {
   const begin = source.indexOf(start)

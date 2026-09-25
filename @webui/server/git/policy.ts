@@ -1,7 +1,7 @@
 import { realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from '../project-filesystem.ts'
-import type { ProjectRecord } from '../project-store.ts'
+import { canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from '../core/project-filesystem.ts'
+import type { ProjectRecord } from '../persistence/project-store.ts'
 import { GitServiceError, type GitMutationApproval, type GitMutationOperation } from './contracts.ts'
 
 export type OwnedProjectLookup = (userId: string, projectId: string) => Promise<ProjectRecord | null>

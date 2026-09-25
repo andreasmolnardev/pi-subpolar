@@ -1,4 +1,4 @@
-import { redactSensitive, redactSensitiveText } from '../server/security-redaction'
+import { redactSensitive, redactSensitiveText } from '../server/core/security-redaction'
 
 export type TranscriptMessage = { info: Record<string, any>; parts: Record<string, any>[] }
 

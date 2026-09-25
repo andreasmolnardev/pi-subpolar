@@ -2,7 +2,7 @@ import { access, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/pr
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import type { ProjectRecord } from '../project-store.ts'
+import type { ProjectRecord } from '../persistence/project-store.ts'
 import { GitServiceError } from './contracts.ts'
 import { GitPathPolicy } from './policy.ts'
 import { GitExecutionError, type GitExecutor } from './executor.ts'
