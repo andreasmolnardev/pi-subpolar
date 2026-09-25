@@ -92,7 +92,8 @@ export class InvalidSessionTagsError extends Error {
 }
 
 export function normalizeSessionTags(value: unknown): string[] {
-  if (value === undefined) return []
+  // Older PocketBase rows may contain null for an unset JSON field.
+  if (value === undefined || value === null) return []
   if (!Array.isArray(value) || value.length > 12) throw new InvalidSessionTagsError()
   const tags: string[] = []
   const seen = new Set<string>()

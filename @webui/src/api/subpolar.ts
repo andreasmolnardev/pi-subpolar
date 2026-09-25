@@ -7,7 +7,8 @@ type SessionListParams = NonNullable<paths['/session']['get']['parameters']['que
   roots?: boolean
 }
 type CreateSessionRequest = NonNullable<paths['/session']['post']['requestBody']>['content']['application/json']
-type NewSessionCreateRequest = Omit<CreateSessionRequest, 'permission'> & {
+type NewSessionCreateRequest = Omit<CreateSessionRequest, 'permission' | 'project'> & {
+  project?: number | string
   agent?: string
   model?: string
   thinking?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
@@ -485,7 +486,7 @@ export class SubpolarClient {
   }
 
   async respondToPermission(sessionID: string, permissionID: string, response: 'once' | 'always' | 'reject') {
-    return fetchWrapper(`${this.baseURL}/session/${sessionID}/permissions/${permissionID}`, {
+    return fetchWrapper(`${this.nativeBaseURL}/session/${sessionID}/permissions/${permissionID}`, {
       method: 'POST',
       params: this.getParams(),
       headers: { 'Content-Type': 'application/json' },

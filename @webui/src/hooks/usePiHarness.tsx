@@ -170,6 +170,7 @@ export const useCreateSession = (
   return useMutation({
       mutationFn: async (data: {
         title?: string;
+        project?: number | string;
         agent?: string;
         model?: string;
         permission?: 'ask' | 'none' | 'allow_all';

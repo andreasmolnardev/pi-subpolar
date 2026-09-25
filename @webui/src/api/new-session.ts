@@ -26,8 +26,9 @@ export async function resolveNewSessionContext(input: {
   projectName?: string
   agentName?: string
 }): Promise<NewSessionContext> {
-  const params: Record<string, string> = {}
-  if (input.projectName) params.projectName = input.projectName
+  const params: Record<string, string> = {
+    projectName: input.projectName || 'General Chat',
+  }
   if (input.agentName) params.agentName = input.agentName
   return fetchWrapper<{ context: NewSessionContext }>(`${API_BASE_URL}/api/new-session/resolve`, { params }).then((response) => response.context)
 }

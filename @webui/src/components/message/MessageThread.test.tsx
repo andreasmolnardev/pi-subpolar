@@ -134,7 +134,7 @@ const createAssistantMessage = (
   parts,
 })
 
-const createUserMessage = (id: string, text: string) => ({
+const createUserMessage = (id: string, text: string, queueDelivery?: 'sent' | 'pending') => ({
   info: {
     id,
     role: 'user' as const,
@@ -144,6 +144,7 @@ const createUserMessage = (id: string, text: string) => ({
     time: {
       created: Date.now(),
     },
+    ...(queueDelivery ? { queueDelivery } : {}),
   },
   parts: [createTextPart(text, id)],
 })
@@ -469,6 +470,80 @@ describe('MessageThread', () => {
 
     unmount()
     expect(useUIState.getState().isEditingMessage).toBe(false)
+  })
+
+  it('does not show Sending after the latest assistant response is complete', () => {
+    setupSettings({ simpleChatMode: false, showReasoning: false })
+    mocks.useSessionStatus.mockReturnValue({ type: 'busy' })
+
+    const messages = [
+      createUserMessage('1', 'Hello'),
+      createAssistantMessage('2', [createTextPart('This is a response', '2')]),
+    ]
+
+    render(
+      <MessageThread
+        apiUrl="http://localhost:5551"
+        sessionID="test-session"
+        messages={messages as any}
+      />,
+    )
+
+    expect(screen.queryByText('Sending...')).not.toBeInTheDocument()
+  })
+
+  it('shows Sending while a delivered user message awaits its assistant response', () => {
+    setupSettings({ simpleChatMode: false, showReasoning: false })
+    mocks.useSessionStatus.mockReturnValue({ type: 'busy' })
+
+    render(
+      <MessageThread
+        apiUrl="http://localhost:5551"
+        sessionID="test-session"
+        messages={[createUserMessage('1', 'Hello')] as any}
+      />,
+    )
+
+    expect(screen.getByText('Sending...')).toBeInTheDocument()
+  })
+
+  it.each([{ type: 'retry', attempt: 1, message: 'Retrying', next: Date.now() + 1000 }, { type: 'compact' }])(
+    'does not show Sending for a $type session status',
+    (status) => {
+      setupSettings({ simpleChatMode: false, showReasoning: false })
+      mocks.useSessionStatus.mockReturnValue(status)
+
+      render(
+        <MessageThread
+          apiUrl="http://localhost:5551"
+          sessionID="test-session"
+          messages={[createUserMessage('1', 'Hello')] as any}
+        />,
+      )
+
+      expect(screen.queryByText('Sending...')).not.toBeInTheDocument()
+    },
+  )
+
+  it('does not show Sending for an undelivered queued user message', () => {
+    setupSettings({ simpleChatMode: false, showReasoning: false })
+    mocks.useSessionStatus.mockReturnValue({ type: 'busy' })
+
+    const messages = [
+      createUserMessage('1', 'Hello'),
+      createAssistantMessage('2', [createTextPart('This is a response', '2')]),
+      createUserMessage('3', 'Follow up', 'pending'),
+    ]
+
+    render(
+      <MessageThread
+        apiUrl="http://localhost:5551"
+        sessionID="test-session"
+        messages={messages as any}
+      />,
+    )
+
+    expect(screen.queryByText('Sending...')).not.toBeInTheDocument()
   })
 
   it('resends an edited prompt after the edit textarea blurs', () => {

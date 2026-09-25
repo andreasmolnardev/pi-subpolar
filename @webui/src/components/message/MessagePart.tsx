@@ -14,6 +14,10 @@ type RetryPartType = components['schemas']['RetryPart']
 
 type Part = components['schemas']['Part']
 
+function normalizeThinkingText(text: string): string {
+  return text.replace(/\*\*(.+?)\*\*/gs, '$1').replace(/__(.+?)__/gs, '$1')
+}
+
 interface MessagePartProps {
   part: Part
   role?: string
@@ -33,6 +37,7 @@ interface AssistantMetadata {
 }
 
 export function ThinkingBlock({ text, active = false, label = 'Thinking...' }: { text: string; active?: boolean; label?: string }) {
+  const plainText = normalizeThinkingText(text)
   return (
     <details open={false} className="group my-2 text-sm text-muted-foreground">
       <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md py-1 text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
@@ -40,7 +45,7 @@ export function ThinkingBlock({ text, active = false, label = 'Thinking...' }: {
         <span className={active ? 'reasoning-text-trail font-medium' : 'font-medium text-muted-foreground'}>{label}</span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
       </summary>
-      <div className="overflow-hidden whitespace-pre-wrap pl-6 pt-1 text-muted-foreground/90 animate-disclosure-down">{text}</div>
+      <div className="overflow-hidden whitespace-pre-wrap pl-6 pt-1 text-muted-foreground/90 animate-disclosure-down">{plainText}</div>
     </details>
   )
 }

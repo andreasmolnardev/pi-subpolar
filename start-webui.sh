@@ -23,7 +23,11 @@ if [[ ! -x "$root_dir/@webui/node_modules/.bin/vite" ]]; then
   npm --prefix "$root_dir/@webui" install
 fi
 
-bun "$root_dir/@webui/bridge.ts" &
+bridge_env_args=()
+if [[ -f "$root_dir/.env" ]]; then
+  bridge_env_args+=("--env-file=$root_dir/.env")
+fi
+POCKETBASE_URL="${POCKETBASE_URL:-http://127.0.0.1:8090}" bun "${bridge_env_args[@]}" "$root_dir/@webui/bridge.ts" &
 bridge_pid=$!
 
 # Do not start Vite until the API is listening. Otherwise the browser immediately

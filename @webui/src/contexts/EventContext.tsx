@@ -134,6 +134,7 @@ interface EventContextValue {
     respond: (permissionID: string, sessionID: string, response: PermissionResponse) => Promise<void>
     dismiss: (permissionID: string, sessionID?: string) => void
     getForCallID: (callID: string, sessionID: string) => PermissionRequest | null
+    getForToolID?: (toolID: string, sessionID: string) => PermissionRequest | null
     getForSession: (sessionID: string) => PermissionRequest | null
     hasForSession: (sessionID: string) => boolean
     showDialog: boolean
@@ -385,6 +386,14 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
     }) ?? null
   }, [permissionsBySession])
 
+  const getPermissionForToolID = useCallback((toolID: string, sessionID: string): PermissionRequest | null => {
+    const permissions = permissionsBySession[sessionID] ?? []
+    return permissions.find(permission => {
+      const metadata = permission.metadata as { toolId?: unknown } | undefined
+      return metadata?.toolId === toolID || permission.permission === toolID || permission.patterns.includes(toolID)
+    }) ?? null
+  }, [permissionsBySession])
+
   const getPermissionForSession = useCallback((sessionID: string): PermissionRequest | null => {
     return permissionsBySession[sessionID]?.[0] ?? null
   }, [permissionsBySession])
@@ -606,6 +615,7 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
       respond: respondToPermission,
       dismiss: removePermission,
       getForCallID: getPermissionForCallID,
+      getForToolID: getPermissionForToolID,
       getForSession: getPermissionForSession,
       hasForSession: hasPermissionsForSession,
       showDialog: showPermissionDialog,
@@ -635,6 +645,7 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
     respondToPermission,
     removePermission,
     getPermissionForCallID,
+    getPermissionForToolID,
     getPermissionForSession,
     hasPermissionsForSession,
     showPermissionDialog,

@@ -588,6 +588,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       }
 
       const session = await createSession.mutateAsync({
+        project: /^\d+$/.test(targetProjectId) ? Number(targetProjectId) : targetProjectId,
         agent: selectedAgentForRequest,
         model: currentModel === "__auto__" ? undefined : currentModel,
         permission: selectedPermissionForRequest,
@@ -768,9 +769,9 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   return (
     <div className="w-full max-w-3xl mx-auto">
       <div className="relative backdrop-blur-md bg-muted/50 rounded-xl p-4 shadow-lg">
-        {attachments.length > 0 && (
+        {attachments.some((attachment) => attachment.kind !== "text") && (
           <div className="mb-3 flex flex-wrap gap-2" aria-label="Attachments">
-            {attachments.map((attachment) => (
+            {attachments.filter((attachment) => attachment.kind !== "text").map((attachment) => (
               <div key={attachment.id} className="flex max-w-full items-center gap-2 rounded-lg border border-border bg-background/60 px-3 py-2 text-sm">
                 {attachment.kind === "image" ? <Image className="h-4 w-4 text-primary" /> : attachment.kind === "website" ? <Link className="h-4 w-4 text-primary" /> : <FileText className="h-4 w-4 text-primary" />}
                 <span className="max-w-48 truncate">{attachment.name}</span>
@@ -872,6 +873,26 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
               </Button>
             </PopoverContent>
           </Popover>
+
+          {attachments.filter((attachment) => attachment.kind === "text").map((attachment) => (
+            <div key={attachment.id} className="ml-2 flex min-w-0 max-w-56 items-center gap-1.5 rounded-lg border border-border bg-background/60 px-2 py-1 text-xs">
+              <Clipboard className="h-3.5 w-3.5 flex-shrink-0 text-primary" aria-hidden="true" />
+              <span className="min-w-0 truncate" title={attachment.name}>{attachment.name}</span>
+              {attachment.status === "loading" && <span className="text-muted-foreground">Loading...</span>}
+              {attachment.status === "error" && <span title={attachment.error} className="text-destructive">Failed</span>}
+              {attachment.status === "ready" && selectedDirectory && (
+                <button type="button" className="flex-shrink-0 text-muted-foreground underline" onClick={async () => {
+                  const name = window.prompt("Markdown filename", `${attachment.name.replace(/\.txt$/i, "")}.md`);
+                  if (!name) return;
+                  try {
+                    const created = await createProjectMarkdown(selectedDirectory, name, attachment.content ?? "");
+                    setAttachments((items) => items.map((item) => item.id === attachment.id ? { ...item, kind: "file", name: created.name, path: created.path, content: undefined, contextOnly: false } : item));
+                  } catch (reason) { showToast.error(reason instanceof Error ? reason.message : "Unable to create Markdown file"); }
+                }}>Create .md</button>
+              )}
+              <button type="button" onClick={() => removeAttachment(attachment.id)} aria-label={`Remove ${attachment.name}`} className="flex-shrink-0 rounded-full text-muted-foreground hover:text-foreground"><X className="h-3.5 w-3.5" /></button>
+            </div>
+          ))}
 
           <span className="w-full" />
 

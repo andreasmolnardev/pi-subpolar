@@ -696,6 +696,24 @@ describe('MessagePart', () => {
       expect(screen.getByText('Thinking')).toBeInTheDocument()
     })
 
+    it('renders thinking content as plain text without Markdown emphasis markers', () => {
+      setupSettings({
+        simpleChatMode: false,
+        showReasoning: true,
+        expandToolCalls: false,
+        expandDiffs: true,
+        autoScroll: true,
+        theme: 'dark',
+        mode: 'build',
+      })
+
+      const part = { ...createReasoningPart(), text: '**Normal thinking** and __more thinking__' }
+      render(<MessagePart part={part} />)
+
+      expect(screen.getByText('Normal thinking and more thinking')).toBeInTheDocument()
+      expect(screen.queryByText(/\*\*|__/)).not.toBeInTheDocument()
+    })
+
     it('opens reasoning while it is the active generation step', () => {
       setupSettings({
         simpleChatMode: false,

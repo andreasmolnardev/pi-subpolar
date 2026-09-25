@@ -28,14 +28,14 @@ export function useModelSelection(
   apiUrl: string | null | undefined,
   directory?: string
 ): UseModelSelectionResult {
-  const { data: config } = useConfig(apiUrl, directory)
+  const { data: config, isLoading: isConfigLoading } = useConfig(apiUrl, directory)
   const client = useSubpolarClient(apiUrl, directory)
   const queryClient = useQueryClient()
   
   const { data: providersData } = useQuery({
     queryKey: ['subpolar', 'providers', apiUrl, directory],
     queryFn: () => getProviders(directory),
-    enabled: !!client,
+    enabled: !!client && !isConfigLoading,
     staleTime: 30000,
   })
 
@@ -51,7 +51,7 @@ export function useModelSelection(
   const { data: modelState, isLoading: isModelStateLoading } = useQuery({
     queryKey: [...modelStateQueryKey, apiUrl, directory],
     queryFn: () => getPiModelState(),
-    enabled: !!client,
+    enabled: !!client && !isConfigLoading,
     staleTime: 30000,
     placeholderData: keepPreviousData,
   })

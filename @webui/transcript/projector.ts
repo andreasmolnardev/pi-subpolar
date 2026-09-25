@@ -6,6 +6,14 @@ type Obj = Record<string, any>
 const obj = (v: unknown): Obj => v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {}
 const textOf = (v: unknown): string => typeof v === 'string' ? redactSensitiveText(v) : Array.isArray(v) ? v.map((p) => { const x = obj(p); return typeof x.text === 'string' ? redactSensitiveText(x.text) : typeof x.thinking === 'string' ? redactSensitiveText(x.thinking) : '' }).join('') : ''
 const argumentsOf = (v: unknown): Obj => { if (typeof v === 'string') { try { return obj(JSON.parse(v)) } catch { return { value: v } } } return obj(v) }
+const timestampOf = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value)
+    return Number.isFinite(parsed) ? parsed : undefined
+  }
+  return undefined
+}
 
 export function redactTranscriptPayload(value: unknown): unknown {
   const safe = redactSensitive(value)
@@ -92,7 +100,8 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
   branch.forEach((entry, branchIndex) => {
     const message = obj(entry.message); const role = message.role
     const id = typeof entry.id === 'string' ? entry.id : `${sessionId}:entry:${branchIndex}`
-    const created = typeof message.timestamp === 'number' ? message.timestamp : (typeof entry.timestamp === 'number' ? entry.timestamp : Date.now())
+    const entryTimestamp = timestampOf(entry.timestamp)
+    const created = timestampOf(message.timestamp) ?? entryTimestamp ?? Date.now()
 
     if (role === 'user') {
       flushAssistant()
@@ -115,7 +124,9 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
       }
     }
     assistantGroup.info = { ...assistantGroup.info, ...metadata }
-    assistantGroup.completed = typeof message.completedAt === 'number' ? message.completedAt : created
+    const metadataCompleted = timestampOf(metadata.completedAt)
+    const completed = timestampOf(message.completedAt) ?? metadataCompleted ?? entryTimestamp ?? created
+    assistantGroup.completed = Math.max(assistantGroup.completed, completed)
     if (message.modelID) assistantGroup.info.modelID = message.modelID
     if (message.providerID) assistantGroup.info.providerID = message.providerID
     assistantGroup.finish = typeof message.stopReason === 'string' ? message.stopReason : typeof message.finish === 'string' ? message.finish : assistantGroup.finish

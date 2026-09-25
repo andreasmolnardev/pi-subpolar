@@ -399,31 +399,31 @@ export const providerAccountsApi = {
 };
 
 export async function getPiModelState(): Promise<PiModelState> {
-  return await fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`);
+  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`)
 }
 
 export async function addPiRecentModel(model: ModelSelection): Promise<PiModelState> {
-  return await fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
+  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ recent: model }),
-  });
+  })
 }
 
 export async function removePiRecentModel(model: ModelSelection): Promise<PiModelState> {
-  return await fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
+  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ removeRecent: model }),
-  });
+  })
 }
 
 export async function togglePiFavoriteModel(model: ModelSelection): Promise<PiModelState> {
-  return await fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
+  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ favorite: model }),
-  });
+  })
 }
 
 async function getConfiguredProviders(connectedIds: Set<string>): Promise<ProviderWithModels[]> {

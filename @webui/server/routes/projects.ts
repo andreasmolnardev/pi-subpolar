@@ -30,6 +30,10 @@ export async function handleProjectsRoute(context: BridgeRequestContext): Promis
       return deps.json({ error: { code: 'GIT_UNAVAILABLE', message: 'Git repository information is unavailable' }, requestId: correlationId }, 503)
     }
   }
+  if (request.method === 'GET' && path[1] === 'projects' && path[2] === 'general-chat' && path.length === 3) {
+    const directory = deps.generalChatProject().path
+    return deps.json({ repoId: 0, directory, relativePath: directory, files: {}, agents: [], automationsSkill: { path: '', exists: false, created: false } })
+  }
   if (request.method === 'GET' && path[1] === 'projects' && path.length === 3) {
     const client = await deps.applicationDatabase()
     const owned = await deps.ownedProjectResponses(authenticatedUser!.id, client)
@@ -167,11 +171,8 @@ export async function handleProjectsRoute(context: BridgeRequestContext): Promis
       return deps.json({ error: 'Unable to list project directories' }, 400)
     }
   }
-  if (request.method === 'GET' && path[1] === 'projects' && path[2] === 'general-chat') {
-    const directory = deps.generalChatProject().path
-    return deps.json({ repoId: 0, directory, relativePath: directory, files: {}, agents: [], automationsSkill: { path: '', exists: false, created: false } })
-  }
-  if (request.method === 'GET' && url.pathname === '/api/new-session/deps.resolve') {
+
+  if (request.method === 'GET' && url.pathname === '/api/new-session/resolve') {
     const client = await deps.applicationDatabase()
     const repository = deps.createProjectSessionRepository(client)
     const ownedProjects = await repository.listProjects(authenticatedUser!.id)

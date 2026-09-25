@@ -116,6 +116,7 @@ import {
 } from './server/index.ts'
 import { SkillConflictError, SkillNotFoundError, SkillValidationError } from '../packages/subpolar-contracts/src/index.ts'
 import { createSkillContextAudit, effectiveAgentConfiguration } from './server/application/tools/tools.ts'
+import { hasPendingApprovalWaiter, notifyApprovalResolution } from './server/application/tools/approval-execution.ts'
 import {
   NewSessionRouteError,
   resolveNewSessionRoute,
@@ -125,6 +126,7 @@ import {
   parseRoutingModelSelection,
   type SessionRoutingCandidate,
 } from './server/application/runtime/session-routing.ts'
+import { generateSessionTitle } from './server/application/runtime/session-title.ts'
 import {
   assertSafeBrowserMutation,
   isAllowedOrigin,
@@ -1021,11 +1023,11 @@ async function validateModelSelection(userId: string, selection: ModelSelection 
   if (!runtime.getModel(selection.providerID, selection.modelID)) throw new ModelUnavailableError(selection)
 }
 
-function preferenceModel(preferences: unknown, key: 'conversation' | 'routing'): string | undefined {
+function preferenceModel(preferences: unknown, key: 'conversation' | 'routing' | 'sessionNaming'): string | undefined {
   const values = object(preferences)
   if (key === 'conversation') return typeof values.defaultModel === 'string' && values.defaultModel.trim() ? values.defaultModel.trim() : undefined
   const defaults = object(values.defaultModels)
-  return typeof defaults.routing === 'string' && defaults.routing.trim() ? defaults.routing.trim() : undefined
+  return typeof defaults[key] === 'string' && defaults[key].trim() ? defaults[key].trim() : undefined
 }
 
 async function sessionRoutingCandidates(
@@ -1089,6 +1091,23 @@ async function routeFirstSessionRequest(
     request,
     candidates: await sessionRoutingCandidates(client, userId, projectName),
   })
+}
+
+async function generateFirstSessionTitle(
+  client: Awaited<ReturnType<typeof applicationDatabase>>,
+  userId: string,
+  request: string,
+): Promise<string | undefined> {
+  const preferences = await getUserPreferences(client, userId)
+  const selection = parseRoutingModelSelection(
+    preferenceModel(preferences?.preferences, 'sessionNaming') ?? preferenceModel(preferences?.preferences, 'conversation'),
+  )
+  if (!selection) return undefined
+
+  const runtime = await userProviderRuntime(userId)
+  const model = runtime.getModel(selection.providerID, selection.modelID)
+  if (!model) throw new ModelUnavailableError({ providerID: selection.providerID, modelID: selection.modelID })
+  return generateSessionTitle({ runtime, model, request })
 }
 
 async function persistSessionModel(
@@ -1738,14 +1757,14 @@ const bridgeRequestDependencies = {
   generalChatRoot, resolve, isPathWithin, resolveNewSessionRoute, NewSessionRouteError, preferenceModel,
   validateModelSelection, modelSelection, normalizeSessionTags, InvalidSessionTagsError, sessionWorkspace,
   saveState, sessions, rpcSession, sendRpc, storedSessionResponse, parseModelSelection,
-  parseRoutingModelSelection, routeFirstSessionRequest, localSessionRecord, sessionMessageText, entriesPayload,
+  parseRoutingModelSelection, routeFirstSessionRequest, generateFirstSessionTitle, localSessionRecord, sessionMessageText, entriesPayload,
   transcriptHistory, messageDeliveryId, queueClientId, MessageDeliveryConflictError,
   replayMessageDeliveryResponse, messageDeliveryResponse, QueueEntryConflictError, QueueEntryTransitionError,
   withDeliveryMetadata, redactSensitive, redactSensitiveText, ownedSessionProject, resolveToolSessionContext,
   requestedPermissionOverride, requestedMetadataPermission, sessionContextFailure, mapToolId,
   permissionAskedProperties, authorizePiToolCall, upsertRegisteredTool, listToolsForAgent, searchToolsForAgent,
   describeToolForAgent, inProcessToolGateway, createToolGatewayFromCallTool, callTool, continueApprovedTool,
-  respondToApproval, listPendingApprovals, escapeFilter, DEFAULT_SETTINGS, applicationExtensionPaths,
+  respondToApproval, listPendingApprovals, hasPendingApprovalWaiter, notifyApprovalResolution, escapeFilter, DEFAULT_SETTINGS, applicationExtensionPaths,
   homedir, root, openApiProviders, dailyUsage, runtimeProviders, active, activeKey, sseClients, encoder,
   handleProxy, redactedDiagnostic, broadcastSse, persistSessionModel, rpcData, projectEntries,
   projectResponse, encodeSessionCursor, decodeSessionCursor, sessionPageLimit, ensureNativeSessionMetadata,

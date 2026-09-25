@@ -213,7 +213,7 @@ export const settingsApi = {
 
   getDefaultPiConfig: async (userId = DEFAULT_USER_ID): Promise<PiConfig | null> => {
     try {
-      return fetchWrapper(`${API_BASE_URL}/api/settings/pi-settings/default`, {
+      return await fetchWrapper(`${API_BASE_URL}/api/settings/pi-settings/default`, {
         params: { userId },
       })
     } catch {
@@ -230,13 +230,13 @@ export const settingsApi = {
 
   reloadConfig: async (): Promise<{ success: boolean; message: string; details?: string }> => {
     try {
-      return fetchWrapper(`${API_BASE_URL}/api/settings/pi-reload`, {
+      return await fetchWrapper(`${API_BASE_URL}/api/settings/pi-reload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
     } catch (error) {
       if (error instanceof FetchError && error.statusCode === 404) {
-        return fetchWrapper(`${API_BASE_URL}/api/settings/pi-restart`, {
+        return await fetchWrapper(`${API_BASE_URL}/api/settings/pi-restart`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
         })

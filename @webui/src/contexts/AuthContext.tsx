@@ -32,6 +32,7 @@ interface AuthProviderProps {
 export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<AuthUser | null>(() => getCurrentUser())
   const [isLoading, setIsLoading] = useState(true)
+  const [isConfigLoading, setIsConfigLoading] = useState(true)
   const [config, setConfig] = useState<AuthConfig | null>(null)
   const navigate = useNavigate()
   const location = useLocation()
@@ -42,31 +43,42 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, [])
 
   useEffect(() => {
-    refreshSession().finally(() => setIsLoading(false))
+    let mounted = true
+    const defaultConfig: AuthConfig = {
+      enabledProviders: ['credentials'],
+      registrationEnabled: true,
+      isFirstUser: true,
+      adminConfigured: false,
+    }
+
+    const initialize = async () => {
+      await Promise.all([
+        refreshSession().catch(() => {
+          if (mounted) setUser(null)
+        }),
+        (async () => {
+          try {
+            const response = await fetch('/api/auth-info/config')
+            const data = response.ok ? await response.json() : defaultConfig
+            if (mounted) setConfig(data as AuthConfig)
+          } catch {
+            if (mounted) setConfig(defaultConfig)
+          } finally {
+            if (mounted) setIsConfigLoading(false)
+          }
+        })(),
+      ])
+      if (mounted) setIsLoading(false)
+    }
+
+    void initialize()
 
     const unsubscribe = onAuthChange((newUser) => {
-      setUser(newUser)
+      if (mounted) setUser(newUser)
     })
 
-    const fetchConfig = async () => {
-      try {
-        const response = await fetch('/api/auth-info/config')
-        if (response.ok) {
-          const data = await response.json()
-          setConfig(data)
-        }
-      } catch {
-        setConfig({
-          enabledProviders: ['credentials'],
-          registrationEnabled: true,
-          isFirstUser: true,
-          adminConfigured: false,
-        })
-      }
-    }
-    fetchConfig()
-
     return () => {
+      mounted = false
       unsubscribe?.()
     }
   }, [refreshSession])
@@ -103,7 +115,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const value = useMemo<AuthContextValue>(() => ({
     user,
     isAuthenticated: !!user,
-    isLoading,
+    isLoading: isLoading || isConfigLoading,
     config,
     signInWithEmail,
     signUpWithEmail,
@@ -112,6 +124,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }), [
     user,
     isLoading,
+    isConfigLoading,
     config,
     signInWithEmail,
     signUpWithEmail,

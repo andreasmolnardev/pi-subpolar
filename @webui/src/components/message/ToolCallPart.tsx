@@ -72,7 +72,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
   const { userBashCommands } = useUserBash()
   const taskSessionId = part.tool === 'task' ? getTaskSessionId(part) : undefined
   const taskSessionStatus = useSessionStatusForSession(taskSessionId)
-  const { getForCallID: getPermissionForCallID } = usePermissions()
+  const { getForCallID: getPermissionForCallID, getForToolID: getPermissionForToolID } = usePermissions()
   const { getForCallID: getQuestionForCallID } = useQuestions()
   const outputRef = useRef<HTMLDivElement>(null)
   const isUserBashCommand = part.tool === 'bash' &&
@@ -95,7 +95,11 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
     return () => { cancelled = true }
   }, [detailsUrl, expanded, lazyDetails])
 
+  const permissionToolID = part.tool === 'subpolar-tools' && typeof part.state.input?.toolId === 'string'
+    ? part.state.input.toolId
+    : part.tool
   const pendingPermission = getPermissionForCallID(part.callID, part.sessionID)
+    ?? getPermissionForToolID?.(permissionToolID, part.sessionID)
   const isWaitingPermission = part.state.status === 'running' && !!pendingPermission
   const pendingQuestion = getQuestionForCallID(part.callID, part.sessionID)
   const isWaitingQuestion = part.state.status === 'running' && !!pendingQuestion

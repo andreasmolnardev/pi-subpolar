@@ -324,6 +324,33 @@ describe('EventProvider questions', () => {
     })
   })
 
+  it('adds a pending permission received via the global monitor onEvent', async () => {
+    mocks.listRepos.mockResolvedValue([{ id: 123, fullPath: '/repo' }])
+
+    render(<Harness />, { wrapper: createWrapper() })
+
+    await waitFor(() => {
+      expect(mocks.subscribeGlobalMonitor).toHaveBeenCalled()
+    })
+
+    const lastSubscribeCall = mocks.subscribeGlobalMonitor.mock.calls[mocks.subscribeGlobalMonitor.mock.calls.length - 1]
+    const onEvent = lastSubscribeCall[0].onEvent as (data: unknown) => void
+
+    act(() => {
+      onEvent({
+        type: 'permission.asked',
+        properties: pendingPermission,
+        directory: '/repo',
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('permission-count')).toHaveTextContent('1')
+      expect(screen.getByTestId('permission-current')).toHaveTextContent('permission-1')
+      expect(screen.getByTestId('permission-call')).toHaveTextContent('permission-1')
+    })
+  })
+
   it('adds a pending question received via the global monitor onEvent', async () => {
     mocks.listRepos.mockResolvedValue([{ id: 123, fullPath: '/repo' }])
 

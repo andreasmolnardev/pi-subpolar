@@ -61,7 +61,7 @@ describe('session tags', () => {
   it('reads legacy session records without tags as empty', async () => {
     const client = pocketBaseMock([{
       id: 'legacy-record', collection: 'sessions', user_id: 'owner-a', session_id: 'legacy',
-      project_name: 'General Chat', title: 'Legacy', created_at: 1, updated_at: 2,
+      project_name: 'General Chat', title: 'Legacy', created_at: 1, updated_at: 2, tags: null,
     }])
     expect((await createProjectSessionRepository(client as never).getSession('owner-a', 'legacy'))?.tags).toEqual([])
   })

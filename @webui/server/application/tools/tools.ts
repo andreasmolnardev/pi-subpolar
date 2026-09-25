@@ -17,7 +17,7 @@ import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse 
 import { redactSensitive, redactSensitiveText } from '../../core/security-redaction.ts'
 import { createProjectSessionRepository, type SessionContext } from '../../persistence/project-store.ts'
 import { assertPathWithinWorkspace, configuredWorkspaceRoot } from '../../core/project-filesystem.ts'
-import { discardPendingApprovalInput, retainPendingApprovalInput, takePendingApprovalInput } from './approval-execution.ts'
+import { discardPendingApprovalInput, retainPendingApprovalInput, takePendingApprovalInput, waitForApprovalResolution } from './approval-execution.ts'
 import type { ToolGatewayContext } from './tool-gateway.ts'
 import { PocketBaseMemoryService, type MemoryContext, type MemoryScope } from '../../persistence/memory.ts'
 import { BrowserSessionService, BrowserRuntimeError, browserProfileAllows, type BrowserContext } from '../../browser/index.ts'
@@ -121,6 +121,7 @@ export type Approval = {
   reason: string
   created_at: number
   resolved_at?: number
+  expires_at: number
 }
 
 const piToolIds: Record<string, string> = {
@@ -153,7 +154,7 @@ const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>>
   { tool_id: 'delete_registered_tool', namespace: 'builtin', description: 'Delete an owned registered tool', adapter: 'internal', target: 'tool-registry', operation: 'delete', input_schema: { type: 'object', properties: { tool_id: { type: 'string', minLength: 1, maxLength: 160 } }, required: ['tool_id'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'delete', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
   { tool_id: 'create_cli_tool', namespace: 'builtin', description: 'Create an approved workspace-bounded CLI tool', adapter: 'internal', target: 'tool-registry', operation: 'create-cli', input_schema: { type: 'object', properties: { tool_id: { type: 'string', maxLength: 160 }, namespace: { type: 'string', maxLength: 64 }, description: { type: 'string', maxLength: 1000 }, executable: { type: 'string', enum: [...allowedCliExecutables] }, fixed_args: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 256 } }, max_args: { type: 'integer', minimum: 0, maximum: 32 }, timeout_ms: { type: 'integer', minimum: 100, maximum: 120000 }, max_output_bytes: { type: 'integer', minimum: 1024, maximum: 1048576 } }, required: ['tool_id', 'namespace', 'description', 'executable'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
   { tool_id: 'search-tool', namespace: 'builtin', description: 'Search tools available to the active agent', adapter: 'internal', target: 'tool-router', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
-  { tool_id: 'web.search', namespace: 'builtin', description: 'Search the public web using the configured search provider', adapter: 'internal', target: 'web', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 1000 }, resultCount: { type: 'integer', minimum: 1, maximum: 10 }, contextSize: { type: 'integer', minimum: 1, maximum: 32000 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'object', properties: { results: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' }, snippet: { type: 'string' } }, required: ['title', 'url', 'snippet'] } } }, required: ['results'] }, risk: 'external', requires_approval: true, enabled: true, metadata: { capability: 'web' } },
+  { tool_id: 'web.search', namespace: 'builtin', description: 'Search the public web using the configured search provider', adapter: 'internal', target: 'web', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 1000 }, resultCount: { type: 'integer', minimum: 1, maximum: 10 }, contextSize: { type: 'integer', minimum: 1, maximum: 32000 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'object', properties: { results: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' }, snippet: { type: 'string' } }, required: ['title', 'url', 'snippet'] } } }, required: ['results'] }, risk: 'external', requires_approval: false, enabled: true, metadata: { capability: 'web' } },
   { tool_id: 'web.fetch', namespace: 'builtin', description: 'Fetch bounded text content from a public web page', adapter: 'internal', target: 'web', operation: 'fetch', input_schema: { type: 'object', properties: { url: { type: 'string', minLength: 1, maxLength: 2048 }, maxCharacters: { type: 'integer', minimum: 1, maximum: 20000 } }, required: ['url'], additionalProperties: false }, output_schema: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' }, content: { type: 'string' } }, required: ['url', 'title', 'content'] }, risk: 'external', requires_approval: true, enabled: true, metadata: { capability: 'web' } },
   { tool_id: 'read', namespace: 'builtin', description: 'Read files from the selected project', adapter: 'internal', target: 'pi', operation: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } }, required: ['path'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
   { tool_id: 'grep', namespace: 'builtin', description: 'Search file contents in the selected project', adapter: 'internal', target: 'pi', operation: 'grep', input_schema: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' }, glob: { type: 'string' }, ignoreCase: { type: 'boolean' }, literal: { type: 'boolean' }, context: { type: 'number' }, limit: { type: 'number' } }, required: ['pattern'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
@@ -284,6 +285,7 @@ function toApproval(value: unknown): Approval {
     reason: redactSensitiveText(String(record.reason ?? '')),
     created_at: Number(record.created_at ?? Date.now()),
     resolved_at: typeof record.resolved_at === 'number' ? record.resolved_at : undefined,
+    expires_at: typeof record.expires_at === 'number' ? record.expires_at : Number(record.created_at ?? Date.now()) + 5 * 60 * 1000,
   }
 }
 
@@ -459,6 +461,12 @@ export async function ensureUserDefaults(client: PocketBase, userId: string): Pr
       created_at: now,
       updated_at: now,
     })
+  }
+  if (agent.name === 'master') {
+    const legacyWebSearchPolicy = policies.find((policy) => policy.tool_id === 'web.search' && policy.effect === 'approval')
+    if (legacyWebSearchPolicy) {
+      await client.collection('agent_tool_policies').update(legacyWebSearchPolicy.id, { effect: 'allow', updated_at: now })
+    }
   }
   return agent
 }
@@ -1040,7 +1048,13 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
   }
 
   const needsManualApproval = requiresManualApproval(canonicalId, tool.target)
-  const needsApproval = needsManualApproval || effective.approval_mode === 'ask' || override === 'ask' || (override !== 'allow_all' && (tool.requires_approval || matching.some((item) => item.effect === 'approval')))
+  // Master is the full-access orchestration agent. Public web search is a
+  // read-only discovery operation and should not pause that agent, even when
+  // a session uses the default `ask` permission or an older persisted policy
+  // still contains an approval effect. Explicit deny/`none` checks above still
+  // apply to keep user restrictions authoritative.
+  const masterWebSearch = agent.name === 'master' && canonicalId === 'web.search'
+  const needsApproval = !masterWebSearch && (needsManualApproval || effective.approval_mode === 'ask' || override === 'ask' || (override !== 'allow_all' && (tool.requires_approval || matching.some((item) => item.effect === 'approval'))))
   if (needsApproval) {
     const created = await createApprovalFlow(client).create({ userId, agentId: agent.id, sessionId, toolId: canonicalId, input, reason: `${canonicalId} requires approval` })
     retainPendingApprovalInput(created.approval.id, input)
@@ -1055,15 +1069,31 @@ export async function callTool(client: PocketBase, userId: string, agentName: st
       reason: created.approval.reason,
       created_at: created.approval.created_at,
       resolved_at: created.approval.resolved_at,
+      expires_at: created.approval.expires_at,
     }
     await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'approval_required', approval_id: approval.id })
+    // Register before publishing the event so an immediately resolved approval
+    // cannot be missed. The waiter is process-local; durable continuation still
+    // handles calls whose original bridge process is gone.
+    const resolution = options.waitForApproval === true
+      ? waitForApprovalResolution(approval.id, approval.expires_at)
+      : undefined
     await options.onApproval?.(approval)
     if (canonicalId === 'subagent/run' && subagentToolRunner) {
       const task = await subagentToolRunner({ ...recordObject(input), approvalId: approval.id }, { userId, agentName, sessionId, cwd: options.cwd, callId: options.callId, permissionOverride: override, capabilities: options.capabilities })
-      return { ok: false as const, toolId: canonicalId, approvalRequired: true, approvalId: approval.id, message: approval.reason, task } as never
+      if (!resolution) return { ok: false as const, toolId: canonicalId, approvalRequired: true, approvalId: approval.id, message: approval.reason, task } as never
     }
-    // Approval is now resumable. Never hold a model or HTTP request open while
-    // polling PocketBase; callers continue it through continueApprovedTool().
+    if (resolution) {
+      const decision = await resolution
+      if (decision !== 'approved') {
+        discardPendingApprovalInput(approval.id)
+        return { ok: false as const, toolId: canonicalId, error: { code: 'PERMISSION_DENIED', message: `Tool approval ${decision}` } }
+      }
+      const continued = await continueApprovedTool(client, userId, approval.id, { sessionId, cwd: options.cwd, callId: options.callId })
+      return continued.ok ? continued : { ...continued, toolId: continued.toolId ?? canonicalId }
+    }
+    // Non-blocking callers receive a durable approval and continue it through
+    // continueApprovedTool(), including after a bridge restart.
     return { ok: false as const, toolId: canonicalId, approvalRequired: true, approvalId: approval.id, message: approval.reason }
   }
 

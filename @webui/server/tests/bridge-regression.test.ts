@@ -19,14 +19,14 @@ const routeModules = [
   'settings',
   'sessions',
   'extensions',
-].map((name) => readFileSync(join(import.meta.dir, 'routes', `${name}.ts`), 'utf8'))
+].map((name) => readFileSync(join(import.meta.dir, '..', 'routes', `${name}.ts`), 'utf8'))
 const bridge = [
-  readFileSync(join(import.meta.dir, '..', 'bridge.ts'), 'utf8'),
-  readFileSync(join(import.meta.dir, '..', 'bridge-runtime.ts'), 'utf8'),
-  readFileSync(join(import.meta.dir, 'bridge-request-handler.ts'), 'utf8'),
+  readFileSync(join(import.meta.dir, '..', '..', 'bridge.ts'), 'utf8'),
+  readFileSync(join(import.meta.dir, '..', '..', 'bridge-runtime.ts'), 'utf8'),
+  readFileSync(join(import.meta.dir, '..', 'bridge-request-handler.ts'), 'utf8'),
   ...routeModules,
 ].join('\n')
-const piSession = readFileSync(join(import.meta.dir, 'application', 'pi-sdk-session.ts'), 'utf8')
+const piSession = readFileSync(join(import.meta.dir, '..', 'application', 'runtime', 'pi-sdk-session.ts'), 'utf8')
 
 function section(start: string, end: string, source = bridge): string {
   const begin = source.indexOf(start)
@@ -37,6 +37,15 @@ function section(start: string, end: string, source = bridge): string {
 }
 
 describe('bridge model delivery ordering', () => {
+  it('starts first-session title generation alongside routing before the agent prompt', () => {
+    const run = section("path.length === 4 && path[3] === 'runs' && request.method === 'POST'", "path.length === 4 && path[3] === 'state' && request.method === 'GET'")
+    expect(run).toContain('generateFirstSessionTitle')
+    expect(run).toContain('set_session_name')
+    expect(run).toContain('Promise.all([routing, title])')
+    expect(run.indexOf('Promise.all([routing, title])')).toBeLessThan(run.indexOf("type: 'prompt'"))
+    expect(run.indexOf("type: 'set_session_name'")).toBeLessThan(run.indexOf("type: 'prompt'"))
+  })
+
   it('does not persist a requested model until set_model succeeds', () => {
     const messagePost = section("path.length === 4 && path[3] === 'messages' && request.method === 'POST'", "path.length === 4 && path[3] === 'runs' && request.method === 'POST'")
     const run = section("path.length === 4 && path[3] === 'runs' && request.method === 'POST'", "path.length === 4 && path[3] === 'state' && request.method === 'GET'")

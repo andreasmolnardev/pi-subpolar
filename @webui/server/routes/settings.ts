@@ -105,9 +105,9 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
     if (!authenticatedUser) return deps.json({ message: 'Unauthorized' }, 401)
     try {
       const record = await deps.getUserPreferences(await deps.applicationDatabase(), authenticatedUser.id)
-      const preferences = { ...DEFAULT_SETTINGS, ...(record?.preferences ?? {}) }
-      if (preferences.tts) preferences.tts = { enabled: Boolean((preferences.tts as Record<string, unknown>).enabled), ...redactVoiceSettings(preferences.tts) }
-      if (preferences.stt) preferences.stt = { enabled: Boolean((preferences.stt as Record<string, unknown>).enabled), ...redactVoiceSettings(preferences.stt) }
+      const preferences = { ...deps.DEFAULT_SETTINGS, ...(record?.preferences ?? {}) }
+      if (preferences.tts) preferences.tts = { enabled: Boolean((preferences.tts as Record<string, unknown>).enabled), ...deps.redactVoiceSettings(preferences.tts) }
+      if (preferences.stt) preferences.stt = { enabled: Boolean((preferences.stt as Record<string, unknown>).enabled), ...deps.redactVoiceSettings(preferences.stt) }
       return deps.json({ preferences, updatedAt: record?.updated_at ?? Date.now() })
     } catch (error) { console.warn(`Settings read failed: ${deps.redactedDiagnostic(error)}`); return deps.json({ message: 'Settings store unavailable' }, 503) }
   }
@@ -115,18 +115,18 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
     if (!authenticatedUser) return deps.json({ message: 'Unauthorized' }, 401)
     const input = await deps.body(request)
        const preferences = deps.object(input.preferences)
-       if (preferences.tts && typeof preferences.tts === 'object') preferences.tts = { ...redactVoiceSettings(preferences.tts), apiKeyRef: typeof (preferences.tts as Record<string, unknown>).apiKeyRef === 'string' ? (preferences.tts as Record<string, unknown>).apiKeyRef : undefined }
-       if (preferences.stt && typeof preferences.stt === 'object') preferences.stt = { ...redactVoiceSettings(preferences.stt), apiKeyRef: typeof (preferences.stt as Record<string, unknown>).apiKeyRef === 'string' ? (preferences.stt as Record<string, unknown>).apiKeyRef : undefined }
+       if (preferences.tts && typeof preferences.tts === 'object') preferences.tts = { ...deps.redactVoiceSettings(preferences.tts), apiKeyRef: typeof (preferences.tts as Record<string, unknown>).apiKeyRef === 'string' ? (preferences.tts as Record<string, unknown>).apiKeyRef : undefined }
+       if (preferences.stt && typeof preferences.stt === 'object') preferences.stt = { ...deps.redactVoiceSettings(preferences.stt), apiKeyRef: typeof (preferences.stt as Record<string, unknown>).apiKeyRef === 'string' ? (preferences.stt as Record<string, unknown>).apiKeyRef : undefined }
        try {
          const client = await deps.applicationDatabase()
          const existing = await deps.getUserPreferences(client, authenticatedUser.id)
          const existingPreferences = { ...(existing?.preferences ?? {}) }
          if (existingPreferences.tts) existingPreferences.tts = deps.redactVoiceSettings(existingPreferences.tts)
          if (existingPreferences.stt) existingPreferences.stt = deps.redactVoiceSettings(existingPreferences.stt)
-         const saved = await deps.saveUserPreferences(client, authenticatedUser.id, { ...DEFAULT_SETTINGS, ...existingPreferences, ...preferences })
+         const saved = await deps.saveUserPreferences(client, authenticatedUser.id, { ...deps.DEFAULT_SETTINGS, ...existingPreferences, ...preferences })
        const safePreferences = { ...(saved.preferences ?? {}) }
-       if (safePreferences.tts) safePreferences.tts = { enabled: Boolean((safePreferences.tts as Record<string, unknown>).enabled), ...redactVoiceSettings(safePreferences.tts) }
-       if (safePreferences.stt) safePreferences.stt = { enabled: Boolean((safePreferences.stt as Record<string, unknown>).enabled), ...redactVoiceSettings(safePreferences.stt) }
+       if (safePreferences.tts) safePreferences.tts = { enabled: Boolean((safePreferences.tts as Record<string, unknown>).enabled), ...deps.redactVoiceSettings(safePreferences.tts) }
+       if (safePreferences.stt) safePreferences.stt = { enabled: Boolean((safePreferences.stt as Record<string, unknown>).enabled), ...deps.redactVoiceSettings(safePreferences.stt) }
        return deps.json({ preferences: safePreferences, updatedAt: saved.updated_at ?? Date.now() })
     } catch (error) { console.warn(`Settings update failed: ${deps.redactedDiagnostic(error)}`); return deps.json({ message: 'Settings store unavailable' }, 503) }
   }

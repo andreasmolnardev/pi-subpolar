@@ -117,7 +117,7 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
             cwd: context.cwd,
             callId: typeof input.callId === 'string' ? input.callId : crypto.randomUUID(),
             permissionOverride: context.permission.source === 'default' ? undefined : context.permissionOverride,
-            waitForApproval: false,
+            waitForApproval: true,
             onApproval: (approval) => {
               deps.broadcastSse({
                 type: 'permission.asked',
@@ -183,9 +183,12 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
     const sessionId = decodeURIComponent(path[2] ?? '')
     if (!sessionId) return deps.json({ message: 'Session not found' }, 404)
     const client = await deps.applicationDatabase()
-    const approval = await deps.respondToApproval(client, permissionUserId, decodeURIComponent(path[4]), decision, sessionId)
+    const approvalId = decodeURIComponent(path[4])
+    const waiting = deps.hasPendingApprovalWaiter(approvalId)
+    const approval = await deps.respondToApproval(client, permissionUserId, approvalId, decision, sessionId)
     if (!approval) return deps.json({ message: 'Approval not found' }, 404)
-    if (!approved) return deps.json({ ok: true, approval })
+    deps.notifyApprovalResolution(approval.id, approved ? 'approved' : 'rejected')
+    if (!approved || waiting) return deps.json({ ok: true, approval })
     const session = await deps.createProjectSessionRepository(client).getSession(permissionUserId, sessionId)
     if (!session) return deps.json({ ok: true, approval, result: { ok: false, error: { code: 'SESSION_NOT_FOUND', message: 'Session not found' } } }, 404)
     const result = await deps.continueApprovedTool(client, permissionUserId, approval.id, { sessionId: session.id, cwd: session.directory, callId: crypto.randomUUID() })

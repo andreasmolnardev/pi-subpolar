@@ -32,7 +32,7 @@ interface ApiErrorResponse {
 
 interface FetchWrapperOptions extends RequestInit {
   timeout?: number
-  params?: Record<string, string | number | boolean | undefined>
+  params?: Record<string, string | number | boolean | null | undefined>
 }
 
 function formatDetails(details: unknown): string | undefined {
@@ -83,11 +83,11 @@ async function handleResponse(response: Response): Promise<never> {
   )
 }
 
-function buildUrl(url: string, params?: Record<string, string | number | boolean | undefined>): URL {
-  const urlObj = new URL(url, window.location.origin)
+function buildUrl(url: string, params?: Record<string, string | number | boolean | null | undefined>): URL {
+  const urlObj = new URL(url, globalThis.location?.origin ?? 'http://localhost')
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
+      if (value !== undefined && value !== null) {
         urlObj.searchParams.append(key, String(value))
       }
     })

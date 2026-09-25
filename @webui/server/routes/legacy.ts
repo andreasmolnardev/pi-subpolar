@@ -22,9 +22,12 @@ export async function handleLegacyRoute(context: BridgeRequestContext): Promise<
   }
   if (request.method === 'GET' && url.pathname === '/api/config') return deps.json({ model: undefined, default_agent: 'master', default_permission: 'ask' })
   if (request.method === 'GET' && url.pathname === '/api/command') return deps.json([])
-  if (request.method === 'GET' && url.pathname === '/api/deps.sessions/status') {
+  if (request.method === 'GET' && url.pathname === '/api/sessions/status') {
     const owned = await deps.createProjectSessionRepository(await deps.applicationDatabase()).listSessions(authenticatedUser!.id, { includeArchived: true })
-    return deps.json(Object.fromEntries(owned.map((session) => [session.id, { type: deps.active.get(deps.activeKey(authenticatedUser!.id, session.id))?.record.userId === authenticatedUser!.id ? 'busy' : 'idle' }])))
+    return deps.json(Object.fromEntries(owned.map((session) => {
+      const active = deps.active.get(deps.activeKey(authenticatedUser!.id, session.id))
+      return [session.id, { type: active?.getStatus?.() === 'busy' ? 'busy' : 'idle' }]
+    })))
   }
   if (request.method === 'GET' && url.pathname === '/api/sse/stream') {
     if (gatewayCredential) {
@@ -62,7 +65,7 @@ export async function handleLegacyRoute(context: BridgeRequestContext): Promise<
           client.enqueue(deps.encoder.encode(`id: ${event.id}\ndata: ${JSON.stringify(event.payload)}\n\n`))
         }
         deps.sseClients.add(client)
-        const connected = [...active.values()].filter((session) => session.record.userId === eventUserId).length
+        const connected = [...deps.active.values()].filter((session) => session.record.userId === eventUserId).length
         client.enqueue(deps.encoder.encode(`event: connected\ndata: ${JSON.stringify({ clientId: 'pi-local', connected, total: connected })}\n\n`))
         heartbeat = setInterval(() => client?.enqueue(deps.encoder.encode('event: heartbeat\ndata: {}\n\n')), 30000)
       },

@@ -118,7 +118,9 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
     try {
       await deps.validateModelSelection(authenticatedUser!.id, selectedModel)
     } catch (error) {
-      if (error instanceof ModelUnavailableError) return deps.json({ error: error.message, code: error.code }, 409)
+      if (error instanceof Error && (error as { code?: unknown }).code === 'MODEL_UNAVAILABLE') {
+        return deps.json({ error: error.message, code: 'MODEL_UNAVAILABLE' }, 409)
+      }
       throw error
     }
     let tags: string[] = []
@@ -371,38 +373,52 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
           const runtimeRun = await store.reserveRuntimeRun(ownerId, id, claimedDelivery.messageId, typeof metadata.requestId === 'string' ? metadata.requestId : undefined)
           if (runtimeRun.created) await store.updateRuntimeRun(ownerId, id, claimedDelivery.messageId, 'running')
 
+          // Routing and naming are independent, tool-free model requests. Start them
+          // together before initializing the agent so neither request sees agent tools.
           // New deps.sessions opt into routing explicitly. Routing happens before the Pi
           // session is initialized so a routed project can safely change its cwd.
-          if (metadata.routing === true) {
-            const target = await deps.routeFirstSessionRequest(ownershipClient, ownerId, ownedRecord.project, claimedDelivery.content)
-            if (target) {
-              const repository = deps.createProjectSessionRepository(ownershipClient)
-              const routedProject = target.projectName
-                ? target.projectName === 'General Chat'
-                  ? deps.generalChatProject()
-                  : await repository.findProjectByName(ownerId, target.projectName)
-                : undefined
-              if (target.projectName && !routedProject) throw new Error('Routed project is unavailable')
-              const routedDirectory = routedProject
-                ? routedProject.name === 'General Chat' ? deps.sessionWorkspace(id) : routedProject.path
-                : undefined
-              const updated = await repository.updateSession(ownerId, id, {
-                profile: target.agentName,
-                ...(target.projectName ? { project: target.projectName } : {}),
-                ...(routedDirectory ? { directory: routedDirectory } : {}),
+          const routing = metadata.routing === true
+            ? deps.routeFirstSessionRequest(ownershipClient, ownerId, ownedRecord.project, claimedDelivery.content)
+            : Promise.resolve(null)
+          const shouldGenerateTitle = ownedRecord.title === 'Untitled session'
+          const title = shouldGenerateTitle && typeof deps.generateFirstSessionTitle === 'function'
+            ? deps.generateFirstSessionTitle(ownershipClient, ownerId, claimedDelivery.content).catch((error: unknown) => {
+                console.warn(`Session title generation failed: ${deps.redactedDiagnostic(error)}`)
+                return undefined
               })
-              if (!updated) throw new Error('Session was not found after routing')
-              Object.assign(ownedRecord, deps.localSessionRecord(updated))
-              const local = deps.sessions.find((session) => session.id === id && session.userId === ownerId)
-              if (local && local !== ownedRecord) Object.assign(local, deps.localSessionRecord(updated))
-              await deps.saveState(ownedRecord)
-            }
+            : Promise.resolve(undefined)
+          const [target, generatedTitle] = await Promise.all([routing, title])
+
+          if (target) {
+            const repository = deps.createProjectSessionRepository(ownershipClient)
+            const routedProject = target.projectName
+              ? target.projectName === 'General Chat'
+                ? deps.generalChatProject()
+                : await repository.findProjectByName(ownerId, target.projectName)
+              : undefined
+            if (target.projectName && !routedProject) throw new Error('Routed project is unavailable')
+            const routedDirectory = routedProject
+              ? routedProject.name === 'General Chat' ? deps.sessionWorkspace(id) : routedProject.path
+              : undefined
+            const updated = await repository.updateSession(ownerId, id, {
+              profile: target.agentName,
+              ...(target.projectName ? { project: target.projectName } : {}),
+              ...(routedDirectory ? { directory: routedDirectory } : {}),
+            })
+            if (!updated) throw new Error('Session was not found after routing')
+            Object.assign(ownedRecord, deps.localSessionRecord(updated))
+            const local = deps.sessions.find((session) => session.id === id && session.userId === ownerId)
+            if (local && local !== ownedRecord) Object.assign(local, deps.localSessionRecord(updated))
+            await deps.saveState(ownedRecord)
           }
 
           const selectedModel = deps.modelSelection(metadata.model)
           if (selectedModel) {
             await deps.sendRpc(id, { type: 'set_model', provider: selectedModel.providerID, modelId: selectedModel.modelID }, ownedRecord)
             await deps.persistSessionModel(ownershipClient, ownerId, id, ownedRecord, selectedModel)
+          }
+          if (generatedTitle) {
+            await deps.sendRpc(id, { type: 'set_session_name', name: generatedTitle }, ownedRecord)
           }
           // The session runtime was selected from PocketBase when the Pi session
           // was created; filesystem `/profile` commands are intentionally gone.

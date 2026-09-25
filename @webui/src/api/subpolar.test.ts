@@ -290,6 +290,20 @@ describe('SubpolarClient', () => {
     )
   })
 
+  it('responds to permissions through the native approval route', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+    await new SubpolarClient('/api/opencode', '/repo').respondToPermission('ses_1', 'approval_1', 'once')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/session/ses_1/permissions/approval_1?directory=%2Frepo',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ response: 'once' }),
+      }),
+    )
+  })
+
   it('rejects an interrupted delivery instead of clearing the first-send handoff', async () => {
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ messageID: 'optimistic_user_stale', state: 'pending' }), { status: 201 }))

@@ -20,6 +20,7 @@ import { loginLoader, registerLoader, setupLoader } from './lib/auth-loaders'
 import { MobileTabBar } from '@/components/navigation/MobileTabBar'
 import { MobileSheetHost } from '@/components/navigation/MobileSheetHost'
 import { DesktopSidebar } from '@/components/navigation/DesktopSidebar'
+import { GlobalPermissionPrompt } from '@/components/session/GlobalPermissionPrompt'
 import { useTheme } from './hooks/useTheme'
 import { useSettingsDialog } from './hooks/useSettingsDialog'
 import { useRightEdgeSwipe, useSwipeBack } from './hooks/useMobile'
@@ -140,6 +141,7 @@ function AppShell() {
       </div>
       <MobileTabBar />
       <MobileSheetHost />
+      <GlobalPermissionPrompt />
       <HealthMonitor />
       <SettingsDialog />
       <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
@@ -156,10 +158,21 @@ function AuthRoot() {
   return <AppShell />
 }
 
+function AuthenticatedProviders() {
+  const { isAuthenticated, isLoading } = useAuth()
+
+  if (isLoading || !isAuthenticated) return <Outlet />
+  return (
+    <TTSProvider>
+      <Outlet />
+    </TTSProvider>
+  )
+}
+
 function RouterRoot() {
   return (
     <AuthProvider>
-      <Outlet />
+      <AuthenticatedProviders />
     </AuthProvider>
   )
 }
@@ -201,13 +214,11 @@ const router = createBrowserRouter([
 function App({ suggestionProvider }: { suggestionProvider?: CompletionSuggestionProvider } = {}) {
   return (
     <QueryClientProvider client={queryClient}>
-      <TTSProvider>
-        <SwipeNavigationProvider>
-          <CompletionSuggestionContext.Provider value={suggestionProvider ?? unavailableCompletionSuggestionProvider}>
-            <RouterProvider router={router} />
-          </CompletionSuggestionContext.Provider>
-        </SwipeNavigationProvider>
-      </TTSProvider>
+      <SwipeNavigationProvider>
+        <CompletionSuggestionContext.Provider value={suggestionProvider ?? unavailableCompletionSuggestionProvider}>
+          <RouterProvider router={router} />
+        </CompletionSuggestionContext.Provider>
+      </SwipeNavigationProvider>
     </QueryClientProvider>
   )
 }

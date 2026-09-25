@@ -103,6 +103,7 @@ export class PiSdkSession<TClient = unknown> {
   private readonly ready: Promise<void>
   private runtimeAgentName: string
   private runtimePermissionOverride: PermissionOverride
+  private generationStatus: 'busy' | 'idle' = 'idle'
   private session!: AgentSession
   private modelRuntime!: ProviderRuntime
 
@@ -194,8 +195,14 @@ export class PiSdkSession<TClient = unknown> {
       ...(sentQueueClientId ? { queueDelivery: 'sent', queueClientId: sentQueueClientId } : {}),
     })
     const sessionID = this.record.id
-    if (event.type === 'agent_start' || event.type === 'turn_start') this.options.host.publishStatus(this.record, 'busy')
-    if (event.type === 'agent_end' || event.type === 'agent_settled') this.options.host.publishStatus(this.record, 'idle')
+    if (event.type === 'agent_start' || event.type === 'turn_start') {
+      this.generationStatus = 'busy'
+      this.options.host.publishStatus(this.record, 'busy')
+    }
+    if (event.type === 'agent_end' || event.type === 'agent_settled') {
+      this.generationStatus = 'idle'
+      this.options.host.publishStatus(this.record, 'idle')
+    }
     if (event.type === 'agent_settled') this.options.host.onAgentSettled(this)
     if (event.type !== 'agent_settled') {
       for (const listener of this.listeners) listener(message)
@@ -206,6 +213,10 @@ export class PiSdkSession<TClient = unknown> {
   onMessage(listener: (message: RpcMessage) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  getStatus(): 'busy' | 'idle' {
+    return this.generationStatus
   }
 
   async send(command: RpcCommand): Promise<unknown> {

@@ -178,6 +178,27 @@ const findLastMessageByRole = (
   return undefined
 }
 
+const isDeliveredUserMessage = (message: Message): boolean => {
+  if (message.role !== 'user' || !('queueDelivery' in message)) return true
+  return (message as Message & { queueDelivery?: string }).queueDelivery === 'sent'
+}
+
+const isWaitingForAssistant = (messages: MessageWithParts[], pendingAssistantId: string | undefined): boolean => {
+  if (pendingAssistantId) return false
+
+  let lastUserIndex = -1
+  let lastAssistantIndex = -1
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const role = messages[index].info.role
+    if (role === 'user' && lastUserIndex < 0) lastUserIndex = index
+    if (role === 'assistant' && lastAssistantIndex < 0) lastAssistantIndex = index
+    if (lastUserIndex >= 0 && lastAssistantIndex >= 0) break
+  }
+
+  if (lastUserIndex < 0 || lastUserIndex <= lastAssistantIndex) return false
+  return isDeliveredUserMessage(messages[lastUserIndex].info)
+}
+
 interface MessageRowProps {
   msgWithParts: MessageWithParts
   nextAssistantMessage: MessageWithParts | undefined
@@ -484,7 +505,8 @@ export const MessageThread = memo(function MessageThread({
   }, [messages])
 
   const isSessionBusy = !!pendingAssistantId || isSessionStatusActive(sessionStatus)
-  const isWaitingForAssistantResponse = isSessionStatusActive(sessionStatus) && !pendingAssistantId
+  const isWaitingForAssistantResponse = sessionStatus.type === 'busy'
+    && isWaitingForAssistant(messages ?? [], pendingAssistantId)
   const setSessionTodos = useSessionTodos((state) => state.setTodos)
 
   useEffect(() => {

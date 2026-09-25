@@ -2,6 +2,42 @@
 // @ts-nocheck
 import type { BridgeRequestContext } from '../bridge-route-context.ts'
 
+type ModelSelection = { providerID: string; modelID: string }
+type ModelState = { recent: ModelSelection[]; favorite: ModelSelection[]; variant: Record<string, string | undefined> }
+
+function object(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function modelSelection(value: unknown): ModelSelection | undefined {
+  const item = object(value)
+  const providerID = typeof item.providerID === 'string' ? item.providerID.trim() : ''
+  const modelID = typeof item.modelID === 'string' ? item.modelID.trim() : ''
+  return providerID && modelID ? { providerID, modelID } : undefined
+}
+
+function modelSelections(value: unknown): ModelSelection[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    const selection = modelSelection(item)
+    return selection ? [selection] : []
+  })
+}
+
+function modelState(value: unknown): ModelState {
+  const state = object(value)
+  const variant = Object.fromEntries(Object.entries(object(state.variant)).filter(([, item]) => typeof item === 'string')) as Record<string, string | undefined>
+  return {
+    recent: modelSelections(state.recent),
+    favorite: modelSelections(state.favorite),
+    variant,
+  }
+}
+
+function sameModel(left: ModelSelection, right: ModelSelection): boolean {
+  return left.providerID === right.providerID && left.modelID === right.modelID
+}
+
 export async function handleProvidersRoute(context: BridgeRequestContext): Promise<Response | undefined> {
   const { request, url, path, correlationId, deps, gatewayCredential, internalRequest } = context
   let authenticatedUser = context.authenticatedUser
@@ -50,6 +86,41 @@ export async function handleProvidersRoute(context: BridgeRequestContext): Promi
           }
         }
         return deps.json({ message: 'Not found' }, 404)
+      }
+
+      if (path[2] === 'model-state' && path.length === 3) {
+        const client = await deps.applicationDatabase()
+        const record = await deps.getUserPreferences(client, userId)
+        const preferences = object(record?.preferences)
+        const current = modelState(preferences.modelState)
+        if (request.method === 'GET') return deps.json(current)
+        if (request.method === 'POST') {
+          const input = object(await deps.body(request))
+          const next: ModelState = {
+            recent: [...current.recent],
+            favorite: [...current.favorite],
+            variant: { ...current.variant },
+          }
+          if (input.recent !== undefined) {
+            const selection = modelSelection(input.recent)
+            if (!selection) return deps.json({ message: 'recent must contain providerID and modelID' }, 400)
+            next.recent = [selection, ...next.recent.filter((item) => !sameModel(item, selection))].slice(0, 50)
+          }
+          if (input.removeRecent !== undefined) {
+            const selection = modelSelection(input.removeRecent)
+            if (!selection) return deps.json({ message: 'removeRecent must contain providerID and modelID' }, 400)
+            next.recent = next.recent.filter((item) => !sameModel(item, selection))
+          }
+          if (input.favorite !== undefined) {
+            const selection = modelSelection(input.favorite)
+            if (!selection) return deps.json({ message: 'favorite must contain providerID and modelID' }, 400)
+            next.favorite = next.favorite.some((item) => sameModel(item, selection))
+              ? next.favorite.filter((item) => !sameModel(item, selection))
+              : [...next.favorite, selection]
+          }
+          await deps.saveUserPreferences(client, userId, { ...preferences, modelState: next })
+          return deps.json(next)
+        }
       }
 
       const accountService = await deps.providerAccountService()

@@ -1,6 +1,7 @@
 import { fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
 import { API_BASE_URL } from '@/config'
 import type { GeneralChatStatus, GeneralChatInitRequest } from '@subpolar/shared/types'
+import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 
 export interface Project {
   id: number | null
@@ -27,6 +28,20 @@ export async function listProjects(): Promise<Project[]> {
 }
 
 export async function getProject(id: number): Promise<Project> {
+  if (id === GENERAL_CHAT_PROJECT_ID) {
+    const res = await fetchWrapper<{ directory: string }>(`${API_BASE_URL}/api/projects/general-chat`)
+    return {
+      id: GENERAL_CHAT_PROJECT_ID,
+      name: 'General Chat',
+      directory: res.directory,
+      fullPath: res.directory,
+      status: 'ready',
+      createdAt: 0,
+      updatedAt: 0,
+      isGeneralChat: true,
+    }
+  }
+
   const res = await fetchWrapper<{ project: Project }>(`${API_BASE_URL}/api/projects/${id}`)
   return res.project
 }
@@ -56,18 +71,16 @@ export async function updateProject(
 }
 
 export async function getDefaultProjectDirectory(projectName: string, userId?: string): Promise<string> {
-  const params = new URLSearchParams({ projectName })
-  if (userId) params.set('userId', userId)
-  const res = await fetchWrapper<{ directory: string }>(`${API_BASE_URL}/api/projects/default-directory?${params}`)
+  const res = await fetchWrapper<{ directory: string }>(`${API_BASE_URL}/api/projects/default-directory`, {
+    params: { projectName, userId },
+  })
   return res.directory
 }
 
 export async function listProjectDirectories(path?: string, userId?: string): Promise<{ currentPath: string; directories: Array<{ name: string; path: string }> }> {
-  const params = new URLSearchParams()
-  if (path) params.set('path', path)
-  if (userId) params.set('userId', userId)
-  const query = params.toString() ? `?${params}` : ''
-  return fetchWrapper(`${API_BASE_URL}/api/projects/directories${query}`)
+  return fetchWrapper(`${API_BASE_URL}/api/projects/directories`, {
+    params: { path, userId },
+  })
 }
 
 export type MentionContextItem = { type: 'file' | 'skill'; value: string }
@@ -76,8 +89,9 @@ export async function listProjectMentions(directory: string, query: string): Pro
   files: string[]
   skills: Array<{ name: string; description?: string }>
 }> {
-  const params = new URLSearchParams({ directory, query })
-  return fetchWrapper(`${API_BASE_URL}/api/projects/mentions?${params}`)
+  return fetchWrapper(`${API_BASE_URL}/api/projects/mentions`, {
+    params: { directory, query },
+  })
 }
 
 export async function loadMentionContext(directory: string, mentions: MentionContextItem[]): Promise<string> {

@@ -76,7 +76,7 @@ async function gateway(context: RoutingContext, path: string, requestBody: Recor
         cwd: context.cwd,
         callId: typeof requestBody.callId === 'string' ? requestBody.callId : undefined,
         permissionOverride: context.permissionOverride,
-        waitForApproval: false,
+        waitForApproval: true,
         onApproval: context.onApproval,
         capabilities: context.capabilities,
       },
