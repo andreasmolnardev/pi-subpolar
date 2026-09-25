@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { CircleChevronDown } from 'lucide-react'
@@ -50,6 +50,13 @@ export function NewSession() {
   const [model, setModel] = useState('__auto__')
   const [customized, setCustomized] = useState(() => Boolean(route.agentName))
   const [hoveringCustomize, setHoveringCustomize] = useState(() => Boolean(route.agentName))
+  const [controlsPinned, setControlsPinned] = useState(false)
+  const customizationCardRef = useRef<HTMLDivElement>(null)
+  const customizationHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => {
+    if (customizationHideTimerRef.current) clearTimeout(customizationHideTimerRef.current)
+  }, [])
 
   useEffect(() => {
     const context = contextQuery.data
@@ -90,7 +97,33 @@ export function NewSession() {
 
   const context = contextQuery.data
   const selectedPermission = permission ?? context.defaults.permission
-  const controlsVisible = customized || hoveringCustomize
+  const controlsVisible = customized || hoveringCustomize || controlsPinned
+  const cancelCustomizationHide = () => {
+    if (customizationHideTimerRef.current) {
+      clearTimeout(customizationHideTimerRef.current)
+      customizationHideTimerRef.current = null
+    }
+  }
+  const scheduleCustomizationHide = () => {
+    if (customized) return
+    cancelCustomizationHide()
+    customizationHideTimerRef.current = setTimeout(() => {
+      setHoveringCustomize(false)
+      customizationHideTimerRef.current = null
+    }, 2000)
+  }
+  const handleSelectOpenChange = (open: boolean) => {
+    if (open) {
+      setControlsPinned(true)
+      return
+    }
+
+    requestAnimationFrame(() => {
+      const pointerOnRow = customizationCardRef.current?.matches(':hover') ?? false
+      if (pointerOnRow) setHoveringCustomize(true)
+      setControlsPinned(false)
+    })
+  }
   const markCustomized = () => {
     setCustomized(true)
     setHoveringCustomize(true)
@@ -101,27 +134,39 @@ export function NewSession() {
       <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-4 pb-12 sm:pb-16">
         <div className="flex w-full max-w-3xl flex-col items-center gap-6">
           <div
+            ref={customizationCardRef}
             className="w-full text-center"
-            onMouseEnter={() => setHoveringCustomize(true)}
-            onMouseLeave={() => { if (!customized) setHoveringCustomize(false) }}
-            onFocus={() => setHoveringCustomize(true)}
+            onMouseEnter={() => { cancelCustomizationHide(); setHoveringCustomize(true) }}
+            onMouseLeave={scheduleCustomizationHide}
+            onFocus={() => { cancelCustomizationHide(); setHoveringCustomize(true) }}
           >
-            {!controlsVisible ? (
-              <button
-                type="button"
-                className="group inline-flex items-center gap-1 text-2xl text-muted-foreground transition-all duration-300 hover:-translate-y-2 hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                onClick={() => setHoveringCustomize(true)}
-                aria-label="Customize project, agent, model, and permissions"
+            <p className="mb-2 text-2xl text-muted-foreground">Ready to dive in</p>
+            <div className="relative h-8 max-h-8 overflow-hidden">
+              <div
+                aria-hidden={controlsVisible}
+                inert={controlsVisible}
+                className={`absolute inset-0 flex h-8 max-h-8 items-center justify-center transition-transform duration-300 ease-out ${controlsVisible ? '-translate-y-full' : 'translate-y-0'}`}
               >
-                <span>Your request will be routed to a matching agent.</span>
-                <span className="text-base underline decoration-dotted underline-offset-4">Customize</span>
-              </button>
-            ) : (
-              <div className="animate-in slide-in-from-bottom-2 fade-in duration-300">
-                <p className="mb-2 text-2xl text-muted-foreground">Ready to dive in</p>
-                <div className="flex flex-wrap items-center justify-center gap-1 text-sm">
-                  <span className="text-muted-foreground">Project</span>
+                <button
+                  type="button"
+                  tabIndex={controlsVisible ? -1 : 0}
+                  className="group inline-flex h-8 max-h-8 items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  onClick={() => setHoveringCustomize(true)}
+                  aria-label="Customize project, agent, model, and permissions"
+                >
+                  <span>Your request will be routed to a matching agent.</span>
+                  <span className="text-xs underline decoration-dotted underline-offset-4">Customize</span>
+                </button>
+              </div>
+              <div
+                aria-hidden={!controlsVisible}
+                inert={!controlsVisible}
+
+                className={`absolute inset-0 h-8 max-h-8 transition-transform duration-300 ease-out ${controlsVisible ? 'translate-y-0' : 'translate-y-full pointer-events-none'}`}
+              >
+                <div className="flex h-8 max-h-8 w-full min-w-0 flex-nowrap items-center justify-center gap-1 overflow-hidden whitespace-nowrap text-sm">
                   <Select
+                    onOpenChange={handleSelectOpenChange}
                     value={resolvedProjectId}
                     onValueChange={(value) => {
                       if (value !== resolvedProjectId) markCustomized()
@@ -137,8 +182,9 @@ export function NewSession() {
                       {projectOptions.map((project) => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                  <span className="text-muted-foreground">· Agent</span>
+                  <span aria-hidden="true" className="text-muted-foreground">•</span>
                   <Select
+                    onOpenChange={handleSelectOpenChange}
                     value={agentName ?? '__default__'}
                     onValueChange={(value) => {
                       if (value !== '__default__' || agentName !== undefined) markCustomized()
@@ -146,22 +192,22 @@ export function NewSession() {
                     }}
                   >
                     <SelectTrigger className="h-8 w-auto gap-1 border-0 bg-transparent px-2 text-sm font-normal shadow-none hover:bg-accent focus:ring-0 [&>svg:last-child]:hidden">
-                      <SelectValue placeholder="Route automatically" />
+                      <SelectValue placeholder="Auto agent" />
                       <CircleChevronDown className="h-4 w-4 text-muted-foreground" />
                     </SelectTrigger>
                     <SelectContent className="max-h-[300px] overflow-y-auto">
-                      <SelectItem value="__default__">Route automatically</SelectItem>
+                      <SelectItem value="__default__">Auto agent</SelectItem>
                       {visibleAgents.map((agent) => <SelectItem key={agent.name} value={agent.name}>{agent.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                  <span className="text-muted-foreground">· Model</span>
-                  <Select value={model} onValueChange={(value) => { if (value !== model) markCustomized(); setModel(value) }}>
+                  <span aria-hidden="true" className="text-muted-foreground">•</span>
+                  <Select onOpenChange={handleSelectOpenChange} value={model} onValueChange={(value) => { if (value !== model) markCustomized(); setModel(value) }}>
                     <SelectTrigger className="h-8 w-auto max-w-48 gap-1 border-0 bg-transparent px-2 text-sm font-normal shadow-none hover:bg-accent focus:ring-0 [&>svg:last-child]:hidden">
-                      <SelectValue placeholder="Default conversation model" />
+                      <SelectValue placeholder="Auto model" />
                       <CircleChevronDown className="h-4 w-4 text-muted-foreground" />
                     </SelectTrigger>
                     <SelectContent className="max-h-[300px] overflow-y-auto">
-                      <SelectItem value="__auto__">Runtime default</SelectItem>
+                      <SelectItem value="__auto__">Auto model</SelectItem>
                       {Array.from(new Map(modelOptions.map((option) => [option.provider, option])).values()).map((option) => (
                         <SelectGroup key={option.provider}>
                           <SelectLabel>{option.provider}</SelectLabel>
@@ -170,8 +216,8 @@ export function NewSession() {
                       ))}
                     </SelectContent>
                   </Select>
-                  <span className="text-muted-foreground">· Permission level</span>
-                  <Select value={selectedPermission} onValueChange={(value) => { if (value !== selectedPermission) markCustomized(); setPermission(value) }}>
+                  <span aria-hidden="true" className="text-muted-foreground">•</span>
+                  <Select onOpenChange={handleSelectOpenChange} value={selectedPermission} onValueChange={(value) => { if (value !== selectedPermission) markCustomized(); setPermission(value) }}>
                     <SelectTrigger className="h-8 w-auto gap-1 border-0 bg-transparent px-2 text-sm font-normal shadow-none hover:bg-accent focus:ring-0 [&>svg:last-child]:hidden">
                       <SelectValue />
                       <CircleChevronDown className="h-4 w-4 text-muted-foreground" />
@@ -185,7 +231,7 @@ export function NewSession() {
                   </Select>
                 </div>
               </div>
-            )}
+            </div>
           </div>
 
           <ChatInputBar
