@@ -22,6 +22,7 @@ const routeModules = [
 ].map((name) => readFileSync(join(import.meta.dir, 'routes', `${name}.ts`), 'utf8'))
 const bridge = [
   readFileSync(join(import.meta.dir, '..', 'bridge.ts'), 'utf8'),
+  readFileSync(join(import.meta.dir, '..', 'bridge-runtime.ts'), 'utf8'),
   readFileSync(join(import.meta.dir, 'bridge-request-handler.ts'), 'utf8'),
   ...routeModules,
 ].join('\n')
