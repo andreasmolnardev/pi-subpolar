@@ -2,9 +2,28 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'bun:test'
 
+const routeModules = [
+  'auth',
+  'gateway',
+  'automations',
+  'inbox',
+  'notifications',
+  'agents',
+  'tasks',
+  'browser',
+  'providers',
+  'runtime',
+  'projects',
+  'legacy',
+  'tools',
+  'settings',
+  'sessions',
+  'extensions',
+].map((name) => readFileSync(join(import.meta.dir, 'routes', `${name}.ts`), 'utf8'))
 const bridge = [
   readFileSync(join(import.meta.dir, '..', 'bridge.ts'), 'utf8'),
   readFileSync(join(import.meta.dir, 'bridge-request-handler.ts'), 'utf8'),
+  ...routeModules,
 ].join('\n')
 const piSession = readFileSync(join(import.meta.dir, 'pi-sdk-session.ts'), 'utf8')
 
