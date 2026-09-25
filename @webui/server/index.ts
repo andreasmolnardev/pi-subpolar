@@ -41,7 +41,7 @@ export {
   type PermissionOverride,
   type ToolDefinition,
   configureSubagentToolRunner,
-} from './application/tools'
+} from './application/tools/tools.ts'
 
 export {
   ApprovalFlowService,
@@ -49,7 +49,7 @@ export {
   type ApprovalFlowApproval,
   type ApprovalContinueResult,
   type ApprovalDecision,
-} from './application/approval-flow.ts'
+} from './application/tools/approval-flow.ts'
 
 export {
   createToolGateway,
@@ -61,7 +61,7 @@ export {
   type ToolGatewayContext,
   type ToolGatewayRequest,
   type ToolGatewayResult,
-} from './application/tool-gateway.ts'
+} from './application/tools/tool-gateway.ts'
 
 export {
   AgentRuntimeError,
@@ -69,7 +69,7 @@ export {
   loadAgentRuntime,
   type AgentRuntime,
   type PiRuntimeConfiguration,
-} from './application/agent-runtime.ts'
+} from './application/runtime/agent-runtime.ts'
 
 export {
   SessionContextError,
@@ -94,7 +94,7 @@ export {
   type McpAdapter,
   type McpServerConfig,
   type McpToolReference,
-} from './application/mcp-adapter.ts'
+} from './application/tools/mcp-adapter.ts'
 
 export * from './core/request-security.ts'
 export * from './core/network-policy.ts'
@@ -104,10 +104,10 @@ export { createOwnerBoundSkillStore, type OwnerBoundSkillStore } from './persist
 export * from './core/project-filesystem.ts'
 
 export * from './persistence/provider-accounts.ts'
-export * from './application/provider-catalog.ts'
-export * from './application/provider-login-flow.ts'
+export * from './application/runtime/provider-catalog.ts'
+export * from './application/runtime/provider-login-flow.ts'
 export * from './persistence/provider-login-flow-store.ts'
-export * from './application/provider-runtime.ts'
+export * from './application/runtime/provider-runtime.ts'
 export * from './persistence/custom-providers.ts'
 export * from './persistence/gateway-credentials.ts'
 export * from './persistence/pocketbase-runtime-store.ts'
@@ -118,10 +118,11 @@ export * from './git/executor.ts'
 export * from './git/policy.ts'
 export * from './git/service.ts'
 export * from './application/task-control-plane.ts'
-export * from './application/automation.ts'
+export * from './application/automations/automation.ts'
+export * from './application/automations/automation-task.ts'
 export * from './persistence/inbox.ts'
 export * from './persistence/notifications.ts'
-export * from './application/subagent-control.ts'
+export * from './application/tools/subagent-control.ts'
 export * from './git/worktree-control.ts'
 export * from './browser/index.ts'
 export * from './voice/index.ts'

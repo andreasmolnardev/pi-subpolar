@@ -115,7 +115,7 @@ import {
 
 } from './server/index.ts'
 import { SkillConflictError, SkillNotFoundError, SkillValidationError } from '../packages/subpolar-contracts/src/index.ts'
-import { createSkillContextAudit, effectiveAgentConfiguration } from './server/application/tools.ts'
+import { createSkillContextAudit, effectiveAgentConfiguration } from './server/application/tools/tools.ts'
 import {
   NewSessionRouteError,
   resolveNewSessionRoute,
@@ -124,7 +124,7 @@ import {
   routeSessionRequest,
   parseRoutingModelSelection,
   type SessionRoutingCandidate,
-} from './server/application/session-routing.ts'
+} from './server/application/runtime/session-routing.ts'
 import {
   assertSafeBrowserMutation,
   isAllowedOrigin,
@@ -138,9 +138,9 @@ import {
 import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse } from './server/core/network-policy.ts'
 import { redactSensitive, redactSensitiveText } from './server/core/security-redaction.ts'
 import { handleVoiceRoute, localVoiceBackends, type VoiceBackends, redactVoiceSettings, VoiceAuthorizationError } from './server/voice/index.ts'
-import { permissionAskedProperties } from './server/application/approval-event.ts'
+import { permissionAskedProperties } from './server/application/tools/approval-event.ts'
 import { escapeFilter } from './server/persistence/pocketbase.ts'
-import { proposeTools, registerToolDraft } from './server/application/tools-teach.ts'
+import { proposeTools, registerToolDraft } from './server/application/tools/tools-teach.ts'
 import { InvalidSessionTagsError, normalizeSessionTags } from './server/persistence/project-store.ts'
 import { createSuggestionService, type SuggestionProvider } from './server/application/suggestions.ts'
 import { createBridgeRequestHandler } from './server/bridge-request-handler.ts'
@@ -154,7 +154,7 @@ import {
   type RpcCommand,
   type RpcMessage,
   type SessionRecord,
-} from './server/application/pi-sdk-session.ts'
+} from './server/application/runtime/pi-sdk-session.ts'
 
 import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/core/project-filesystem.ts'
 import { GitPathPolicy } from './server/git/policy.ts'

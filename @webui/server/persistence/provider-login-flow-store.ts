@@ -7,7 +7,7 @@ import type {
   ProviderLoginFlowResult,
   ProviderLoginFlowStorage,
   StoredProviderLoginFlow,
-} from '../application/provider-login-flow'
+} from '../application/runtime/provider-login-flow.ts'
 
 /** The durable, non-secret provider login flow collection. */
 export const PROVIDER_LOGIN_FLOWS_COLLECTION = 'provider_login_flows'

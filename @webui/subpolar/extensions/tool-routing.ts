@@ -1,5 +1,5 @@
 import { Type } from 'typebox'
-import type { ToolGateway } from '../../server/application/tool-gateway.ts'
+import type { ToolGateway } from '../../server/application/tools/tool-gateway.ts'
 
 type ToolCall = {
   id?: unknown
@@ -24,7 +24,7 @@ type RoutingContext = {
   cwd: string
   permissionOverride?: 'ask' | 'none' | 'allow_all'
   capabilities?: readonly string[]
-  onApproval?: (approval: import('../../server/application/tools.ts').Approval) => void | Promise<void>
+  onApproval?: (approval: import('../../server/application/tools/tools.ts').Approval) => void | Promise<void>
   listTools?: () => Promise<unknown>
   searchTools?: (query: string) => Promise<unknown>
   describeTool?: (toolId: string) => Promise<unknown>
