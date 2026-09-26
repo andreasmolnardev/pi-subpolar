@@ -21,19 +21,19 @@ WebUI uses the embedded Pi SDK for execution and session authority, with a Bun b
 | PocketBase email authentication | Keep | `/api/auth`; `pb_auth` HttpOnly cookie |
 | Authenticated application routes | Keep | Bridge auth middleware |
 | PocketBase user preferences | Keep | `user_preferences` collection |
-| Central tool registry and policy checks | Keep | `/api/pi/tools/authorize`; `/api/subpolar-cli/tools/*` |
+| Central tool registry and policy checks | Keep | `/api/subpolar-cli/tools/*` |
 | Tool approvals and audit records | Keep | `tool_approvals`; `tool_call_audit` |
 
 ## Subpolar SDK integrations
 
 | Source feature | Decision | SDK/application surface |
 | --- | --- | --- |
-| Virtual project roots | SDK integration | `@webui/subpolar/extensions/projects.ts`; `/api/extensions/projects` |
-| Agent profiles and tool allowlists | SDK integration | `@webui/subpolar/extensions/agent-profiles.ts`; `/api/extensions/profiles` |
-| Registered-tool browser | SDK integration | `@webui/subpolar/extensions/list-tools.ts`; `/api/extensions/tools` |
-| Session title generation | SDK integration | `@webui/subpolar/extensions/session-title.ts`; `/api/extensions/session-title` |
-| Cross-session history search | SDK integration | `@webui/subpolar/extensions/session-history-search.ts`; `/api/extensions/session-search` |
-| OpenAPI-generated tools | SDK integration | `@webui/subpolar/extensions/openapi-tools.ts`; `/api/extensions/openapi-tools` |
+| Virtual project roots | Application route | PocketBase project/session repository; `/api/extensions/projects` |
+| Agent profiles and tool allowlists | Application route | PocketBase agent runtime and policy store; `/api/extensions/profiles` |
+| Registered-tool browser | Active SDK integration | `@webui/subpolar/extensions/list-tools.ts`; `/api/extensions/tools` |
+| Session title generation | Application runtime | WebUI session runtime; `/api/extensions/session-title` |
+| Cross-session history search | Application route | PocketBase session repository; `/api/extensions/session-search` |
+| OpenAPI-generated tools | Active SDK integration | `@webui/subpolar/extensions/openapi-tools.ts`; `/api/extensions/openapi-tools` |
 
 ## Still Left Out
 

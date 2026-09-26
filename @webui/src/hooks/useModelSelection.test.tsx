@@ -28,10 +28,10 @@ vi.mock('@/api/providers', async () => {
   return {
     ...actual,
     getProviders: vi.fn(),
-    getOpenCodeModelState: vi.fn(),
-    addOpenCodeRecentModel: vi.fn(),
-    removeOpenCodeRecentModel: vi.fn(),
-    toggleOpenCodeFavoriteModel: vi.fn(),
+    getPiModelState: vi.fn(),
+    addPiRecentModel: vi.fn(),
+    removePiRecentModel: vi.fn(),
+    togglePiFavoriteModel: vi.fn(),
   }
 })
 
@@ -46,10 +46,10 @@ vi.mock('zustand/middleware', async () => {
 const mockUseConfig = vi.mocked(usePiHarnessExports.useConfig)
 const mockUseSubpolarClient = vi.mocked(usePiHarnessExports.useSubpolarClient)
 const mockGetProviders = vi.mocked(providersApi.getProviders)
-const mockGetOpenCodeModelState = vi.mocked(providersApi.getOpenCodeModelState)
-const mockAddOpenCodeRecentModel = vi.mocked(providersApi.addOpenCodeRecentModel)
-const mockRemoveOpenCodeRecentModel = vi.mocked(providersApi.removeOpenCodeRecentModel)
-const mockToggleOpenCodeFavoriteModel = vi.mocked(providersApi.toggleOpenCodeFavoriteModel)
+const mockGetPiModelState = vi.mocked(providersApi.getPiModelState)
+const mockAddPiRecentModel = vi.mocked(providersApi.addPiRecentModel)
+const mockRemovePiRecentModel = vi.mocked(providersApi.removePiRecentModel)
+const mockTogglePiFavoriteModel = vi.mocked(providersApi.togglePiFavoriteModel)
 
 describe('useModelSelection', () => {
   beforeEach(() => {
@@ -64,22 +64,22 @@ describe('useModelSelection', () => {
       connected: [],
       default: {},
     })
-    mockGetOpenCodeModelState.mockResolvedValue({
+    mockGetPiModelState.mockResolvedValue({
       recent: [],
       favorite: [],
       variant: {},
     })
-    mockAddOpenCodeRecentModel.mockResolvedValue({
+    mockAddPiRecentModel.mockResolvedValue({
       recent: [],
       favorite: [],
       variant: {},
     })
-    mockRemoveOpenCodeRecentModel.mockResolvedValue({
+    mockRemovePiRecentModel.mockResolvedValue({
       recent: [],
       favorite: [],
       variant: {},
     })
-    mockToggleOpenCodeFavoriteModel.mockResolvedValue({
+    mockTogglePiFavoriteModel.mockResolvedValue({
       recent: [],
       favorite: [],
       variant: {},
@@ -189,7 +189,7 @@ describe('useModelSelection', () => {
 
   describe('recentModels/favoriteModels derived from React Query', () => {
     it('filters out models not present in providers', async () => {
-      mockGetOpenCodeModelState.mockResolvedValue({
+      mockGetPiModelState.mockResolvedValue({
         recent: [
           { providerID: 'AI2', modelID: 'foo' },
           { providerID: 'GreatScott', modelID: 'mimo' },
@@ -235,7 +235,7 @@ describe('useModelSelection', () => {
     })
 
     it('returns raw values when providers query is loading (undefined)', async () => {
-      mockGetOpenCodeModelState.mockResolvedValue({
+      mockGetPiModelState.mockResolvedValue({
         recent: [{ providerID: 'AI2', modelID: 'foo' }],
         favorite: [{ providerID: 'VLLM', modelID: 'bar' }],
         variant: {},
@@ -252,7 +252,7 @@ describe('useModelSelection', () => {
     })
 
     it('returns raw values when providers returns empty array', async () => {
-      mockGetOpenCodeModelState.mockResolvedValue({
+      mockGetPiModelState.mockResolvedValue({
         recent: [{ providerID: 'AI2', modelID: 'foo' }],
         favorite: [{ providerID: 'VLLM', modelID: 'bar' }],
         variant: {},
@@ -273,7 +273,7 @@ describe('useModelSelection', () => {
     })
   })
 
-  it('toggleFavorite calls toggleOpenCodeFavoriteModel and does not mutate Zustand', async () => {
+  it('toggleFavorite calls togglePiFavoriteModel and does not mutate Zustand', async () => {
     const { result } = renderHookWithProviders()
 
     await waitFor(() => {
@@ -284,9 +284,9 @@ describe('useModelSelection', () => {
     result.current.toggleFavorite(testModel)
 
     await waitFor(() => {
-      expect(mockToggleOpenCodeFavoriteModel).toHaveBeenCalledTimes(1)
+      expect(mockTogglePiFavoriteModel).toHaveBeenCalledTimes(1)
     })
-    expect(mockToggleOpenCodeFavoriteModel.mock.calls[0][0]).toEqual(testModel)
+    expect(mockTogglePiFavoriteModel.mock.calls[0][0]).toEqual(testModel)
     expect(useModelStore.getState().model).not.toEqual(testModel)
   })
 
@@ -294,12 +294,12 @@ describe('useModelSelection', () => {
     const removedModel: ModelSelection = { providerID: 'anthropic', modelID: 'claude-sonnet-4' }
     const retainedModel: ModelSelection = { providerID: 'openai', modelID: 'gpt-4.1' }
     let rejectRemove: (error: Error) => void = () => {}
-    mockGetOpenCodeModelState.mockResolvedValue({
+    mockGetPiModelState.mockResolvedValue({
       recent: [removedModel, retainedModel],
       favorite: [],
       variant: {},
     })
-    mockRemoveOpenCodeRecentModel.mockImplementation(() => new Promise((_, reject) => {
+    mockRemovePiRecentModel.mockImplementation(() => new Promise((_, reject) => {
       rejectRemove = reject
     }))
 
@@ -345,7 +345,7 @@ describe('useModelSelection', () => {
     }
 
     mockGetProviders.mockResolvedValue(providersData as any)
-    mockAddOpenCodeRecentModel.mockResolvedValue({
+    mockAddPiRecentModel.mockResolvedValue({
       recent: [{ providerID: 'anthropic', modelID: 'claude-sonnet-4' }],
       favorite: [],
       variant: {},
@@ -366,12 +366,12 @@ describe('useModelSelection', () => {
 
     expect(useModelStore.getState().model).toEqual(testModel)
     await waitFor(() => {
-      expect(mockAddOpenCodeRecentModel).toHaveBeenCalled()
-      expect(mockAddOpenCodeRecentModel.mock.calls[0][0]).toEqual(testModel)
+      expect(mockAddPiRecentModel).toHaveBeenCalled()
+      expect(mockAddPiRecentModel.mock.calls[0][0]).toEqual(testModel)
     })
 
     await waitFor(() => {
-      expect(mockAddOpenCodeRecentModel).toHaveBeenCalledTimes(1)
+      expect(mockAddPiRecentModel).toHaveBeenCalledTimes(1)
     })
   })
 

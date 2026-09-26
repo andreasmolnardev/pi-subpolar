@@ -88,10 +88,6 @@ export class SubpolarClient {
     return { ...params, directory: this.directory }
   }
 
-  private get nativeBaseURL() {
-    return this.baseURL.replace(/\/api\/opencode$/, '/api')
-  }
-
   private toLegacySession(session: { id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; archived?: boolean; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all'; revert?: SessionResponse['revert'] }) {
     const created = session.createdAt ?? Date.now()
     const updated = session.updatedAt ?? created
@@ -111,7 +107,7 @@ export class SubpolarClient {
   }
 
   async listSessions(params?: SessionListParams) {
-    const response = await fetchWrapper<{ sessions: Array<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }> }>(`${this.nativeBaseURL}/sessions`, { params: this.getParams(params) })
+    const response = await fetchWrapper<{ sessions: Array<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }> }>(`${this.baseURL}/sessions`, { params: this.getParams(params) })
     return response.sessions.map(session => this.toLegacySession(session)) as SessionListResponse
   }
 
@@ -124,7 +120,7 @@ export class SubpolarClient {
           ...(params?.order !== undefined && { order: params.order }),
           ...(params?.search !== undefined && { search: params.search }),
         })
-    const response = await fetchWrapper<{ sessions: Array<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }>; nextCursor?: string; page?: SessionPage['page'] }>(`${this.nativeBaseURL}/sessions`, { params: queryParams })
+    const response = await fetchWrapper<{ sessions: Array<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }>; nextCursor?: string; page?: SessionPage['page'] }>(`${this.baseURL}/sessions`, { params: queryParams })
     return {
       items: response.sessions.map((item) => this.toLegacySession(item)),
       nextCursor: response.nextCursor ?? response.page?.nextCursor,
@@ -133,12 +129,12 @@ export class SubpolarClient {
   }
 
   async getSession(sessionID: string): Promise<LegacySession> {
-    const session = await fetchWrapper<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all'; revert?: SessionResponse['revert'] }>(`${this.nativeBaseURL}/sessions/${sessionID}`, { params: this.getParams() })
+    const session = await fetchWrapper<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all'; revert?: SessionResponse['revert'] }>(`${this.baseURL}/sessions/${sessionID}`, { params: this.getParams() })
     return this.toLegacySession(session)
   }
 
   async createSession(data: NewSessionCreateRequest): Promise<LegacySession> {
-    const response = await fetchWrapper<{ session: { id: string; runtime: string; runtimeSessionId: string | null; title?: string; directory?: string; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all' } }>(`${this.nativeBaseURL}/sessions`, {
+    const response = await fetchWrapper<{ session: { id: string; runtime: string; runtimeSessionId: string | null; title?: string; directory?: string; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all' } }>(`${this.baseURL}/sessions`, {
       method: 'POST',
       params: this.getParams(),
       headers: { 'Content-Type': 'application/json' },
@@ -148,7 +144,7 @@ export class SubpolarClient {
   }
 
   async deleteSession(sessionID: string) {
-    return fetchWrapperVoid(`${this.nativeBaseURL}/sessions/${sessionID}`, {
+    return fetchWrapperVoid(`${this.baseURL}/sessions/${sessionID}`, {
       method: 'DELETE',
       params: this.getParams(),
     })
@@ -162,7 +158,7 @@ export class SubpolarClient {
   }
 
   async archiveSession(sessionID: string, archived: boolean) {
-    return fetchWrapper(`${this.nativeBaseURL}/sessions/${sessionID}`, {
+    return fetchWrapper(`${this.baseURL}/sessions/${sessionID}`, {
       method: 'PATCH',
       params: this.getParams(),
       headers: { 'Content-Type': 'application/json' },
@@ -171,7 +167,7 @@ export class SubpolarClient {
   }
 
   async updateSession(sessionID: string, data: { title?: string }) {
-    return fetchWrapper(`${this.nativeBaseURL}/sessions/${sessionID}`, {
+    return fetchWrapper(`${this.baseURL}/sessions/${sessionID}`, {
       method: 'PATCH',
       params: this.getParams(),
       headers: { 'Content-Type': 'application/json' },
@@ -189,14 +185,14 @@ export class SubpolarClient {
   }
 
   async abortSession(sessionID: string) {
-    return fetchWrapper(`${this.nativeBaseURL}/runs/${sessionID}/cancel`, {
+    return fetchWrapper(`${this.baseURL}/runs/${sessionID}/cancel`, {
       method: 'POST',
       params: this.getParams(),
     })
   }
 
   async listMessages(sessionID: string) {
-    const response = await fetchWrapper<{ messages: Array<{ id?: string; role?: string; content?: string; createdAt?: number; metadata?: Record<string, unknown>; info?: MessageListResponse[number]['info']; parts?: MessageListResponse[number]['parts'] }> }>(`${this.nativeBaseURL}/sessions/${sessionID}/messages`, { params: this.getParams() })
+    const response = await fetchWrapper<{ messages: Array<{ id?: string; role?: string; content?: string; createdAt?: number; metadata?: Record<string, unknown>; info?: MessageListResponse[number]['info']; parts?: MessageListResponse[number]['parts'] }> }>(`${this.baseURL}/sessions/${sessionID}/messages`, { params: this.getParams() })
     if (response.messages.every((message) => message.info && Array.isArray(message.parts))) {
       return response.messages.map((message) => ({ info: message.info!, parts: message.parts! })) as MessageListResponse
     }
@@ -320,38 +316,38 @@ export class SubpolarClient {
   }
 
   async steer(sessionID: string, data: { content: string; clientId: string }) {
-    return fetchWrapper<{ entry: QueueEntry }>(`${this.nativeBaseURL}/sessions/${sessionID}/steer`, {
+    return fetchWrapper<{ entry: QueueEntry }>(`${this.baseURL}/sessions/${sessionID}/steer`, {
       method: 'POST', params: this.getParams(), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data), timeout: 0,
     })
   }
 
   async listQueue(sessionID: string) {
-    const response = await fetchWrapper<{ entries: QueueEntry[] }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue`, { params: this.getParams() })
+    const response = await fetchWrapper<{ entries: QueueEntry[] }>(`${this.baseURL}/sessions/${sessionID}/queue`, { params: this.getParams() })
     return response.entries
   }
 
   async enqueueFollowUp(sessionID: string, data: { content: string; clientId: string }) {
-    return fetchWrapper<{ entry: QueueEntry }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue`, {
+    return fetchWrapper<{ entry: QueueEntry }>(`${this.baseURL}/sessions/${sessionID}/queue`, {
       method: 'POST', params: this.getParams(), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data), timeout: 0,
     })
   }
 
   async removeQueueEntry(sessionID: string, clientId: string) {
-    return fetchWrapper<{ entry: QueueEntry }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue/${encodeURIComponent(clientId)}`, { method: 'DELETE', params: this.getParams() })
+    return fetchWrapper<{ entry: QueueEntry }>(`${this.baseURL}/sessions/${sessionID}/queue/${encodeURIComponent(clientId)}`, { method: 'DELETE', params: this.getParams() })
   }
 
   async retryQueueEntry(sessionID: string, clientId: string) {
-    return fetchWrapper<{ entry: QueueEntry }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue/${encodeURIComponent(clientId)}`, { method: 'POST', params: this.getParams() })
+    return fetchWrapper<{ entry: QueueEntry }>(`${this.baseURL}/sessions/${sessionID}/queue/${encodeURIComponent(clientId)}`, { method: 'POST', params: this.getParams() })
   }
 
   async reorderQueueEntry(sessionID: string, clientId: string, position: number) {
-    return fetchWrapper<{ entry: QueueEntry }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue/${encodeURIComponent(clientId)}`, {
+    return fetchWrapper<{ entry: QueueEntry }>(`${this.baseURL}/sessions/${sessionID}/queue/${encodeURIComponent(clientId)}`, {
       method: 'PATCH', params: this.getParams(), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ position }),
     })
   }
 
   async clearQueue(sessionID: string) {
-    return fetchWrapper<{ entries: QueueEntry[] }>(`${this.nativeBaseURL}/sessions/${sessionID}/queue/clear`, { method: 'POST', params: this.getParams() })
+    return fetchWrapper<{ entries: QueueEntry[] }>(`${this.baseURL}/sessions/${sessionID}/queue/clear`, { method: 'POST', params: this.getParams() })
   }
 
   private async createNativeMessageAndRun(sessionID: string, data: SendPromptRequest | SendPromptAsyncRequest): Promise<{ messageID: string; state: string }> {
@@ -366,7 +362,7 @@ export class SubpolarClient {
     const permission = typeof data === 'object' && data && 'permission' in data ? data.permission : undefined
     const routing = typeof data === 'object' && data && 'routing' in data && data.routing === true
     const messageID = typeof data === 'object' && data && 'messageID' in data ? data.messageID : undefined
-    const message = await fetchWrapper<{ messageID?: string; state?: string }>(`${this.nativeBaseURL}/sessions/${sessionID}/messages`, {
+    const message = await fetchWrapper<{ messageID?: string; state?: string }>(`${this.baseURL}/sessions/${sessionID}/messages`, {
       method: 'POST',
       params: this.getParams(),
       headers: { 'Content-Type': 'application/json' },
@@ -386,7 +382,7 @@ export class SubpolarClient {
     })
     const serverMessageID = message.messageID ?? (typeof data === 'object' && data && 'messageID' in data && typeof data.messageID === 'string' ? data.messageID : undefined)
     const deliveryMessageID = serverMessageID ?? `native_${Date.now()}_${Math.random()}`
-    const delivery = await fetchWrapper<Record<string, unknown>>(`${this.nativeBaseURL}/sessions/${sessionID}/runs`, {
+    const delivery = await fetchWrapper<Record<string, unknown>>(`${this.baseURL}/sessions/${sessionID}/runs`, {
       method: 'POST',
       params: this.getParams(),
       headers: { 'Content-Type': 'application/json' },
@@ -428,42 +424,49 @@ export class SubpolarClient {
   }
 
   async getConfig() {
-    return fetchWrapper<ConfigResponse>(`${this.nativeBaseURL}/config`, {
+    const response = await fetchWrapper<{ preferences?: Record<string, unknown> }>(`${this.baseURL}/settings`, {
       params: this.getParams(),
     })
+    const preferences = response.preferences ?? {}
+    return {
+      model: typeof preferences.defaultModel === 'string' ? preferences.defaultModel : undefined,
+      default_agent: typeof preferences.defaultAgent === 'string' ? preferences.defaultAgent : 'master',
+      default_permission: 'ask',
+    } as ConfigResponse
   }
 
   async getLSPStatus() {
-    return fetchWrapper<LspStatusResponse>(`${this.nativeBaseURL}/lsp`, {
+    return fetchWrapper<LspStatusResponse>(`${this.baseURL}/lsp`, {
       params: this.getParams(),
     })
   }
 
   async updateConfig(config: Partial<ConfigResponse>) {
-    return fetchWrapper<ConfigResponse>(`${this.nativeBaseURL}/config`, {
+    const response = await fetchWrapper<{ preferences?: Record<string, unknown> }>(`${this.baseURL}/settings`, {
       method: 'PATCH',
       params: this.getParams(),
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
+      body: JSON.stringify({ preferences: config }),
     })
+    return response.preferences as ConfigResponse
   }
 
   async getProviders() {
-    return fetchWrapper(`${this.nativeBaseURL}/provider`, {
+    return fetchWrapper(`${this.baseURL}/providers/catalog`, {
       params: this.getParams(),
     })
   }
 
   async getConfigProviders() {
-    return fetchWrapper(`${this.nativeBaseURL}/config/providers`, {
+    return fetchWrapper(`${this.baseURL}/providers/catalog`, {
       params: this.getParams(),
     })
   }
 
-  async listCommands() {
-    return fetchWrapper<CommandListResponse>(`${this.nativeBaseURL}/command`, {
-      params: this.getParams(),
-    })
+  async listCommands(): Promise<CommandListResponse> {
+    // Commands were never backed by the Pi bridge; keep the existing empty result
+    // without probing the removed compatibility endpoint.
+    return [] as CommandListResponse
   }
 
   async sendCommand(sessionID: string, data: CommandRequest): Promise<SendCommandResponse> {
@@ -486,7 +489,7 @@ export class SubpolarClient {
   }
 
   async respondToPermission(sessionID: string, permissionID: string, response: 'once' | 'always' | 'reject') {
-    return fetchWrapper(`${this.nativeBaseURL}/session/${sessionID}/permissions/${permissionID}`, {
+    return fetchWrapper(`${this.baseURL}/session/${sessionID}/permissions/${permissionID}`, {
       method: 'POST',
       params: this.getParams(),
       headers: { 'Content-Type': 'application/json' },
@@ -495,7 +498,7 @@ export class SubpolarClient {
   }
 
   async listPendingPermissions() {
-    return fetchWrapper<PermissionListResponse>(`${this.nativeBaseURL}/permission`, {
+    return fetchWrapper<PermissionListResponse>(`${this.baseURL}/permission`, {
       params: this.getParams(),
     })
   }
@@ -518,7 +521,7 @@ export class SubpolarClient {
 
   async listPendingQuestions() {
     try {
-      return await fetchWrapper<QuestionListResponse>(`${this.nativeBaseURL}/question`, {
+      return await fetchWrapper<QuestionListResponse>(`${this.baseURL}/question`, {
         params: this.getParams(),
       })
     } catch (error) {
@@ -530,7 +533,7 @@ export class SubpolarClient {
   }
 
   async listAgents() {
-    return fetchWrapper<AgentListResponse>(`${this.nativeBaseURL}/agent`, {
+    return fetchWrapper<AgentListResponse>(`${this.baseURL}/agents`, {
       params: this.getParams(),
     })
   }
@@ -551,22 +554,17 @@ export class SubpolarClient {
     })
   }
 
-  async getSessionStatuses() {
-    return fetchWrapper<Record<string, { type: 'idle' } | { type: 'busy' } | { type: 'retry'; attempt: number; message: string; next: number }>>(`${this.nativeBaseURL}/sessions/status`, {
-      params: this.getParams(),
-    })
-  }
 
   async listRunEvents(runID: string) {
-    return fetchWrapper<{ events: Array<{ id: string; type: string; payload: unknown; createdAt: number }> }>(`${this.nativeBaseURL}/runs/${encodeURIComponent(runID)}/events`, {
+    return fetchWrapper<{ events: Array<{ id: string; type: string; payload: unknown; createdAt: number }> }>(`${this.baseURL}/runs/${encodeURIComponent(runID)}/events`, {
       params: this.getParams(),
     })
   }
 
   getRunEventStreamURL(runID: string) {
-    const base = this.nativeBaseURL.startsWith('http')
-      ? this.nativeBaseURL
-      : `${window.location.origin}${this.nativeBaseURL}`
+    const base = this.baseURL.startsWith('http')
+      ? this.baseURL
+      : `${window.location.origin}${this.baseURL}`
     const url = new URL(`${base}/runs/${encodeURIComponent(runID)}/events/stream`)
     if (this.directory) {
       url.searchParams.set('directory', this.directory)
@@ -575,9 +573,9 @@ export class SubpolarClient {
   }
 
   getEventSourceURL() {
-    const base = this.nativeBaseURL.startsWith('http')
-      ? this.nativeBaseURL
-      : `${window.location.origin}${this.nativeBaseURL}`
+    const base = this.baseURL.startsWith('http')
+      ? this.baseURL
+      : `${window.location.origin}${this.baseURL}`
     const url = new URL(`${base}/sse`)
     if (this.directory) {
       url.searchParams.set('directory', this.directory)

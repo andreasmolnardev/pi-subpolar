@@ -5,19 +5,12 @@ import { randomBytes } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import {
   ModelRuntime,
-  parseSessionEntries,
-  SessionManager,
 } from '@earendil-works/pi-coding-agent'
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent'
 
 
 import { entriesPayload, projectEntries, redactTranscriptPayload, type TranscriptMessage } from './transcript/projector'
 
-import projectsExtension from './subpolar/extensions/projects.ts'
-import usageExtension from './subpolar/extensions/usage.ts'
-import sessionArchiveExtension from './subpolar/extensions/session-archive.ts'
-import sessionTitleExtension from './subpolar/extensions/session-title.ts'
-import sessionHistorySearchExtension from './subpolar/extensions/session-history-search.ts'
 import listToolsExtension from './subpolar/extensions/list-tools.ts'
 import openapiTools from './subpolar/extensions/openapi-tools.ts'
 import { createToolRoutingExtension } from './subpolar/extensions/tool-routing.ts'
@@ -32,32 +25,31 @@ import {
   syncAdminFromEnv,
   getPocketBaseAdmin,
   ensureApplicationCollections,
+  SessionTranscriptRepository,
   getUserPreferences,
   saveUserPreferences,
   type PocketBaseUser,
 } from './server/index.ts'
 import {
-  authorizePiToolCall,
-  callTool,
+
   describeToolForAgent,
   ensureToolRegistry,
   ensureUserDefaults,
   listAgents,
-  listPendingApprovals,
   listToolsForAgent,
   searchToolsForAgent,
   upsertRegisteredTool,
-  respondToApproval,
-  continueApprovedTool,
   createProjectSessionRepository,
   ProjectPathConflictError,
   ensureProjectSessionCollections,
   createSessionContextResolver,
   SessionContextError,
-  createToolGatewayFromCallTool,
+  createCoreToolGateway,
+  continueCoreApprovedTool,
+  listPendingCoreApprovals,
+  respondToCoreApproval,
   loadAgentRuntime,
   type PermissionOverride,
-  type ToolGateway,
   createProviderAccountService,
   ensureProviderAccountCollections,
   type ProviderAccount,
@@ -157,6 +149,12 @@ import {
   type RpcMessage,
   type SessionRecord,
 } from './server/application/runtime/pi-sdk-session.ts'
+import {
+  createStatelessWebUiRuntime,
+  type StatelessWebUiRunInput,
+} from './server/application/runtime/stateless-webui-runtime.ts'
+import { createPiRunPort } from '../packages/subpolar-adapter-pi/src/index.ts'
+import type { RuntimeContext, RuntimeExecution, StatelessRunRequest } from '../packages/subpolar-contracts/src/index.ts'
 
 import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/core/project-filesystem.ts'
 import { GitPathPolicy } from './server/git/policy.ts'
@@ -165,7 +163,7 @@ import { GitServiceError } from './server/git/contracts.ts'
 import {
   createCapabilitiesPayload,
   createHealthPayload,
-  createLegacyHealthPayload,
+
   type DiagnosticComponents,
   errorEnvelope,
 } from './server/core/contracts.ts'
@@ -201,7 +199,6 @@ process.env.SUBPOLAR_INTERNAL_TOKEN = internalToken
 let applicationDatabasePromise: ReturnType<typeof getPocketBaseAdmin> | undefined
 let runtimeStorePromise: Promise<PocketBaseRuntimeStore> | undefined
 let applicationCollectionsReady: Promise<void> | undefined
-let inProcessToolGateway: ToolGateway | undefined
 let subagentController: SubagentController | undefined
 let subagentWorktrees: WorktreeController | undefined
 let automationWorker: ReturnType<typeof createAutomationWorker> | undefined
@@ -210,7 +207,7 @@ let automationMaintenanceInitialized = false
 let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccountService>> | undefined
 let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
 const migratedUsers = new Set<string>()
-const nativeSessionMetadataUsers = new Set<string>()
+
 const requestRateLimiter = new InProcessRateLimiter()
 const suggestionProviderModule = process.env.SUBPOLAR_SUGGESTION_PROVIDER_MODULE?.trim()
 let suggestionServicePromise: Promise<ReturnType<typeof createSuggestionService>> | undefined
@@ -274,11 +271,10 @@ async function applicationDatabase() {
       })
   }
   await applicationCollectionsReady
-  if (!inProcessToolGateway) inProcessToolGateway = createToolGatewayFromCallTool(client, callTool)
   if (!subagentController) {
     const tasks = new TaskRepository(client)
     subagentWorktrees = new WorktreeController(new PocketBaseWorktreeStore(client))
-    subagentController = new SubagentController(tasks, inProcessToolGateway, executeSubagentHost, 2, async (ownerId, parentAgent, targetAgent, projectId) => {
+    subagentController = new SubagentController(tasks, undefined, executeSubagentHost, 2, async (ownerId, parentAgent, targetAgent, projectId) => {
       const agents = await listAgents(client, ownerId)
       const parent = agents.find((agent) => agent.name === parentAgent || agent.id === parentAgent)
       const target = agents.find((agent) => agent.name === targetAgent || agent.id === targetAgent)
@@ -486,29 +482,15 @@ const allowedRpcCommands = new Set([
   'get_session_stats', 'get_entries', 'get_tree', 'get_last_assistant_text', 'set_session_name',
   'get_messages', 'get_commands', 'fork', 'clone', 'get_fork_messages',
 ])
+// Only extensions that do not own session state are loaded into the transient SDK.
+// Session browsing, search, usage, archive, projects, and title routes are handled
+// by the PocketBase-backed WebUI application routes.
 const applicationExtensionPaths = [
-
-  'projects.ts',
-  'usage.ts',
-  'session-archive.ts',
-  'session-title.ts',
-  'session-history-search.ts',
   'list-tools.ts',
   'openapi-tools.ts',
 ].map((file) => join(webuiDir, 'subpolar', 'extensions', file))
 
-// The bridge is the application host now. These resources are loaded by the SDK
-// directly; no Pi CLI process or RPC extension flags are involved.
-const applicationExtensionFactories = [
-
-  projectsExtension,
-  usageExtension,
-  sessionArchiveExtension,
-  sessionTitleExtension,
-  sessionHistorySearchExtension,
-  listToolsExtension,
-  openapiTools,
-]
+const applicationExtensionFactories = [listToolsExtension, openapiTools]
 const modelRuntimePromise = ModelRuntime.create({ refreshOnCreate: true })
 
 const DEFAULT_SETTINGS = {
@@ -678,6 +660,11 @@ async function resolveToolSessionContext(
         return record as { id: string; user_id: string; name: string; enabled?: boolean } | null
       },
     },
+    // Subagent worktrees are temporary, owner-validated workspace roots rather
+    // than children of the General Chat directory.
+    isAllowedCwd: (projectDirectory, cwd, session) => session?.id.startsWith('subagent-')
+      ? isPathWithin(configuredWorkspaceRoot(), cwd)
+      : isPathWithin(projectDirectory, cwd),
     defaultAgentName: requestedAgent ?? 'master',
   })
   // Resolve the session and project first. A request agent is only a validated
@@ -723,36 +710,7 @@ function sessionContextFailure(error: unknown): Response | undefined {
   return json({ error: error.message, code: error.code }, denied ? 403 : 400)
 }
 
-function mapToolId(toolName: unknown): string {
-  const names: Record<string, string> = { read: 'read', write: 'write', edit: 'edit', bash: 'bash', grep: 'grep', find: 'find', ls: 'ls' }
-  return typeof toolName === 'string' ? names[toolName] ?? toolName : 'unknown'
-}
 
-function readProjectsFile(filePath: string, base: string): Project[] {
-  if (!existsSync(filePath)) return []
-  try {
-    const source = object(JSON.parse(readFileSync(filePath, 'utf8')))
-    const entries = object(source.projects ?? source)
-    return Object.entries(entries).flatMap(([name, value]) => {
-      const path = typeof value === 'string' ? value : object(value).path
-      if (typeof path !== 'string') return []
-      try { return [{ name, path: assertPathWithinWorkspace(resolve(base, path), projectsRoot) }] }
-      catch { return [] }
-    })
-  } catch {
-    return []
-  }
-}
-
-function projects(): Project[] {
-  const values = [
-    ...loadProjectDefinitions(),
-    ...readProjectsFile(join(homedir(), '.pi', 'projects.json'), homedir()),
-    ...readProjectsFile(join(homedir(), '.pi', 'agent', 'projects.json'), homedir()),
-    ...readProjectsFile(join(root, '.pi', 'projects.json'), root),
-  ]
-  return [...new Map(values.map((project) => [project.name, project])).values()]
-}
 
 function generalChatProject(): Project {
   mkdirSync(generalChatRoot, { recursive: true })
@@ -763,124 +721,11 @@ function safeProjectPath(value: string): string {
   return assertPathWithinWorkspace(value, projectsRoot)
 }
 
-function nativeSessionsDir(): string {
-  const agentDir = process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR.replace(/^~/, homedir()))
-    : join(homedir(), '.pi', 'agent')
-  return process.env.PI_CODING_AGENT_SESSION_DIR
-    ? resolve(process.env.PI_CODING_AGENT_SESSION_DIR.replace(/^~/, homedir()))
-    : join(agentDir, 'sessions')
-}
-
-function entryTimestamp(value: unknown, fallback: number): number {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value)
-    if (Number.isFinite(parsed)) return parsed
-  }
-  return fallback
-}
-
-function nativeSessionRecord(filePath: string, knownProjects: Project[]): SessionRecord | undefined {
-  try {
-    const lines = readFileSync(filePath, 'utf8').split('\n')
-    const header = object(JSON.parse(lines[0] ?? ''))
-    if (header.type !== 'session' || typeof header.id !== 'string' || typeof header.cwd !== 'string') return undefined
-
-    const sessionCwd = resolve(header.cwd as string)
-    const project = knownProjects.find((item) => item.path === sessionCwd)
-      ?? (sessionCwd.startsWith(`${generalChatRoot}/`) ? generalChatProject() : undefined)
-    if (!project) return undefined
-
-    const createdAt = entryTimestamp(header.timestamp, 0)
-    let updatedAt = createdAt
-    let title: string | undefined
-
-    for (const line of lines) {
-      if (!line.trim()) continue
-      let entry: Record<string, unknown>
-      try { entry = object(JSON.parse(line)) } catch { continue }
-      updatedAt = Math.max(updatedAt, entryTimestamp(entry.timestamp, updatedAt))
-      if (entry.type === 'session_info' && typeof entry.name === 'string' && entry.name.trim()) {
-        title = entry.name.trim()
-      }
-
-    }
-
-    return {
-      id: header.id,
-      project: project.name,
-      directory: sessionCwd,
-      // The first prompt is useful as a preview, but it is not a session name.
-      // Keep the neutral title until the title extension emits session_info_changed.
-      title: title ?? 'Untitled session',
-      createdAt,
-      updatedAt,
-      tags: [],
-    }
-  } catch {
-    return undefined
-  }
-}
-
-function nativeSessionRecords(knownProjects: Project[] = projects()): SessionRecord[] {
-  const directory = nativeSessionsDir()
-  if (!existsSync(directory)) return []
-
-  try {
-    return readdirSync(directory, { withFileTypes: true }).flatMap((projectDirectory) => {
-      if (!projectDirectory.isDirectory()) return []
-      return readdirSync(join(directory, projectDirectory.name), { withFileTypes: true }).flatMap((file) => {
-        if (!file.isFile() || !file.name.endsWith('.jsonl')) return []
-        const record = nativeSessionRecord(join(directory, projectDirectory.name, file.name), knownProjects)
-        return record ? [record] : []
-      })
-    })
-  } catch {
-    return []
-  }
-}
-
-async function ensureNativeSessionMetadata(client: Awaited<ReturnType<typeof applicationDatabase>>, userId: string): Promise<void> {
-  if (nativeSessionMetadataUsers.has(userId)) return
-  const repository = createProjectSessionRepository(client)
-  const [ownedProjects, storedSessions] = await Promise.all([
-    repository.listProjects(userId),
-    repository.listSessions(userId, { includeArchived: true }),
-  ])
-  const knownProjects: Project[] = [generalChatProject(), ...ownedProjects.map((project) => ({ name: project.name, path: project.path }))]
-  const storedIds = new Set(storedSessions.map((session) => session.id))
-  for (const native of nativeSessionRecords(knownProjects)) {
-    if (storedIds.has(native.id) || !native.directory) continue
-    const project = native.project === 'General Chat' ? undefined : ownedProjects.find((candidate) => candidate.name === native.project)
-    if (native.project !== 'General Chat' && !project) continue
-    await repository.createSession(userId, {
-      id: native.id,
-      project: native.project,
-      ...(project ? { projectId: project.id } : {}),
-      title: native.title,
-      createdAt: native.createdAt,
-      updatedAt: native.updatedAt,
-      directory: native.directory,
-      tags: native.tags,
-    }).catch(() => undefined)
-  }
-  nativeSessionMetadataUsers.add(userId)
-}
-
-function syncNativeSessions(): void {
-  for (const native of nativeSessionRecords()) {
-    const matches = sessions.filter((session) => session.id === native.id)
-    if (matches.length > 1) continue
-    const stored = matches.length === 1 ? matches[0] : undefined
-    if (!stored) {
-      sessions.push(native)
-      continue
-    }
-    if (stored.title === 'Untitled session' && native.title !== 'Untitled session') stored.title = native.title
-    stored.createdAt = Math.min(stored.createdAt, native.createdAt)
-    stored.updatedAt = Math.max(stored.updatedAt, native.updatedAt)
-  }
+async function ensureApplicationSessionMetadata(client: Awaited<ReturnType<typeof applicationDatabase>>, userId: string): Promise<void> {
+  // Session metadata is authoritative in PocketBase. Keep this compatibility
+  // hook for older route wiring, but never scan or import Pi session files.
+  await ensureUserMetadata(userId)
+  void client
 }
 
 type DurableSession = {
@@ -915,12 +760,6 @@ function localSessionRecord(stored: DurableSession): SessionRecord {
   }
 }
 
-function projectFor(name: string | undefined): Project {
-  if (!name || name === '0' || name.toLocaleLowerCase() === 'general chat') return generalChatProject()
-  const value = projects().find((project) => project.name === name)
-  if (!value) throw new Error(`Unknown project: ${name}`)
-  return value
-}
 
 function projectResponse(project: Project, id: number, isGeneralChat = false) {
   return {
@@ -945,7 +784,7 @@ async function ownedProjectResponses(userId: string, client: Awaited<ReturnType<
   ]
 }
 
-function storedSessionResponse(record: SessionRecord, ownedProjects: readonly Project[] = projects()) {
+function storedSessionResponse(record: SessionRecord, ownedProjects: readonly Project[] = []) {
   const project = record.project === 'General Chat'
     ? generalChatProject()
     : ownedProjects.find((item) => item.name === record.project) ?? { name: record.project, path: record.directory ?? '' }
@@ -1127,7 +966,8 @@ async function persistSessionModel(
 
 async function transcriptHistory(sessionId: string, selection: SessionRecord) {
   if (!selection.userId) throw new Error('Session owner is unavailable')
-  const payload = entriesPayload(await sendRpc(sessionId, { type: 'get_entries' }, selection))
+  const transcript = await new SessionTranscriptRepository(await applicationDatabase()).get(selection.userId, sessionId)
+  const payload = { entries: transcript?.entries ?? [], leafId: transcript?.leafId ?? null }
   return { ...payload, messages: projectEntries(payload.entries, payload.leafId, sessionId, selection) }
 }
 
@@ -1200,22 +1040,38 @@ const piSdkSessionHost: PiSdkSessionHost<BridgeClient> = {
   }),
   getProviderRuntime: userProviderRuntime,
   createRoutingExtension: (context) => createToolRoutingExtension(context),
-  createToolGateway: (client) => inProcessToolGateway ?? createToolGatewayFromCallTool(client, callTool),
+  createToolGateway: async (client, context) => createCoreToolGateway(client, context?.userId ?? '', {
+    onApproval: (approval) => {
+      const request = approval.request && typeof approval.request === 'object' ? approval.request as Record<string, unknown> : {}
+      broadcastSse({
+        type: 'permission.asked',
+        directory: context?.cwd,
+        properties: permissionAskedProperties({ id: approval.approvalId, sessionId: typeof request.sessionId === 'string' ? request.sessionId : undefined, toolId: approval.toolId, input: request.input, reason: approval.reason ?? 'Tool approval is required' }),
+      }, context?.userId ?? approval.callId)
+    },
+  }),
   listTools: (client, userId, agentName, project) => listToolsForAgent(client, userId, agentName, project),
   searchTools: (client, userId, agentName, query) => searchToolsForAgent(client, userId, agentName, query),
   describeTool: (client, userId, agentName, toolId) => describeToolForAgent(client, userId, agentName, toolId),
   onApproval: (record, approval, directory) => {
+    const request = approval.request && typeof approval.request === 'object' ? approval.request as Record<string, unknown> : {}
     broadcastSse({
       type: 'permission.asked',
       directory,
-      properties: permissionAskedProperties({ id: approval.id, sessionId: approval.session_id, toolId: approval.tool_id, input: approval.input, reason: approval.reason }),
+      properties: permissionAskedProperties({ id: approval.approvalId, sessionId: typeof request.sessionId === 'string' ? request.sessionId : undefined, toolId: approval.toolId, input: request.input, reason: approval.reason ?? 'Tool approval is required' }),
     }, record.userId)
   },
   extensionFactories: applicationExtensionFactories,
   baseUrl: `http://127.0.0.1:${port}`,
   internalToken,
-  getNativeSessionsDir: nativeSessionsDir,
   parseModelSelection,
+  loadTranscript: async (client, userId, sessionId) => {
+    const transcript = await new SessionTranscriptRepository(client).get(userId, sessionId)
+    return transcript ? { entries: transcript.entries, leafId: transcript.leafId } : { entries: [], leafId: null }
+  },
+  saveTranscript: async (client, userId, sessionId, entries, leafId) => {
+    await new SessionTranscriptRepository(client).save(userId, sessionId, entries, leafId)
+  },
   acknowledgeQueueReceipt: acknowledgePiQueueReceipt,
   saveState,
   redactEvent: (value) => redactSensitive(value) as RpcMessage,
@@ -1236,8 +1092,30 @@ async function executeSubagentHost(input: { task: import('./server/application/t
     worktree = await subagentWorktrees.create({ ownerId: input.task.owner_id, projectId: input.task.project_id, repository: cwd, baseRef: 'HEAD', taskId: input.task.id })
     await (await applicationDatabase()).collection('tasks').update(input.task.id, { worktree_id: worktree.id, base_ref: worktree.baseRef, updated_at: Date.now() })
   }
-  const record: SessionRecord = { id: `subagent-${input.task.id}`, project: 'Subagent', title: input.task.title, createdAt: Date.now(), updatedAt: Date.now(), userId: input.task.owner_id, profile: input.task.subagent_id, directory: worktree?.path ?? cwd, tags: [] }
-  const project: Project = { name: 'Subagent', path: worktree?.path ?? cwd }
+  const sessionId = `subagent-${input.task.id}`
+  const client = await applicationDatabase()
+  const repository = createProjectSessionRepository(client)
+  const stored = await repository.createSession(input.task.owner_id, {
+    id: sessionId,
+    project: 'General Chat',
+    title: input.task.title,
+    profile: input.task.subagent_id,
+    directory: worktree?.path ?? cwd,
+    tags: ['subagent'],
+  })
+  const record: SessionRecord = {
+    id: stored.id,
+    project: stored.project,
+    title: stored.title,
+    createdAt: stored.createdAt,
+    updatedAt: stored.updatedAt,
+    userId: input.task.owner_id,
+    profile: stored.profile,
+    directory: stored.directory,
+    permissionOverride: stored.permissionOverride,
+    tags: stored.tags,
+  }
+  const project = generalChatProject()
   const session = createPiSession(record, project, input.capabilities)
   const abort = () => { void session.send({ type: 'abort' }) }
   input.signal.addEventListener('abort', abort, { once: true })
@@ -1247,6 +1125,7 @@ async function executeSubagentHost(input: { task: import('./server/application/t
   } finally {
     input.signal.removeEventListener('abort', abort)
     session.close()
+    await repository.deleteSession(input.task.owner_id, sessionId)
     if (worktree && subagentWorktrees) await subagentWorktrees.remove(worktree)
   }
 }
@@ -1389,15 +1268,9 @@ function shutdown(): void {
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
-function recordFor(id: string, userId: string): SessionRecord {
-  syncNativeSessions()
-  const record = sessions.find((session) => session.id === id && session.userId === userId)
-  if (!record) throw new Error(`Unknown session: ${id}`)
-  return record
-}
 
 async function ownedSessionRecord(client: Awaited<ReturnType<typeof applicationDatabase>>, userId: string, id: string): Promise<SessionRecord | null> {
-  await ensureNativeSessionMetadata(client, userId)
+  await ensureApplicationSessionMetadata(client, userId)
   const stored = await createProjectSessionRepository(client).getSession(userId, id)
   if (!stored) return null
   const local = sessions.find((session) => session.id === id && session.userId === userId)
@@ -1444,14 +1317,21 @@ function rpcSession(
     existing.close()
     active.delete(key)
   }
-  const record = suppliedRecord ?? recordFor(id, userId)
+  const record = suppliedRecord
+  if (!record) throw new Error('A PocketBase session record is required')
   if (record.userId !== userId) throw new Error('Session owner mismatch')
-  const configuredProject = suppliedProject ?? (suppliedRecord ? undefined : projectFor(record.project))
+  const configuredProject = suppliedProject
   if (!configuredProject) throw new Error('Session project is unavailable')
   if (record.directory && !isPathWithin(configuredProject.path, record.directory)) throw new Error('Session directory is outside its project')
   const project = configuredProject
   const session = createPiSession(record, project)
   active.set(key, session)
+  // Initialization is asynchronous. Remove a failed transient session so a
+  // later request can reconstruct it from PocketBase instead of reusing a
+  // permanently rejected promise.
+  void session.readyPromise.catch(() => {
+    if (active.get(key) === session) active.delete(key)
+  })
   return session
 }
 
@@ -1473,6 +1353,95 @@ async function sendRpc(id: string, command: RpcCommand, owner: SessionRecord): P
   return command.type === 'get_entries' || command.type === 'get_messages' || command.type === 'get_state'
     ? redactTranscriptPayload(result)
     : redactSensitive(result)
+}
+
+function runtimeJson(value: unknown, seen = new WeakSet<object>()): import('../packages/subpolar-contracts/src/index.ts').JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number') return Number.isFinite(value) ? value : '[non-finite-number]'
+  if (typeof value === 'undefined') return null
+  if (typeof value !== 'object') return `[${typeof value}]`
+  if (seen.has(value)) return '[Circular]'
+  seen.add(value)
+  if (Array.isArray(value)) return value.map((item) => runtimeJson(item, seen))
+  const result: Record<string, import('../packages/subpolar-contracts/src/index.ts').JsonValue> = {}
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) result[key] = runtimeJson(item, seen)
+  return result
+}
+
+/**
+ * The canonical HTTP run path composes the shared stateless runtime. Pi remains
+ * an in-memory execution resource and is reconstructed from PocketBase-backed
+ * session/transcript state by rpcSession when the active fast path is absent.
+ */
+async function runStatelessPrompt(input: StatelessWebUiRunInput, owner: SessionRecord, project: Project): Promise<unknown> {
+  const ownerId = owner.userId
+  if (!ownerId) throw new Error('Session owner is unavailable')
+  const client = await applicationDatabase()
+  const coreGateway = await createCoreToolGateway(client, ownerId, {
+    onApproval: (approval) => {
+      const request = approval.request && typeof approval.request === 'object' ? approval.request as Record<string, unknown> : {}
+      broadcastSse({
+        type: 'permission.asked',
+        directory: owner.directory,
+        properties: permissionAskedProperties({ id: approval.approvalId, sessionId: typeof request.sessionId === 'string' ? request.sessionId : undefined, toolId: approval.toolId, input: request.input, reason: approval.reason ?? 'Tool approval is required' }),
+      }, ownerId)
+    },
+  })
+  const runtime = createStatelessWebUiRuntime({
+    client,
+    ownerId,
+    gateway: coreGateway,
+    resolveContext: async (request: StatelessRunRequest): Promise<RuntimeContext> => {
+      const context = await resolveToolSessionContext(client, ownerId, request.sessionId ?? owner.id)
+      const sessionProject = context.project as Project
+      return {
+        requestId: request.requestId,
+        runId: request.runId,
+        principal: { id: ownerId, kind: 'user' },
+        sessionId: request.sessionId,
+        projectId: context.session?.project,
+        agentId: context.agent.id,
+        model: context.session?.model,
+        permission: context.permissionOverride,
+        cwd: context.session?.directory ?? sessionProject.path,
+        metadata: {
+          agentName: context.agent.name,
+          permissionOverride: context.permissionOverride,
+          ...(input.metadata?.capabilities ? { capabilities: input.metadata.capabilities } : {}),
+        },
+      }
+    },
+    execute: async (execution: RuntimeExecution) => {
+      const context = await resolveToolSessionContext(client, ownerId, input.sessionId)
+      const sessionProject = context.project as Project
+      const session = rpcSession(input.sessionId, ownerId, owner, sessionProject ?? project, context.agentName, context.permissionOverride)
+      await session.readyPromise
+      const piRunPort = createPiRunPort(async (_config, adapterRequest) => {
+        const prompt = adapterRequest?.prompt ?? execution.request.prompt
+        const emit = adapterRequest?.emit
+        const unsubscribe = session.onMessage((message) => {
+          if (emit) void emit({ type: 'message', data: runtimeJson(message) })
+        })
+        return {
+          execute: () => session.send({ type: 'prompt', message: prompt }),
+          dispose: unsubscribe,
+        }
+      }, {})
+      return piRunPort.run({
+        runId: execution.request.runId,
+        prompt: execution.request.prompt,
+        context: execution.context,
+        transcript: { entries: [] },
+        signal: execution.request.signal,
+      }, async (event) => {
+        await execution.emit(runtimeJson(event))
+      })
+    },
+    onEvent: (event) => {
+      broadcastSse({ type: 'run.event', properties: runtimeJson(event) }, ownerId)
+    },
+  })
+  return runtime.runPrompt(input)
 }
 
 function redactConfig(value: unknown): unknown {
@@ -1524,17 +1493,16 @@ type DailyUsage = { date: string; input: number; output: number; cacheRead: numb
 async function dailyUsage(userId: string, client: Awaited<ReturnType<typeof applicationDatabase>>): Promise<{ days: DailyUsage[] }> {
   const byDate = new Map<string, DailyUsage>()
   try {
-    const ownedIds = new Set((await createProjectSessionRepository(client).listSessions(userId, { includeArchived: true })).map((session) => session.id))
-    const allSessions = await SessionManager.listAll(nativeSessionsDir())
-    for (const session of allSessions) {
-      if (!ownedIds.has(session.id)) continue
-      let entries
-      try { entries = parseSessionEntries(readFileSync(session.path, 'utf8')) } catch { continue }
-      for (const entry of entries) {
-        if (entry.type !== 'message' || entry.message.role !== 'assistant') continue
-        const usage = entry.message.usage
-        if (!usage) continue
-        const date = new Date(entry.timestamp).toISOString().slice(0, 10)
+    const transcripts = await new SessionTranscriptRepository(client).list(userId)
+    for (const transcript of transcripts) {
+      for (const raw of transcript.entries) {
+        const entry = object(raw)
+        const message = object(entry.message)
+        if (entry.type !== 'message' || message.role !== 'assistant') continue
+        const usage = object(message.usage)
+        const timestamp = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : Number(entry.timestamp)
+        if (!Number.isFinite(timestamp)) continue
+        const date = new Date(timestamp).toISOString().slice(0, 10)
         const total = byDate.get(date) ?? { date, input: 0, output: 0, cacheRead: 0 }
         total.input += typeof usage.input === 'number' ? usage.input : 0
         total.output += typeof usage.output === 'number' ? usage.output : 0
@@ -1542,7 +1510,7 @@ async function dailyUsage(userId: string, client: Awaited<ReturnType<typeof appl
         byDate.set(date, total)
       }
     }
-  } catch { /* an unavailable session directory should not break settings */ }
+  } catch { /* an unavailable application store should not break settings */ }
   return { days: [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date)) }
 }
 
@@ -1739,7 +1707,7 @@ async function handleSocketMessage(socket: TranscriptSocket, raw: unknown, sessi
 }
 
 const bridgeRequestDependencies = {
-  applicationDatabase, runtimeStore, createLegacyHealthPayload, createCapabilitiesPayload, createHealthPayload,
+  applicationDatabase, runtimeStore, createCapabilitiesPayload, createHealthPayload,
   diagnosticsComponents, internalToken, requestId, authenticateGatewayCredential, GatewayAuthError, json,
   authenticateRequest, voiceAuthorization, voiceBackends, handleVoiceRoute, authConfig, signOut, clearAuthCookie,
   body, signIn, signUp, changePassword, ownedSessionRecord, configuredSuggestionService, gatewayErrorResponse,
@@ -1756,18 +1724,18 @@ const bridgeRequestDependencies = {
   safeProjectPath, generalChatProject, mkdirSync, readdirSync, writeFileSync, statSync, projectsRoot,
   generalChatRoot, resolve, isPathWithin, resolveNewSessionRoute, NewSessionRouteError, preferenceModel,
   validateModelSelection, modelSelection, normalizeSessionTags, InvalidSessionTagsError, sessionWorkspace,
-  saveState, sessions, rpcSession, sendRpc, storedSessionResponse, parseModelSelection,
+  saveState, sessions, rpcSession, sendRpc, runStatelessPrompt, storedSessionResponse, parseModelSelection,
   parseRoutingModelSelection, routeFirstSessionRequest, generateFirstSessionTitle, localSessionRecord, sessionMessageText, entriesPayload,
   transcriptHistory, messageDeliveryId, queueClientId, MessageDeliveryConflictError,
   replayMessageDeliveryResponse, messageDeliveryResponse, QueueEntryConflictError, QueueEntryTransitionError,
   withDeliveryMetadata, redactSensitive, redactSensitiveText, ownedSessionProject, resolveToolSessionContext,
-  requestedPermissionOverride, requestedMetadataPermission, sessionContextFailure, mapToolId,
-  permissionAskedProperties, authorizePiToolCall, upsertRegisteredTool, listToolsForAgent, searchToolsForAgent,
-  describeToolForAgent, inProcessToolGateway, createToolGatewayFromCallTool, callTool, continueApprovedTool,
-  respondToApproval, listPendingApprovals, hasPendingApprovalWaiter, notifyApprovalResolution, escapeFilter, DEFAULT_SETTINGS, applicationExtensionPaths,
+  requestedPermissionOverride, requestedMetadataPermission, sessionContextFailure,
+  permissionAskedProperties, upsertRegisteredTool, listToolsForAgent, searchToolsForAgent,
+  describeToolForAgent, createCoreToolGateway, continueCoreApprovedTool, listPendingCoreApprovals, respondToCoreApproval,
+  hasPendingApprovalWaiter, notifyApprovalResolution, escapeFilter, DEFAULT_SETTINGS, applicationExtensionPaths,
   homedir, root, openApiProviders, dailyUsage, runtimeProviders, active, activeKey, sseClients, encoder,
   handleProxy, redactedDiagnostic, broadcastSse, persistSessionModel, rpcData, projectEntries,
-  projectResponse, encodeSessionCursor, decodeSessionCursor, sessionPageLimit, ensureNativeSessionMetadata,
+  projectResponse, encodeSessionCursor, decodeSessionCursor, sessionPageLimit, ensureApplicationSessionMetadata,
   ensureUserMetadata, object, providerAccountInstance, providerCatalogAccount, userProviderRuntime,
   createOwnerBoundSkillStore, createProviderCatalogAsync, effectiveAgentConfiguration, proposeTools,
   registerToolDraft, redactVoiceSettings, readJsonBody, assertGatewayAccess, assertPathWithinWorkspace,

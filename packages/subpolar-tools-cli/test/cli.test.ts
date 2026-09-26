@@ -21,7 +21,7 @@ describe('subpolar-tools', () => {
     const exitCode = await runCli(['--base-url', 'https://gateway.example/', '--token', 'secret-token', '--json', 'health'], { fetch: fakeFetch(new Response('{"status":"healthy"}'), seen) }, captured.io)
 
     expect(exitCode).toBe(0)
-    expect(seen.url).toBe('https://gateway.example/api/health')
+    expect(seen.url).toBe('https://gateway.example/api/v1/health')
     expect(seen.init?.method).toBe('GET')
     expect((seen.init?.headers as Record<string, string>).authorization).toBe('Bearer secret-token')
     expect(captured.lines.join('')).not.toContain('secret-token')
@@ -31,7 +31,7 @@ describe('subpolar-tools', () => {
   test('sends canonical call IDs, explicit session context, JSON input, and no implicit allow_all', async () => {
     const seen: { init?: RequestInit } = {}
     const captured = output()
-    const exitCode = await runCli(['call', 'pi.read', '--token', 'token', '--session-id', 'session-1', '--user-id', 'user-1', '--agent', 'master', '--cwd', '/project', '--call-id', 'call-1', '--input', '{"path":"README.md"}'], { fetch: fakeFetch(new Response('{"ok":true,"value":"ok"}'), seen) }, captured.io)
+    const exitCode = await runCli(['call', 'read', '--token', 'token', '--session-id', 'session-1', '--user-id', 'user-1', '--agent', 'master', '--cwd', '/project', '--call-id', 'call-1', '--input', '{"path":"README.md"}'], { fetch: fakeFetch(new Response('{"ok":true,"value":"ok"}'), seen) }, captured.io)
 
     expect(exitCode).toBe(0)
     expect(JSON.parse(String(seen.init?.body))).toEqual({ userId: 'user-1', agentName: 'master', toolId: 'read', input: { path: 'README.md' }, sessionId: 'session-1', cwd: '/project', callId: 'call-1' })

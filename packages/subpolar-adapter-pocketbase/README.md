@@ -6,10 +6,49 @@ does not import PocketBase, WebUI routes, Hono, HTTP handlers, Pi runtime code,
 or bridge code.
 
 The factory returns owner-scoped repositories for agents, projects, sessions,
-approvals, audit records, and events. The raw client and collection ports are
-used only during composition and are not exposed by the returned adapter.
-Every read and mutation receives an `ownerId`; records from another owner are
-not returned, and cross-owner mutations fail with `OWNER_SCOPE_DENIED`.
+canonical structured transcripts, runs/events, tool definitions/policies,
+approvals/opaque continuations, audit records, events, and durable call IDs.
+The raw client and collection ports are used only during composition and are not
+exposed by the returned adapter. Every read and mutation receives an `ownerId`;
+records from another owner are not returned, and cross-owner mutations fail with
+`OWNER_SCOPE_DENIED`.
+
+The canonical transcript, run/event, tool-definition/policy, opaque approval
+continuation, atomic approval claim, and durable call-id idempotency contracts
+are defined by `@subpolar/contracts`. `src/durable.ts` implements those shared
+interfaces with owner-scoped PocketBase persistence and re-exports the shared
+types for compatibility with existing adapter imports.
+
+## Core gateway composition
+
+The shared policy/approval authority lives in `@subpolar/core`. Bind one
+authenticated owner to the durable ports at the application composition root:
+
+```ts
+import { createGateway } from "@subpolar/core";
+import {
+  createPocketBaseAdapter,
+  createPocketBaseGatewayPorts,
+} from "@subpolar/adapter-pocketbase";
+
+const adapter = createPocketBaseAdapter({ client, collections, transaction });
+const ports = createPocketBaseGatewayPorts(adapter, ownerId);
+const policyRules = await adapter.policies.list(ownerId, { agentId, projectId });
+const gateway = createGateway({
+  tools,
+  policyRules,
+  ...ports,
+  execute: (call, definition, context) => executeTool(call, definition, context),
+});
+```
+
+`createGateway` accepts either a resolver or PocketBase-derived
+`ToolPolicyRecord[]`. It selects the most specific matching agent/project rule,
+uses deny > approval > allow precedence, and fails closed when no rule matches.
+The owner-bound port factory supplies durable approvals, opaque continuation
+storage, atomic approval claims, durable call-id idempotency, and audit writes.
+It does not import core or WebUI, so a WebUI executor remains only an execution
+adapter during migration rather than a second policy authority.
 
 ## Capabilities
 
@@ -22,8 +61,10 @@ available. Transactions are preferred; transaction-backed decisions re-read the
 row and verify that it is terminal before returning. Without an atomic
 capability, `approvals.decide()` fails before changing the row with
 `PocketBaseUnsupportedCapabilityError` (`pocketBaseCapability:
-"approval.atomic-decision"`). Multi-process concurrency is never claimed by
-this foundation.
+"approval.atomic-decision"`). Multi-process concurrency is claimed only when an
+injected transaction, conditional-update, idempotency, or atomic-claim port
+explicitly sets `multiProcessSafe: true`; collection presence alone never
+claims cross-process atomicity.
 
 All persisted shapes are constructed from whitelisted fields. The repository
 owner, PocketBase record ID, approval timestamps, and audit/event persistence
@@ -61,3 +102,9 @@ values rather than caller-supplied overrides. Memory persistence does not imply
 idempotency; that capability is advertised and usable only when an explicit
 `idempotency` port is injected, otherwise `idempotency.execute()` throws the
 typed `PocketBaseUnsupportedCapabilityError`.
+
+The package-local `migrations/001_target_persistence.json` manifest describes
+canonical transcript, run, run-event, tool, policy, continuation, and call-claim
+collections plus their owner-scoped uniqueness indexes. Continuation payloads are
+opaque encrypted values supplied by the caller; the adapter does not decrypt,
+print, or put them in audit/event data.

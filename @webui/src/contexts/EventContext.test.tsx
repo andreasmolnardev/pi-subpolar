@@ -282,7 +282,7 @@ describe('EventProvider questions', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Navigate' }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('path')).toHaveTextContent('/repos/123/sessions/session-1')
+      expect(screen.getByTestId('path')).toHaveTextContent('/projects/123/sessions/session-1')
     })
   })
 

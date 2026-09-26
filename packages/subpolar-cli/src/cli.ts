@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { createLocalAdapter } from "../../subpolar-adapter-local/src/index.ts";
-import { createPiRunPort, resolvePiExecutorFactory, type PiExecutorFactory, type PiExecutorModule } from "../../subpolar-adapter-pi/src/index.ts";
+import { createPiRunPort, resolvePiExecutorFactory, type PiExecutorFactory, type PiExecutorModule, type PiRunRequest } from "../../subpolar-adapter-pi/src/index.ts";
 import type { AgentExecutor, RunContext, RunEvent, ToolDefinition, ToolExecutor } from "../../subpolar-contracts/src/index.ts";
 import { createPolicyGateway, createRunService, redactAuditValue } from "../../subpolar-core/src/index.ts";
 
@@ -143,7 +143,13 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
         typeof options.pi.module === "string" ? await import(options.pi.module) : options.pi.module!,
       );
       const piPort = createPiRunPort(factory, options.pi.config);
-      agentExecutor = (request, emit) => piPort.run(request, emit);
+      agentExecutor = async (request, emit) => {
+        const persisted = request.context.sessionId ? await adapter.sessions.load(request.context.sessionId) : undefined;
+        const transcript: PiRunRequest['transcript'] = persisted
+          ? { sessionId: persisted.sessionId, entries: persisted.transcript.map((entry) => ({ role: entry.role, content: entry.content, occurredAt: entry.occurredAt })) }
+          : { entries: [] };
+        return piPort.run({ ...request, transcript } as PiRunRequest, emit);
+      };
       executorName = "pi";
     } else {
       agentExecutor = async (request) => {

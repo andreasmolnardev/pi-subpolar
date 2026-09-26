@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useSubpolarClient } from './usePiHarness'
 import { invalidateSessionListCaches, invalidateSessionListCachesDebounced, messagesQueryKey } from '@/lib/queryInvalidation'
 import type { SSEEvent, MessageWithParts } from '@/api/types'
 import { showToast } from '@/lib/toast'
@@ -13,7 +12,6 @@ import type { EventStreamSubscription } from '@/lib/runtime-event-stream'
 import { parseRuntimeError } from '@/lib/runtime-errors'
 import { createPartsBatcher } from '@/lib/partsBatcher'
 
-const STATUS_POLL_INTERVAL_MS = 5000
 
 const getEventDirectory = (event: SSEEvent): string | undefined => {
   const directory = (event as { directory?: unknown }).directory
@@ -59,11 +57,9 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
   const primaryDirectory = directoriesList[0]
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const directorySet = useMemo(() => new Set(directoriesList), [directoryKey])
-  const client = useSubpolarClient(apiUrl, primaryDirectory)
   const queryClient = useQueryClient()
   const mountedRef = useRef(true)
   const sessionIdRef = useRef(currentSessionId)
-  const statusSyncVersionRef = useRef(0)
   const eventStreamSubscriptionRef = useRef<EventStreamSubscription | null>(null)
   sessionIdRef.current = currentSessionId
   const [isConnected, setIsConnected] = useState(false)
@@ -71,7 +67,6 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
   const [isReconnecting, setIsReconnecting] = useState(false)
   const setSessionStatus = useSessionStatus((state) => state.setStatus)
   const markSessionCompleted = useSessionStatus((state) => state.markCompleted)
-  const replaceSessionStatuses = useSessionStatus((state) => state.replaceStatuses)
   const setSessionTodos = useSessionTodos((state) => state.setTodos)
   const batcherRef = useRef<ReturnType<typeof createPartsBatcher> | null>(null)
 
@@ -365,31 +360,6 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
     }
   }, [queryClient, apiUrl, directorySet, resolveCacheDirectory, setSessionStatus, markSessionCompleted, setSessionTodos])
 
-  const fetchInitialData = useCallback(async () => {
-    if (!client || !primaryDirectory || !mountedRef.current) return
-    const syncVersion = ++statusSyncVersionRef.current
-    
-    try {
-      const statuses = await client.getSessionStatuses()
-      if (mountedRef.current && statusSyncVersionRef.current === syncVersion && statuses) {
-        replaceSessionStatuses(statuses)
-      }
-    } catch (err) {
-      if (err instanceof Error && !err.message.includes('aborted')) {
-        throw err
-      }
-    }
-  }, [client, primaryDirectory, replaceSessionStatuses])
-
-  useEffect(() => {
-    if (!client || !primaryDirectory) return
-
-    const interval = setInterval(() => {
-      void fetchInitialData().catch(() => undefined)
-    }, STATUS_POLL_INTERVAL_MS)
-
-    return () => clearInterval(interval)
-  }, [client, primaryDirectory, fetchInitialData])
 
   const syncCurrentSession = useCallback(() => {
     const sessionId = sessionIdRef.current
@@ -413,7 +383,6 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
     mountedRef.current = true
     
     if (!apiUrl || directoriesList.length === 0) {
-      statusSyncVersionRef.current += 1
       setIsConnected(false)
       setIsReconnecting(false)
       return
@@ -432,7 +401,6 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
       
       if (connected) {
         setError(null)
-        void fetchInitialData().catch(() => undefined)
         syncCurrentSession()
         eventStreamSubscriptionRef.current?.reportVisibility(document.visibilityState === 'visible', sessionIdRef.current)
       } else {
@@ -461,7 +429,6 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
 
     return () => {
       mountedRef.current = false
-      statusSyncVersionRef.current += 1
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('focus', handleReconnect)
       window.removeEventListener('online', handleReconnect)
@@ -471,7 +438,7 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
         eventStreamSubscriptionRef.current = null
       }
     }
-  }, [apiUrl, directoryKey, directoriesList, handleSSEEvent, fetchInitialData, syncCurrentSession])
+  }, [apiUrl, directoryKey, directoriesList, handleSSEEvent, syncCurrentSession])
 
   useEffect(() => {
     if (isConnected && document.visibilityState === 'visible') {

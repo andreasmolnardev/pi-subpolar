@@ -110,11 +110,6 @@ export const mcpApi = {
     })
   },
 
-  async getConfigForDirectory(directory: string): Promise<Record<string, unknown>> {
-    return fetchWrapper(`${API_BASE_URL}/api/config`, {
-      params: { directory },
-    })
-  },
 
   async connectDirectory(name: string, directory: string): Promise<boolean> {
     return fetchWrapper(`${API_BASE_URL}/api/settings/mcp/${encodeURIComponent(name)}/connectdirectory`, {

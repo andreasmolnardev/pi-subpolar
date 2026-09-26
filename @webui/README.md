@@ -1,6 +1,6 @@
 # Pi WebUI
 
-Local browser UI for the Pi SDK embedded in this repository. The bridge creates one in-process SDK session per WebUI session and forwards typed events over WebSocket.
+Local browser UI for the Pi SDK embedded in this repository. The bridge creates transient in-memory SDK execution contexts from PocketBase-backed session state and forwards typed events over WebSocket.
 
 ## Start
 
@@ -33,15 +33,16 @@ routes are public.
 
 ## SDK Boundary
 
-The bridge imports `@earendil-works/pi-coding-agent` and creates an `AgentSession`
-for each WebUI session. Subpolar integrations are registered as SDK extension
-factories from `subpolar/extensions`; no Pi CLI process is started.
+The bridge imports `@earendil-works/pi-coding-agent` and creates a transient,
+in-memory `AgentSession` for each run. Session metadata and transcript entries are
+loaded from and written to PocketBase; no Pi CLI process or native Pi JSONL session
+persistence is used.
 
 Core routes live under `/api/sessions/:id` for prompt, state, messages, stats, abort, and arbitrary allowlisted Pi RPC commands. Streaming events use `/api/sessions/:id/events`.
 
-Extension routes live under `/api/extensions`: `projects`, `profiles` (`agent-profiles`), `tools` (`list-tools`), `commands`, `usage`, `session-title`, `session-search` (`session-history-search`), and `openapi-tools`.
+Extension routes live under `/api/extensions`: `projects`, `profiles`, `tools`, `commands`, `usage`, `session-title`, `session-search`, and `openapi-tools`. The old file-backed Pi CLI extension commands are not loaded by the WebUI; use these application routes instead.
 
-Tool routing is centralized under `/api/subpolar-cli/tools/*` (with `/api/pi/tools/authorize` retained as a compatibility route).
+Tool routing is centralized under `/api/subpolar-cli/tools/*`.
 Pi built-in tools are centrally exposed as `read`, `write`, `edit`, `bash`, `grep`,
 `find`, and `ls`. External tools use canonical `provider/tool` IDs and are called
 through `subpolar-tools`; `search-tool` discovers them with a required query. The PocketBase router applies agent policies and run overrides,
@@ -51,5 +52,10 @@ returns `tool | description | usage` rows. The `subpolar-tools` Pi tool exposes
 list/describe/call for registered external tools.
 
 PocketBase stores users, preferences, agent profiles, tool definitions, policies,
-approvals, and tool-call audit records. Pi conversation data remains in Pi's normal
-session directory; local SQLite is retained only for session/project compatibility metadata.
+approvals, tool-call audit records, canonical Subpolar runs/run events, and rich
+session transcripts. Canonical `/runs` requests use a fresh stateless runtime with
+owner-bound PocketBase run/event ports; the transient Pi adapter is wrapped around
+an in-memory SDK session. The process-local active-session map is only a
+reconstructable streaming/cancellation fast path; PocketBase remains authoritative
+across bridge restarts. Existing Pi JSONL transcripts are a legacy CLI format and
+are not imported automatically.

@@ -14,6 +14,7 @@ vi.mock('@/hooks/useAuth')
 
 vi.mock('@/api/projects', () => ({
   listProjects: vi.fn().mockResolvedValue([]),
+  getProject: vi.fn().mockResolvedValue(null),
   hasProjectId: (project: { id: unknown }) => typeof project.id === 'number' && Number.isFinite(project.id),
   createProject: vi.fn(),
 }))
@@ -21,6 +22,7 @@ vi.mock('@/api/projects', () => ({
 vi.mock('@/api/settings', () => ({
   settingsApi: {
     getPiConfigs: vi.fn().mockResolvedValue({ configs: [], defaultConfig: null }),
+    listManagedSkills: vi.fn().mockResolvedValue([]),
   },
 }))
 
@@ -99,10 +101,10 @@ describe('DesktopSidebar', () => {
 
     render(<DesktopSidebar />, { wrapper: createWrapper(['/']) })
 
-    expect(screen.getByText('subpolar')).toBeInTheDocument()
+    expect(screen.getByAltText('Subpolar')).toBeInTheDocument()
   })
 
-  it('renders Home, Agents, and Projects sections', () => {
+  it('renders Home, Agents, and Sessions sections', () => {
     vi.spyOn(useDesktopModule, 'useDesktop').mockReturnValue(true)
     vi.spyOn(useSidebarCollapsedModule, 'useSidebarCollapsed').mockReturnValue([false, vi.fn()])
     vi.spyOn(useAuthModule, 'useAuth').mockReturnValue({
@@ -115,10 +117,10 @@ describe('DesktopSidebar', () => {
 
     expect(screen.getByText('Home')).toBeInTheDocument()
     expect(screen.getByText('Agents')).toBeInTheDocument()
-    expect(screen.getByText('Projects')).toBeInTheDocument()
+    expect(screen.getByText('Sessions')).toBeInTheDocument()
   })
 
-  it('shows General Chat sub-item under Agents', () => {
+  it('does not render a project agent until a project is selected', () => {
     vi.spyOn(useDesktopModule, 'useDesktop').mockReturnValue(true)
     vi.spyOn(useSidebarCollapsedModule, 'useSidebarCollapsed').mockReturnValue([false, vi.fn()])
     vi.spyOn(useAuthModule, 'useAuth').mockReturnValue({
@@ -129,7 +131,7 @@ describe('DesktopSidebar', () => {
 
     render(<DesktopSidebar />, { wrapper: createWrapper(['/']) })
 
-    expect(screen.getByText('General Chat')).toBeInTheDocument()
+    expect(screen.queryByText('General Chat')).not.toBeInTheDocument()
   })
 
   it('shows user name and email in profile section', () => {

@@ -18,7 +18,7 @@ export async function handleExtensionsRoute(context: BridgeRequestContext): Prom
     }
   }
 
-  if (path[1] === 'extensions' && (path[2] === 'profiles' || path[2] === 'agent-profiles') && request.method === 'GET') {
+  if (path[1] === 'extensions' && path[2] === 'profiles' && request.method === 'GET') {
     try {
       const agents = await deps.listAgents(await deps.applicationDatabase(), authenticatedUser!.id)
       return deps.json({ profiles: Object.fromEntries(agents.map((agent) => [agent.name, { systemPrompt: agent.system_prompt, tools: [] }])) })
@@ -28,7 +28,7 @@ export async function handleExtensionsRoute(context: BridgeRequestContext): Prom
     }
   }
 
-  if (path[1] === 'extensions' && (path[2] === 'profiles' || path[2] === 'agent-profiles') && path[3] === 'activate' && request.method === 'POST') {
+  if (path[1] === 'extensions' && path[2] === 'profiles' && path[3] === 'activate' && request.method === 'POST') {
     const input = await deps.body(request)
     if (typeof input.sessionId !== 'string' || typeof input.profile !== 'string' || !input.profile.trim()) return deps.json({ error: 'sessionId and profile are required' }, 400)
     const client = await deps.applicationDatabase()
@@ -55,7 +55,7 @@ export async function handleExtensionsRoute(context: BridgeRequestContext): Prom
     return deps.json(await deps.sendRpc(input.sessionId, { type: 'prompt', message: `/profile ${context.agentName}` }, session))
   }
 
-  if (path[1] === 'extensions' && (path[2] === 'tools' || path[2] === 'list-tools') && request.method === 'GET') {
+  if (path[1] === 'extensions' && path[2] === 'tools' && request.method === 'GET') {
     if (!authenticatedUser) return deps.json({ message: 'Unauthorized' }, 401)
     try {
       const client = await deps.applicationDatabase()
@@ -87,7 +87,7 @@ export async function handleExtensionsRoute(context: BridgeRequestContext): Prom
     return deps.json(await deps.sendRpc(input.sessionId, { type: 'prompt', message: `/${decodeURIComponent(path[3])}${args}` }, session))
   }
 
-  if (path[1] === 'extensions' && (path[2] === 'session-search' || path[2] === 'session-history-search') && request.method === 'GET') {
+  if (path[1] === 'extensions' && path[2] === 'session-search' && request.method === 'GET') {
     const query = (url.searchParams.get('q') ?? '').toLocaleLowerCase().trim()
     if (!query) return deps.json({ sessions: [] })
     const matches = []
@@ -97,9 +97,8 @@ export async function handleExtensionsRoute(context: BridgeRequestContext): Prom
         id: stored.id, project: stored.project, title: stored.title, createdAt: stored.createdAt, updatedAt: stored.updatedAt, userId: stored.userId, tags: stored.tags,
       }
       try {
-        const response = await deps.sendRpc(record.id, { type: 'get_messages' }, record) as any
-        const payload = deps.entriesPayload(response)
-        const text = deps.projectEntries(payload.entries, payload.leafId, record.id).map((item) => deps.sessionMessageText(item.info)).join('\n')
+        const history = await deps.transcriptHistory(record.id, record)
+        const text = history.messages.map((item: any) => deps.sessionMessageText(item.info)).join('\n')
         if (`${record.title}\n${text}`.toLocaleLowerCase().includes(query)) matches.push(record)
       } catch {
         continue

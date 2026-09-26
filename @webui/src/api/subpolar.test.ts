@@ -16,12 +16,49 @@ describe('SubpolarClient', () => {
   it('treats empty successful session deletes as success', async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
 
-    await expect(new SubpolarClient('/api/opencode', '/repo').deleteSession('ses_1')).resolves.toBeUndefined()
+    await expect(new SubpolarClient('/api', '/repo').deleteSession('ses_1')).resolves.toBeUndefined()
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost/api/sessions/ses_1?directory=%2Frepo',
       expect.objectContaining({ method: 'DELETE' }),
     )
+  })
+
+  it('loads agents from the canonical agents route', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify([
+      { name: 'master', mode: 'primary', description: 'Default', systemPrompt: 'Be helpful' },
+    ]), { status: 200 }))
+
+    await expect(new SubpolarClient('/api', '/repo').listAgents()).resolves.toEqual([
+      { name: 'master', mode: 'primary', description: 'Default', systemPrompt: 'Be helpful' },
+    ])
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/agents?directory=%2Frepo',
+      expect.any(Object),
+    )
+  })
+
+  it('maps user settings to the config shape used by active callers', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      preferences: { defaultModel: 'openai/gpt-4.1', defaultAgent: 'assistant' },
+    }), { status: 200 }))
+
+    await expect(new SubpolarClient('/api', '/repo').getConfig()).resolves.toMatchObject({
+      model: 'openai/gpt-4.1',
+      default_agent: 'assistant',
+      default_permission: 'ask',
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/settings?directory=%2Frepo',
+      expect.any(Object),
+    )
+  })
+
+  it('does not query the removed command route', async () => {
+    await expect(new SubpolarClient('/api').listCommands()).resolves.toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('sends the selected permission when creating the first session', async () => {
@@ -35,7 +72,7 @@ describe('SubpolarClient', () => {
       },
     }), { status: 201 }))
 
-    await new SubpolarClient('/api/opencode', '/repo').createSession({
+    await new SubpolarClient('/api', '/repo').createSession({
       agent: 'assistant',
       model: 'openai/gpt-4.1',
       permission: 'ask',
@@ -53,10 +90,10 @@ describe('SubpolarClient', () => {
   it('deletes workspaces with directory routing', async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
 
-    await expect(new SubpolarClient('/api/opencode', '/repo').deleteWorkspace('wrk_stale')).resolves.toBeUndefined()
+    await expect(new SubpolarClient('/api', '/repo').deleteWorkspace('wrk_stale')).resolves.toBeUndefined()
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost/api/opencode/experimental/workspace/wrk_stale?directory=%2Frepo',
+      'http://localhost/api/experimental/workspace/wrk_stale?directory=%2Frepo',
       expect.objectContaining({ method: 'DELETE' }),
     )
   })
@@ -64,7 +101,7 @@ describe('SubpolarClient', () => {
   it('preserves text error responses', async () => {
     fetchMock.mockResolvedValue(new Response('Workspace not found: wrk_stale', { status: 500 }))
 
-    await expect(new SubpolarClient('/api/opencode', '/repo').deleteSession('ses_1')).rejects.toThrow(
+    await expect(new SubpolarClient('/api', '/repo').deleteSession('ses_1')).rejects.toThrow(
       'Workspace not found: wrk_stale',
     )
   })
@@ -89,7 +126,7 @@ describe('SubpolarClient', () => {
         ),
       )
 
-      const result = await new SubpolarClient('/api/opencode', '/repo').listSessionsPage({ limit: 10 })
+      const result = await new SubpolarClient('/api', '/repo').listSessionsPage({ limit: 10 })
 
       expect(result.items).toHaveLength(1)
       expect(result.items[0]).toMatchObject({
@@ -121,7 +158,7 @@ describe('SubpolarClient', () => {
         ),
       )
 
-      const result = await new SubpolarClient('/api/opencode', '/repo').listSessionsPage({
+      const result = await new SubpolarClient('/api', '/repo').listSessionsPage({
         limit: 25,
         order: 'desc',
         search: 'deploy',
@@ -152,7 +189,7 @@ describe('SubpolarClient', () => {
         ),
       )
 
-      await new SubpolarClient('/api/opencode', '/repo').listSessionsPage({ cursor: 'cursor_123' })
+      await new SubpolarClient('/api', '/repo').listSessionsPage({ cursor: 'cursor_123' })
 
       expect(fetchMock).toHaveBeenCalledWith(
         'http://localhost/api/sessions?cursor=cursor_123&directory=%2Frepo',
@@ -167,7 +204,7 @@ describe('SubpolarClient', () => {
         page: { limit: 1, order: 'desc', hasNext: true, nextCursor: 'cursor_2' },
       }), { status: 200 }))
 
-      await expect(new SubpolarClient('/api/opencode').listSessionsPage({ limit: 1 })).resolves.toMatchObject({
+      await expect(new SubpolarClient('/api').listSessionsPage({ limit: 1 })).resolves.toMatchObject({
         nextCursor: 'cursor_2',
         page: { limit: 1, order: 'desc', hasNext: true },
         items: [{ id: 'ses_1' }],
@@ -192,7 +229,7 @@ describe('SubpolarClient', () => {
         ),
       )
 
-      const result = await new SubpolarClient('/api/opencode', '/repo').listSessionsPage()
+      const result = await new SubpolarClient('/api', '/repo').listSessionsPage()
 
       expect(result.items[0].title).toBe('Untitled Session')
     })
@@ -215,7 +252,7 @@ describe('SubpolarClient', () => {
         ),
       )
 
-      const result = await new SubpolarClient('/api/opencode').listSessionsPage({ limit: 5 })
+      const result = await new SubpolarClient('/api').listSessionsPage({ limit: 5 })
 
       expect(fetchMock).toHaveBeenCalledWith(
         'http://localhost/api/sessions?limit=5',
@@ -231,7 +268,7 @@ describe('SubpolarClient', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
 
     await expect(
-      new SubpolarClient('/api/opencode', '/repo').sendPromptAsync('ses_1', {
+      new SubpolarClient('/api', '/repo').sendPromptAsync('ses_1', {
         parts: [{ type: 'text', text: 'Hello Pi' }],
         agent: 'build',
         model: { providerID: 'openai', modelID: 'gpt-4.1' },
@@ -273,7 +310,7 @@ describe('SubpolarClient', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
 
     await expect(
-      new SubpolarClient('/api/opencode', '/repo').sendPrompt('ses_1', {
+      new SubpolarClient('/api', '/repo').sendPrompt('ses_1', {
         parts: [{ type: 'text', text: 'Immediate hello' }],
         messageID: 'optimistic_user_immediate',
       }),
@@ -293,7 +330,7 @@ describe('SubpolarClient', () => {
   it('responds to permissions through the native approval route', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }))
 
-    await new SubpolarClient('/api/opencode', '/repo').respondToPermission('ses_1', 'approval_1', 'once')
+    await new SubpolarClient('/api', '/repo').respondToPermission('ses_1', 'approval_1', 'once')
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost/api/session/ses_1/permissions/approval_1?directory=%2Frepo',
@@ -318,7 +355,7 @@ describe('SubpolarClient', () => {
         },
       }), { status: 200 }))
 
-    await expect(new SubpolarClient('/api/opencode', '/repo').sendPromptAsync('ses_1', {
+    await expect(new SubpolarClient('/api', '/repo').sendPromptAsync('ses_1', {
       parts: [{ type: 'text', text: 'Do not lose this prompt' }],
       messageID: 'optimistic_user_stale',
     })).rejects.toMatchObject({ code: 'DELIVERY_INTERRUPTED', statusCode: 409 })
@@ -333,7 +370,7 @@ describe('SubpolarClient', () => {
         state: 'running',
       }), { status: 200 }))
 
-    await expect(new SubpolarClient('/api/opencode', '/repo').sendPromptAsync('ses_1', {
+    await expect(new SubpolarClient('/api', '/repo').sendPromptAsync('ses_1', {
       parts: [{ type: 'text', text: 'Keep this in flight' }],
       messageID: 'message_running',
     })).resolves.toBeUndefined()
@@ -353,7 +390,7 @@ describe('SubpolarClient', () => {
         },
       }), { status: 200 }))
 
-    await expect(new SubpolarClient('/api/opencode', '/repo').sendPromptAsync('ses_1', {
+    await expect(new SubpolarClient('/api', '/repo').sendPromptAsync('ses_1', {
       parts: [{ type: 'text', text: 'Handle the unknown outcome' }],
       messageID: 'message_unknown',
     })).rejects.toMatchObject({ code: 'DELIVERY_UNKNOWN', statusCode: 409 })
@@ -370,7 +407,7 @@ describe('SubpolarClient', () => {
         delivery: { ok: true, messageID: 'message_1', state: 'completed' },
       }), { status: 200 }))
 
-    await expect(new SubpolarClient('/api/opencode', '/repo').sendPromptAsync('ses_1', {
+    await expect(new SubpolarClient('/api', '/repo').sendPromptAsync('ses_1', {
       parts: [{ type: 'text', text: 'Compatibility check' }],
     })).resolves.toBeUndefined()
   })
@@ -410,7 +447,7 @@ describe('SubpolarClient', () => {
       ),
     )
 
-    const result = await new SubpolarClient('/api/opencode', '/repo').listMessages('ses_1')
+    const result = await new SubpolarClient('/api', '/repo').listMessages('ses_1')
 
     expect(result[0].parts).toHaveLength(5)
     expect(result[0].parts[0]).toMatchObject({ type: 'reasoning', text: 'First thought' })

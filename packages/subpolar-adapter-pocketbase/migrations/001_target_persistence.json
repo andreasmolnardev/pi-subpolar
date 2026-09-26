@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "description": "Persistence collections for owner-scoped canonical transcripts, runs, tools, policies, opaque approval continuations, and durable call claims.",
+  "collections": [
+    {
+      "name": "canonical_transcripts",
+      "fields": ["ownerId", "sessionId", "runId", "messageId", "sequence", "role", "content", "toolCall", "toolResult", "error", "usage", "metadata", "occurredAt"],
+      "indexes": [
+        "CREATE UNIQUE INDEX idx_canonical_transcripts_order ON canonical_transcripts (ownerId, sessionId, sequence)",
+        "CREATE INDEX idx_canonical_transcripts_session ON canonical_transcripts (ownerId, sessionId, sequence)"
+      ]
+    },
+    {
+      "name": "subpolar_runs",
+      "fields": ["ownerId", "runId", "requestId", "sessionId", "state", "output", "error", "recoverable", "occurredAt"],
+      "indexes": ["CREATE UNIQUE INDEX idx_subpolar_runs_owner_run ON subpolar_runs (ownerId, runId)"]
+    },
+    {
+      "name": "subpolar_run_events",
+      "fields": ["ownerId", "eventId", "runId", "requestId", "sessionId", "type", "state", "data", "occurredAt"],
+      "indexes": [
+        "CREATE UNIQUE INDEX idx_subpolar_run_events_owner_event ON subpolar_run_events (ownerId, eventId)",
+        "CREATE INDEX idx_subpolar_run_events_run ON subpolar_run_events (ownerId, runId, occurredAt)"
+      ]
+    },
+    {
+      "name": "subpolar_tool_definitions",
+      "fields": ["ownerId", "toolId", "namespace", "description", "inputSchema", "enabled", "risk", "metadata", "createdAt", "updatedAt"],
+      "indexes": ["CREATE UNIQUE INDEX idx_subpolar_tools_owner_tool ON subpolar_tool_definitions (ownerId, toolId)"]
+    },
+    {
+      "name": "subpolar_tool_policies",
+      "fields": ["ownerId", "policyId", "toolId", "agentId", "projectId", "rules", "version", "createdAt", "updatedAt"],
+      "indexes": ["CREATE UNIQUE INDEX idx_subpolar_policies_owner_policy ON subpolar_tool_policies (ownerId, policyId)"]
+    },
+    {
+      "name": "subpolar_approval_continuations",
+      "fields": ["ownerId", "approvalId", "callId", "opaquePayload", "keyId", "requestHash", "expiresAt", "claimedAt", "claimToken"],
+      "indexes": ["CREATE UNIQUE INDEX idx_subpolar_continuations_owner_approval ON subpolar_approval_continuations (ownerId, approvalId)"]
+    },
+    {
+      "name": "subpolar_call_claims",
+      "fields": ["ownerId", "callId", "state", "claimedAt", "completedAt", "result", "error"],
+      "indexes": [
+        "CREATE UNIQUE INDEX idx_subpolar_call_claims_owner_call ON subpolar_call_claims (ownerId, callId)",
+        "CREATE INDEX idx_subpolar_call_claims_state ON subpolar_call_claims (ownerId, state)"
+      ]
+    },
+    {
+      "name": "subpolar_tool_audits",
+      "fields": ["ownerId", "auditId", "callId", "toolId", "principalId", "sessionId", "requestId", "decision", "status", "input", "result", "reason", "occurredAt"],
+      "indexes": ["CREATE UNIQUE INDEX idx_subpolar_audits_owner_audit ON subpolar_tool_audits (ownerId, auditId)"]
+    }
+  ]
+}

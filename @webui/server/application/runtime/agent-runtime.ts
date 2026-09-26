@@ -1,6 +1,3 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
 import type PocketBase from 'pocketbase'
 import {
   canonicalToolId,
@@ -39,14 +36,6 @@ export type PiRoutedToolName = typeof PI_ROUTED_TOOL_NAMES[number]
 
 /** The gateway used for registered tools that are not native Pi tools. */
 export const PI_EXTERNAL_GATEWAY_TOOL = 'subpolar-tools' as const
-
-/** Profile-management tools from the old filesystem extension are never granted by this adapter. */
-export const LEGACY_MANAGEMENT_TOOL_NAMES = [
-  'list_agent_profiles',
-  'create_agent_profile',
-  'edit_agent_profile',
-  'manage_external_tools',
-] as const
 
 export type AgentRuntimeErrorCode =
   | 'INVALID_USER'
@@ -556,130 +545,4 @@ export function createPocketBaseAgentRuntimeAdapter(
   options?: PocketBaseAgentRuntimeAdapterOptions,
 ): PocketBaseAgentRuntimeAdapter {
   return new PocketBaseAgentRuntimeAdapter(client, userId, options)
-}
-
-export type LegacyPiProfile = {
-  systemPrompt: string
-  tools: readonly PiRoutedToolName[]
-}
-
-export type LegacyProfileConversion = {
-  source: 'legacy-filesystem'
-  authority: 'read-only-fallback'
-  name: string
-  profile: LegacyPiProfile
-  warnings: readonly string[]
-}
-
-export type LegacyProfileReadResult = {
-  source: 'legacy-filesystem'
-  authority: 'read-only-fallback'
-  profiles: Readonly<Record<string, LegacyProfileConversion>>
-  files: readonly string[]
-  diagnostics: readonly string[]
-}
-
-function isSafeLegacyName(name: string): boolean {
-  return /^[a-zA-Z0-9_-]+$/.test(name) && name.toLowerCase() !== 'omniscient' && name.toLowerCase() !== 'master'
-}
-
-function safePiToolNames(value: unknown, knownToolNames: readonly string[]): PiRoutedToolName[] {
-  if (!Array.isArray(value)) return []
-  const known = new Set<string>([...PI_ROUTED_TOOL_NAMES, ...knownToolNames])
-  return [...new Set(value.filter((tool): tool is string => typeof tool === 'string'))]
-    .filter((tool): tool is PiRoutedToolName => known.has(tool) && (PI_ROUTED_TOOL_NAMES as readonly string[]).includes(tool))
-    .filter((tool) => !(LEGACY_MANAGEMENT_TOOL_NAMES as readonly string[]).includes(tool))
-}
-
-/**
- * Converts one old `agents.json` entry without granting it authority. The
- * result is deliberately tagged read-only and only contains centrally routed
- * Pi tools; it is suitable for migration UI or a temporary inspection view.
- */
-export function convertLegacyPiProfile(
-  name: string,
-  value: unknown,
-  options: { knownToolNames?: readonly string[] } = {},
-): LegacyProfileConversion | undefined {
-  if (!isSafeLegacyName(name)) return undefined
-  const record = object(value)
-  const systemPrompt = nonBlank(record.systemPrompt ?? record.system_prompt)
-  if (!systemPrompt) return undefined
-  const requestedTools = Array.isArray(record.tools) ? record.tools : []
-  const tools = safePiToolNames(requestedTools, options.knownToolNames ?? [])
-  const warnings: string[] = []
-  const ignored = requestedTools.filter((tool) => typeof tool === 'string' && !tools.includes(tool as PiRoutedToolName))
-  if (ignored.length) warnings.push(`Ignored non-routed or management tools: ${ignored.join(', ')}`)
-  return {
-    source: 'legacy-filesystem',
-    authority: 'read-only-fallback',
-    name,
-    profile: { systemPrompt, tools },
-    warnings,
-  }
-}
-
-function parseLegacyProfiles(value: unknown, file: string, diagnostics: string[]): Record<string, LegacyProfileConversion> {
-  const parsed = object(value)
-  const result: Record<string, LegacyProfileConversion> = {}
-  for (const [name, profile] of Object.entries(parsed)) {
-    const converted = convertLegacyPiProfile(name, profile)
-    if (converted) result[name] = converted
-    else if (name.toLowerCase() !== 'master' && name.toLowerCase() !== 'omniscient') {
-      diagnostics.push(`Ignored invalid legacy profile "${name}" in ${file}`)
-    }
-  }
-  return result
-}
-
-/**
- * Read-only legacy inspector. It is intentionally separate from
- * `loadAgentRuntime`; no result from this function can masquerade as a
- * PocketBase runtime source, and it never writes or merges into PocketBase.
- */
-export function readLegacyPiProfiles(
-  cwd: string,
-  options: { homeDirectory?: string } = {},
-): LegacyProfileReadResult {
-  const diagnostics: string[] = []
-  const normalizedCwd = resolve(cwd)
-  const homeDirectory = resolve(options.homeDirectory ?? homedir())
-  const files = [
-    join(homeDirectory, '.pi', 'agent', 'agents.json'),
-    join(normalizedCwd, '.pi', 'agents.json'),
-  ]
-  const profiles: Record<string, LegacyProfileConversion> = {}
-  for (const file of files) {
-    if (!existsSync(file)) continue
-    try {
-      Object.assign(profiles, parseLegacyProfiles(JSON.parse(readFileSync(file, 'utf8')) as unknown, file, diagnostics))
-    } catch {
-      diagnostics.push(`Ignored unreadable legacy profile file ${file}`)
-    }
-  }
-  return {
-    source: 'legacy-filesystem',
-    authority: 'read-only-fallback',
-    profiles,
-    files,
-    diagnostics,
-  }
-}
-
-/**
- * Produces a Pi-shaped read-only fallback from a legacy conversion. This is
- * not an `AgentRuntime` and must not be used for tool authorization.
- */
-export function legacyProfileToPiConfiguration(conversion: LegacyProfileConversion): {
-  source: 'legacy-filesystem'
-  authority: 'read-only-fallback'
-  agentName: string
-  profile: PiAgentProfile
-} {
-  return {
-    source: conversion.source,
-    authority: conversion.authority,
-    agentName: conversion.name,
-    profile: conversion.profile,
-  }
 }

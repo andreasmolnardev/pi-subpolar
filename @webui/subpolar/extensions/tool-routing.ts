@@ -1,5 +1,6 @@
 import { Type } from 'typebox'
-import type { ToolGateway } from '../../server/application/tools/tool-gateway.ts'
+import type { ToolGateway } from '../../../packages/subpolar-core/src/index.ts'
+import type { ApprovalRecord, ExecutionContext } from '../../../packages/subpolar-contracts/src/index.ts'
 
 type ToolCall = {
   id?: unknown
@@ -24,7 +25,7 @@ type RoutingContext = {
   cwd: string
   permissionOverride?: 'ask' | 'none' | 'allow_all'
   capabilities?: readonly string[]
-  onApproval?: (approval: import('../../server/application/tools/tools.ts').Approval) => void | Promise<void>
+  onApproval?: (approval: ApprovalRecord) => void | Promise<void>
   listTools?: () => Promise<unknown>
   searchTools?: (query: string) => Promise<unknown>
   describeTool?: (toolId: string) => Promise<unknown>
@@ -67,22 +68,26 @@ async function gateway(context: RoutingContext, path: string, requestBody: Recor
   if (context.listTools && path.endsWith('/list')) return textResult(await context.listTools())
   if (context.describeTool && path.endsWith('/describe') && typeof requestBody.toolId === 'string') return textResult(await context.describeTool(requestBody.toolId))
   if (context.gateway && path.endsWith('/call') && typeof requestBody.toolId === 'string') {
-    const result = await context.gateway.call(
-      { toolId: requestBody.toolId, input: requestBody.input ?? {} },
-      {
-        userId: context.userId,
+    const callId = typeof requestBody.callId === 'string' && requestBody.callId.length > 0 ? requestBody.callId : crypto.randomUUID()
+    const executionContext: ExecutionContext = {
+      requestId: callId,
+      principal: { id: context.userId, kind: 'user' },
+      sessionId: context.sessionId,
+      agentId: context.agentName,
+      cwd: context.cwd,
+      metadata: {
         agentName: context.agentName,
-        sessionId: context.sessionId,
-        cwd: context.cwd,
-        callId: typeof requestBody.callId === 'string' ? requestBody.callId : undefined,
-        permissionOverride: context.permissionOverride,
-        waitForApproval: true,
-        onApproval: context.onApproval,
-        capabilities: context.capabilities,
+        ...(context.permissionOverride === undefined ? {} : { permissionOverride: context.permissionOverride }),
+        ...(context.capabilities?.length ? { capabilities: context.capabilities.join(',') } : {}),
       },
+    }
+    const result = await context.gateway.call(
+      { callId, toolId: requestBody.toolId, input: requestBody.input ?? {}, idempotencyKey: `tool-call:${callId}` },
+      executionContext,
     )
-    if (result.ok && result.result && typeof result.result === 'object' && Array.isArray((result.result as Record<string, unknown>).content)) return result.result as ExtensionResult
-    return textResult(result, { routedTo: 'in-process-tool-gateway' })
+    const value = result.ok ? ('value' in result ? result.value : (result as unknown as { result?: unknown }).result) : undefined
+    if (value && typeof value === 'object' && Array.isArray((value as Record<string, unknown>).content)) return value as ExtensionResult
+    return textResult(result, { routedTo: 'core-tool-gateway' })
   }
   if (!context.baseUrl || !context.internalToken) return textResult({ ok: false, error: 'Tool gateway is not configured' })
   const response = await fetch(endpoint(context, path), {

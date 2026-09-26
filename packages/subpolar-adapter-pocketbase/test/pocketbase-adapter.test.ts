@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { createLocalAdapter } from "../../subpolar-adapter-local/src/index.ts";
-import { createPolicyGateway, createRunService } from "../../subpolar-core/src/index.ts";
+import { createGateway, createPolicyGateway, createRunService } from "../../subpolar-core/src/index.ts";
 import { UnsupportedCapabilityError } from "../../subpolar-contracts/src/index.ts";
 import type { DomainEvent, SessionTranscriptEntry, ToolDefinition } from "../../subpolar-contracts/src/index.ts";
 import {
   createPocketBaseAdapter,
+  createPocketBaseEventReplayPort,
+  createPocketBaseGatewayPorts,
   createPocketBaseSessionStore,
   PocketBaseOwnerScopeError,
   PocketBaseUnsupportedCapabilityError,
@@ -13,6 +15,7 @@ import {
   type PocketBaseClientPort,
   type PocketBaseStoredRecord,
 } from "../src/index.ts";
+import type { RunEvent } from "../../subpolar-contracts/src/index.ts";
 
 class FakeCollection implements PocketBaseCollectionPort {
   private readonly records = new Map<string, PocketBaseStoredRecord>();
@@ -137,6 +140,51 @@ describe("PocketBase adapter fake-client contract", () => {
     expect(await adapter.approvals.list("blocked")).toEqual([]);
   });
 
+  test("composes the core gateway from owner-bound PocketBase approval ports", async () => {
+    const definition: ToolDefinition = {
+      id: "manual.deploy",
+      namespace: "manual",
+      description: "Deploy",
+      inputSchema: {},
+      enabled: true,
+      risk: "high",
+    };
+    const adapter = createPocketBaseAdapter({
+      client: new FakeClient(),
+      collections: { approvals: "approvals", continuations: "continuations", callClaims: "call_claims", audits: "audits" },
+      transaction: { run: (operation) => operation() },
+      now,
+    });
+    const ports = createPocketBaseGatewayPorts(adapter, "owner-a");
+    let executions = 0;
+    const gateway = createGateway({
+      tools: [definition],
+      policyRules: [{
+        id: "policy-deploy",
+        ownerId: "owner-a",
+        toolId: definition.id,
+        agentId: "agent-a",
+        rules: { requiresApproval: true },
+        version: 1,
+        createdAt: now().toISOString(),
+        updatedAt: now().toISOString(),
+      }],
+      ...ports,
+      createContinuation: () => ({ payload: "opaque", requestHash: "hash", expiresAt: "2026-01-02T00:00:00.000Z" }),
+      execute: async () => { executions += 1; return { ok: true, value: "deployed" }; },
+      now,
+    });
+    const call = { callId: "call-pocketbase-direct", toolId: definition.id, input: {} };
+    const ownerContext = { requestId: "request-pocketbase-direct", principal: { id: "owner-a", kind: "user" as const }, agentId: "agent-a" };
+
+    await expect(gateway.call(call, ownerContext)).resolves.toMatchObject({ status: "approval_required", approvalId: "approval-call-pocketbase-direct" });
+    expect(await adapter.continuations.get("owner-a", "approval-call-pocketbase-direct")).toMatchObject({ callId: call.callId, payload: "opaque" });
+    await adapter.approvals.decide("owner-a", "approval-call-pocketbase-direct", { approved: true, decidedBy: "owner-a" });
+    await expect(gateway.call(call, ownerContext)).resolves.toMatchObject({ ok: true, status: "executed", value: "deployed" });
+    expect(executions).toBe(1);
+    expect(await adapter.audits.list("owner-a")).toHaveLength(2);
+  });
+
   test("denies cross-user reads and approval decisions", async () => {
     const adapter = makeAdapter();
     const project = await adapter.projects.create("user-a", { name: "private" });
@@ -184,6 +232,31 @@ describe("PocketBase adapter fake-client contract", () => {
       capability: "multi-process-concurrency",
       pocketBaseCapability: "idempotency",
     });
+  });
+
+  test("advertises and replays run events independently of published event replay", async () => {
+    const client = new FakeClient();
+    const adapter = createPocketBaseAdapter({
+      client,
+      collections: { runEvents: "subpolar_run_events" },
+      now,
+    });
+    const event: RunEvent = {
+      eventId: "run-event-1",
+      type: "run.progress",
+      occurredAt: now().toISOString(),
+      runId: "run-1",
+      requestId: "request-1",
+      state: "running",
+      data: { progress: 1 },
+    };
+
+    expect(adapter.capabilities.supports["event.replay"]).toBe(false);
+    expect(adapter.capabilities.supports["run-event.persistence"]).toBe(true);
+    const replay = createPocketBaseEventReplayPort(adapter, "owner-a");
+    expect(replay.capabilities.supports["event.replay"]).toBe(true);
+    await replay.append(event);
+    expect(await replay.replay("run-1")).toEqual([event]);
   });
 
   test("only enables replay when it is explicitly configured", async () => {
@@ -331,5 +404,88 @@ describe("PocketBase adapter fake-client contract", () => {
     await expect(run.run({ runId: "run-2", prompt: "again", context: { ...context, requestId: "request-2" } })).resolves.toMatchObject({ resumed: true, state: "completed" });
     expect((await adapter.sessions.load("owner-a", "shared-session"))?.transcript.map((item) => item.content)).toEqual(["hello", "hello", "again", "again"]);
     expect(await adapter.sessions.load("owner-b", "shared-session")).toBeUndefined();
+  });
+
+  test("persists structured canonical transcripts across adapter instances", async () => {
+    const client = new FakeClient();
+    const options = {
+      client,
+      collections: { transcripts: "canonical_transcripts" },
+      now,
+    } as const;
+    const first = createPocketBaseAdapter(options);
+    await first.transcripts.append("owner-a", "session-structured", [{
+      messageId: "message-1",
+      role: "assistant",
+      content: "I will call the tool",
+      toolCall: { name: "manual.deploy", arguments: { token: "not-stored-in-plain-form" } },
+      occurredAt: now().toISOString(),
+    }], "run-1");
+
+    const second = createPocketBaseAdapter(options);
+    expect(await second.transcripts.list("owner-a", "session-structured")).toMatchObject([{
+      messageId: "message-1",
+      runId: "run-1",
+      sequence: 0,
+      role: "assistant",
+      toolCall: { name: "manual.deploy", arguments: { token: "[REDACTED]" } },
+    }]);
+    expect(await second.transcripts.list("owner-b", "session-structured")).toEqual([]);
+    expect(await second.transcripts.get("owner-b", "session-structured", "message-1")).toBeUndefined();
+  });
+
+  test("stores opaque approval continuations and claims them once by owner and call ID", async () => {
+    const client = new FakeClient();
+    const adapter = createPocketBaseAdapter({
+      client,
+      collections: { approvals: "approvals", continuations: "approval_continuations" },
+      transaction: { run: (operation) => operation() },
+      now,
+    });
+    const approval = await adapter.approvals.create("owner-a", {
+      approvalId: "approval-durable-claim",
+      callId: "call-durable-claim",
+      toolId: "manual.deploy",
+      request: { display: "safe" },
+      continuation: {
+        payload: "encrypted-or-opaque-payload",
+        keyId: "key-1",
+        requestHash: "hash-1",
+        expiresAt: "2026-01-02T00:00:00.000Z",
+      },
+    });
+
+    const first = await adapter.approvals.claim("owner-a", approval.approvalId, approval.callId);
+    const second = await adapter.approvals.claim("owner-a", approval.approvalId, approval.callId);
+    expect(first).toMatchObject({ claimed: true, approvalId: approval.approvalId, callId: approval.callId });
+    expect(second).toMatchObject({ claimed: false, claimToken: first.claimToken });
+    expect(await adapter.continuations.get("owner-b", approval.approvalId)).toBeUndefined();
+    await expect(adapter.approvals.claim("owner-b", approval.approvalId, approval.callId)).rejects.toThrow();
+    expect((await client.collection("approval_continuations").list())[0]).toMatchObject({ opaquePayload: "encrypted-or-opaque-payload" });
+  });
+
+  test("returns the durable result for duplicate call IDs without executing twice", async () => {
+    const client = new FakeClient();
+    const options = {
+      client,
+      collections: { callClaims: "call_claims" },
+      now,
+    } as const;
+    const first = createPocketBaseAdapter(options);
+    let executions = 0;
+    const operation = async () => {
+      executions += 1;
+      return { value: "completed", secret: "should-be-redacted-at-rest" };
+    };
+
+    await expect(first.callIds.execute("owner-a", "call-once", operation)).resolves.toEqual({ value: "completed", secret: "should-be-redacted-at-rest" });
+    const second = createPocketBaseAdapter(options);
+    await expect(second.callIds.execute("owner-a", "call-once", async () => {
+      executions += 1;
+      return { value: "wrong" };
+    })).resolves.toEqual({ value: "completed", secret: "[REDACTED]" });
+    expect(executions).toBe(1);
+    await expect(second.callIds.execute("owner-b", "call-once", async () => "different-owner")).resolves.toBe("different-owner");
+    expect(second.capabilities.supports["call-id.idempotency"]).toBe(true);
   });
 });

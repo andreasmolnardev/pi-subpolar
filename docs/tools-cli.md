@@ -31,11 +31,10 @@ continuation and rejection also require the existing session ID. `--permission
 allow_all` is never implicit and should only be used when the caller explicitly
 chooses it.
 
-`--wait` is forwarded as `waitForApproval: true`. The current compatibility
-route may still return a resumable approval instead of holding the HTTP request
-open; use `approvals continue` after the approval is resolved. A call or
-continuation that returns `approvalRequired: true` preserves that result and
-uses the remote exit code 1.
+`--wait` is forwarded as `waitForApproval: true`. The gateway may return a
+resumable approval instead of holding the HTTP request open; use `approvals
+continue` after the approval is resolved. A call or continuation that returns
+`approvalRequired: true` preserves that result and uses the remote exit code 1.
 
 `add` only submits a tool definition to the gateway registration endpoint. It
 does not call the new tool. Definitions require a canonical non-built-in
@@ -44,19 +43,16 @@ operation, object input/output schemas, boolean `requiresApproval` and
 `enabled` flags, and bounded non-secret object metadata. Invalid definitions
 are rejected locally.
 
-## Server compatibility
+## Server authorization
 
-The current compatibility route may require a PocketBase bearer credential
-until scoped gateway credentials are added. Use a user access token authorized
-for the target user and session. The compatibility route currently exposes
-approval listing through `/api/permission`, continuation through the tool
-gateway, rejection through the session permissions endpoint, and events through
-the authenticated SSE stream.
+Use a scoped gateway credential or an authenticated user bearer credential for
+the target user and session. Approval listing uses `/api/permission`,
+continuation uses the tool gateway, rejection uses the session permissions
+endpoint, and events use the authenticated SSE stream.
 
-The compatibility registration endpoint may still require the server's legacy
-internal registration credential. The CLI intentionally never defaults to that
-credential, so `add` can remain unavailable until scoped gateway credentials
-are added.
+Registration is subject to the server's registration authorization. The CLI
+intentionally never defaults to the bridge's internal credential, so `add` can
+remain unavailable until a scoped registration credential is supplied.
 
 The CLI does not make these routes more privileged: registration remains subject
 to the server's registration authorization, and tool calls remain subject to

@@ -1,12 +1,10 @@
-# Agent profiles and virtual projects
+# Pi extensions
 
-## Session archive
-
-`session-archive.ts` adds `/archive`, which moves the current persisted session
-into an `archive/` directory beside the project's regular session directory and
-starts a new session. `/archived` browses those sessions and resumes a selected
-one. Archived files are not returned by `/sessions`.
-
+The WebUI's extension boundary is limited to the active tool integrations:
+`list-tools.ts`, `openapi-tools.ts`, and bridge-owned `tool-routing.ts`. The
+remaining sections document standalone Pi CLI extensions. Session state,
+projects, profiles, search, titles, usage, and skills are owned by the WebUI
+application boundary rather than file-backed compatibility extensions.
 
 ## Background sessions
 
@@ -43,28 +41,6 @@ registered as individual Pi functions; use `search-tool` to discover them and
 first OpenAPI server. Tool policy, approvals, auditing, credentials, and HTTP
 execution all happen in the bridge.
 
-## Virtual projects
-
-`projects.ts` adds `/project`, which selects a directory for pi's tools without changing pi's actual process directory. Relative paths passed to `read`, `write`, `edit`, `grep`, `find`, and `ls` are resolved against the selected directory; bash and `!` commands execute there. The selected directory's `AGENTS.md` files are added to the agent context.
-
-Project definitions can be stored globally in `~/.pi/agent/projects.json` (or `~/.pi/projects.json`) and locally in `.pi/projects.json`. Local definitions override global definitions:
-
-```json
-{
-  "frontend": "/Users/me/src/frontend",
-  "backend": { "path": "/Users/me/src/backend" }
-}
-```
-
-Commands:
-
-```text
-/project          # choose interactively
-/project list     # list definitions
-/project frontend          # switch virtual project
-/project /tmp/foo          # switch directly to a directory
-/project new NAME DIRECTORY # add and switch to a project
-```
 
 ## Permissions
 
@@ -79,46 +55,10 @@ Commands:
 
 Use `/permissions` in the TUI to inspect or change a rule. The web agent editor exposes the same three choices; the detailed `toolAccess` value is retained for the extension.
 
-## Agent profiles
+## Registered tools
 
-`agent-profiles.ts` adds named profiles containing a replacement system prompt and an allowlist of active tools. `list-tools.ts` adds `/list-tools`, which shows all registered tools and dims those unavailable to the active profile.
-
-## Skills
-
-`skills.ts` discovers `SKILL.md` files from the project `.subpolar/skills` directory, `~/.config/subpolar/skills`, and `~/.pi/skills`. A skill may be a `SKILL.md` file directly in one of those directories or a directory containing `SKILL.md`.
-
-Optional YAML-style front matter controls how the skill is added to the agent context:
-
-```markdown
----
-load: agent-skill
-profiles:
-  - reviewer
-  - planner
----
-# Review code
-
-Instructions that are always included for the matching profiles.
-```
-
-`load` accepts:
-
-- `name-only` (default): adds only the skill name to the available-skills list.
-- `metadata`: adds the name and a description to the available-skills list. The description is read from a `description:` or `summary:` line, or falls back to the first Markdown heading.
-- `agent-skill`: adds the complete skill body to the profile context when the active profile is listed in `profiles`. Use `*` in the array to apply it to every profile.
-
-The `profiles` property is an array of profile names and is used for `agent-skill` entries. Skill files are re-read before each agent turn, so changes take effect without restarting the session.
-
-Commands:
-
-```text
-/profile              # choose interactively
-/profile NAME         # activate directly
-/profile create NAME  # create a profile interactively
-/profile list         # list profiles
-```
-
-Profiles are loaded from `~/.pi/agent/agents.json` and `.pi/agents.json`; project-local values override global values.
+`list-tools.ts` adds `/list-tools`, which shows the registered tools exposed by
+the WebUI tool registry and their availability to the active profile.
 
 ## Blank proxy
 

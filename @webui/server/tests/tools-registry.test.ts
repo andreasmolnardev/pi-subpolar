@@ -13,8 +13,8 @@ describe('secure tool registry validation', () => {
     expect(agentTemplateDefaults('coding').tool_context_modes).toMatchObject({ 'web.search': 'always', 'web.fetch': 'always' })
   })
 
-  it('canonicalizes legacy web search IDs and external dotted IDs', () => {
-    expect(canonicalToolId('web-search')).toBe('web.search')
+  it('requires canonical tool IDs and normalizes external dotted IDs', () => {
+    expect(canonicalToolId('web-search')).toBe('web-search')
     expect(canonicalToolId('read', 'openapi', 'acme')).toBe('acme/read')
     expect(() => validateToolDefinition(definition({ tool_id: 'acme/read-now', operation: 'Read now' }))).toThrow()
     expect(() => validateToolDefinition(definition({ namespace: 'Acme' }))).toThrow()

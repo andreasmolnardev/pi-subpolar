@@ -68,6 +68,22 @@ describe('resolveNewSessionRoute', () => {
     await reader.cancel()
   })
 
+  it('does not handle removed non-SSE legacy endpoints', async () => {
+    for (const pathname of ['/api/agent', '/api/provider', '/api/config', '/api/command', '/api/sessions/status']) {
+      const url = new URL(`http://localhost${pathname}`)
+      await expect(handleLegacyRoute({
+        request: new Request(url.href),
+        url,
+        path: url.pathname.split('/').filter(Boolean),
+        correlationId: 'test-request',
+        authenticatedUser: { id: 'owner-a' },
+        gatewayCredential: null,
+        internalRequest: false,
+        deps: {},
+      } as never)).resolves.toBeUndefined()
+    }
+  })
+
   it('reads settings from the injected defaults', async () => {
     const url = new URL('http://localhost/api/settings')
     const response = await handleSettingsRoute({

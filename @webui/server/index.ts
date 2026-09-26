@@ -21,21 +21,23 @@ export {
 } from './application/auth'
 
 export {
-  authorizePiToolCall,
-  callTool,
+
   canonicalToolId,
-  continueApprovedTool,
+  createCoreToolGateway,
+  invokeExternalTool,
+  validateToolInput,
+  continueCoreApprovedTool,
+  listPendingCoreApprovals,
+  respondToCoreApproval,
   searchToolsForAgent,
   upsertRegisteredTool,
   describeToolForAgent,
   ensureToolRegistry,
   ensureUserDefaults,
   listAgents,
-  listPendingApprovals,
   listToolsForAgent,
   createSkillContextAudit,
   resolveSkillRuntimeContext,
-  respondToApproval,
   type AgentDefinition,
   type Approval,
   type PermissionOverride,
@@ -51,17 +53,6 @@ export {
   type ApprovalDecision,
 } from './application/tools/approval-flow.ts'
 
-export {
-  createToolGateway,
-  createToolGatewayExecutor,
-  createToolGatewayFromCallTool,
-  InProcessToolGateway,
-  ToolGatewayAdapterRegistry,
-  type ToolGateway,
-  type ToolGatewayContext,
-  type ToolGatewayRequest,
-  type ToolGatewayResult,
-} from './application/tools/tool-gateway.ts'
 
 export {
   AgentRuntimeError,
@@ -112,6 +103,7 @@ export * from './persistence/custom-providers.ts'
 export * from './persistence/gateway-credentials.ts'
 export * from './persistence/pocketbase-runtime-store.ts'
 export * from './persistence/pocketbase-proxy-credentials.ts'
+export * from './persistence/session-transcript.ts'
 
 export * from './git/contracts.ts'
 export * from './git/executor.ts'

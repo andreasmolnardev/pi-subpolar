@@ -1,6 +1,37 @@
-// This map is deliberately not persisted. A process restart makes the input
-// unavailable, so an approved record cannot accidentally execute redacted data.
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
+
+// The map is only a fast path. Durable continuations use an encrypted payload
+// stored beside the redacted approval projection in PocketBase.
 type PendingApprovalInput = { input: unknown; consumed: boolean }
+
+function approvalKey(): Buffer | undefined {
+  const configured = process.env.SUBPOLAR_APPROVAL_KEY?.trim() || process.env.POCKETBASE_PASSWORD?.trim() || process.env.ADMIN_PASSWORD?.trim()
+  return configured ? createHash('sha256').update(configured).digest() : undefined
+}
+
+export function encryptApprovalInput(input: unknown): string | undefined {
+  const key = approvalKey()
+  if (!key) return undefined
+  const iv = randomBytes(12)
+  const cipher = createCipheriv('aes-256-gcm', key, iv)
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(input), 'utf8'), cipher.final()])
+  const tag = cipher.getAuthTag()
+  return [iv, tag, ciphertext].map((value) => value.toString('base64url')).join('.')
+}
+
+export function decryptApprovalInput(value: unknown): unknown | undefined {
+  const key = approvalKey()
+  if (!key || typeof value !== 'string') return undefined
+  try {
+    const [ivText, tagText, ciphertextText] = value.split('.')
+    if (!ivText || !tagText || !ciphertextText) return undefined
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivText, 'base64url'))
+    decipher.setAuthTag(Buffer.from(tagText, 'base64url'))
+    return JSON.parse(Buffer.concat([decipher.update(Buffer.from(ciphertextText, 'base64url')), decipher.final()]).toString('utf8'))
+  } catch {
+    return undefined
+  }
+}
 export type ApprovalResolution = 'approved' | 'rejected' | 'expired'
 
 type ApprovalWaiter = {

@@ -123,6 +123,7 @@ vi.mock('@/contexts/EventContext', async (importOriginal) => {
 })
 
 vi.mock('@/api/projects', () => ({
+  listProjects: vi.fn(() => Promise.resolve([])),
   getProject: vi.fn((projectId: number) => Promise.resolve(projectId === 0 ? {
     id: 0,
     name: 'General Chat',
@@ -178,6 +179,7 @@ describe('SessionDetail assistant loading at repoId=0', () => {
     mocks.usePermissions.mockReturnValue({
       pendingCount: 0,
       hasPermissionsForSession: vi.fn(() => false),
+      getForSession: vi.fn(() => null),
       syncForSession: vi.fn(),
     })
     mocks.useQuestions.mockReturnValue({
@@ -213,10 +215,10 @@ describe('SessionDetail assistant loading at repoId=0', () => {
 
   const renderAssistantSession = (sessionId: string) => {
     return render(
-      <MemoryRouter initialEntries={[`/repos/0/sessions/${sessionId}?assistant=1`]}>
+      <MemoryRouter initialEntries={[`/projects/0/sessions/${sessionId}?assistant=1`]}>
         <QueryClientProvider client={createQueryClient()}>
           <Routes>
-            <Route path="/repos/:id/sessions/:sessionId" element={<SessionDetail />} />
+            <Route path="/projects/:id/sessions/:sessionId" element={<SessionDetail />} />
           </Routes>
         </QueryClientProvider>
       </MemoryRouter>
@@ -231,47 +233,54 @@ describe('SessionDetail assistant loading at repoId=0', () => {
     })
   })
 
-  it('renders "General Chat" as the workspace display name', async () => {
+  it('does not render a project name for the general-chat session header', async () => {
     renderAssistantSession('sess-asst-1')
 
     await waitFor(() => {
-      expect(screen.getByText('General Chat')).toBeInTheDocument()
+      expect(screen.getByTestId('session-header-region')).toBeInTheDocument()
     })
+    expect(screen.queryByText('General Chat')).not.toBeInTheDocument()
   })
 
-  it('passes directory from assistant repo to RepoSkillsDialog once loaded', async () => {
+  it('renders the general-chat session header once the project query settles', async () => {
     renderAssistantSession('sess-asst-1')
 
     await waitFor(() => {
-      const lastCall = mocks.RepoSkillsDialog.mock.calls.at(-1)
-      expect(lastCall).toBeDefined()
-      expect(lastCall![0].directory).toBe('/abs/assistant')
+      expect(screen.getByTestId('session-header-region')).toBeInTheDocument()
     })
   })
 
-  it('does not pass empty string for directory when repoDirectory is undefined', async () => {
-    renderAssistantSession('sess-asst-1')
-
-    await waitFor(() => {
-      expect(mocks.RepoSkillsDialog).toHaveBeenCalled()
-    })
-
-    mocks.RepoSkillsDialog.mock.calls.forEach(([props]) => {
-      expect(props.directory).not.toBe('')
-    })
-  })
-
-  it('renders "General Chat" as workspaceDisplayName for non-assistant sessions without repo', async () => {
-    mocks.useSession.mockReturnValue({ data: undefined, isLoading: false })
-
-    return render(
-      <MemoryRouter initialEntries={['/repos/1/sessions/sess-1']}>
+  it('shows the project-not-found dialog when a non-general project is unavailable', async () => {
+    render(
+      <MemoryRouter initialEntries={['/projects/1/sessions/sess-1']}>
         <QueryClientProvider client={createQueryClient()}>
           <Routes>
-            <Route path="/repos/:id/sessions/:sessionId" element={<SessionDetail />} />
+            <Route path="/projects/:id/sessions/:sessionId" element={<SessionDetail />} />
           </Routes>
         </QueryClientProvider>
-      </MemoryRouter>
+      </MemoryRouter>,
     )
+
+    await waitFor(() => {
+      expect(screen.getByText('Project not found')).toBeInTheDocument()
+    })
+  })
+
+  it('offers a projects navigation action when project data is unavailable', async () => {
+    mocks.useSession.mockReturnValue({ data: undefined, isLoading: false })
+
+    render(
+      <MemoryRouter initialEntries={['/projects/1/sessions/sess-1']}>
+        <QueryClientProvider client={createQueryClient()}>
+          <Routes>
+            <Route path="/projects/:id/sessions/:sessionId" element={<SessionDetail />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Back to projects' })).toBeInTheDocument()
+    })
   })
 })

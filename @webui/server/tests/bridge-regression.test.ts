@@ -149,9 +149,12 @@ describe('durable skill routes', () => {
   })
 
   it('injects an owner-bound durable skill repository and redacted audit sink into Pi runtime loading', () => {
-    const initialization = section('private async initialize(): Promise<void> {', 'private async openOrCreateSession(): Promise<SessionManager>', piSession)
+    const initialization = section('private async initialize(): Promise<void> {', 'private handle(event: AgentSessionEvent): void', piSession)
     const host = section('const piSdkSessionHost:', 'function createPiSession')
     expect(initialization).toContain('host.loadRuntime(client, userId, context)')
+    expect(initialization).toContain('SessionManager.inMemory')
+    expect(initialization).not.toContain('SessionManager.list(')
+    expect(initialization).not.toContain('SessionManager.open(')
     expect(host).toContain('createOwnerBoundSkillStore(client, userId)')
     expect(host).toContain('createSkillContextAudit(client)')
     expect(host).toContain('skillRepository:')

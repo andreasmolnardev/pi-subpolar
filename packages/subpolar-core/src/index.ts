@@ -1,17 +1,27 @@
 import type {
   ApprovalCallback,
+  ApprovalClaimPort,
+  ApprovalContinuationFactory,
+  ApprovalContinuationPort,
+  ApprovalRecord,
+  ApprovalStore,
   AgentExecutor,
   AgentRunPort,
   AuditEvent,
   AuditEventSink,
+  AuditPort,
   AuditRecord,
-  DomainEvent,
+
   EventReplayPort,
   ExecutionContext,
   InputValidator,
+  IdempotencyPort,
   JsonValue,
   PolicyDecision,
   PolicyResolver,
+  PolicyRuleSource,
+  PolicyRules,
+  ToolPolicyRecord,
   ToolDefinition,
   ToolError,
   ToolExecutor,
@@ -35,19 +45,39 @@ import type {
 import { UnsupportedRecoveryError } from "../../subpolar-contracts/src/index.ts";
 
 export interface GatewayOptions {
-  tools: readonly ToolDefinition[];
-  validateInput: InputValidator;
-  resolvePolicy: PolicyResolver;
-  execute: ToolExecutor;
+  /** Canonical tool definitions supplied by the composition root. */
+  tools?: readonly ToolDefinition[];
+  /** Alias useful when composing directly from a registry response. */
+  toolDefinitions?: readonly ToolDefinition[];
+  /** Optional when the host has no schema validator; the gateway still fails closed on policy. */
+  validateInput?: InputValidator;
+  /** Explicit resolver wins over policyRules when both are supplied. */
+  resolvePolicy?: PolicyResolver;
+  /** Static or PocketBase-derived agent policy records. */
+  policyRules?: PolicyRuleSource;
+  execute?: ToolExecutor;
+  /** Alias for direct compositions that call the implementation an executor. */
+  executor?: ToolExecutor;
+  /** Legacy in-process approval hook. Stateless compositions should use approvalStore. */
   approve?: ApprovalCallback;
+  approvalStore?: ApprovalStore;
+  /** Compatibility alias for callers that name the port after the domain. */
+  approvals?: ApprovalStore;
+  continuationPort?: ApprovalContinuationPort;
+  /** Compatibility alias for direct durable compositions. */
+  continuation?: ApprovalContinuationPort;
+  approvalClaimPort?: ApprovalClaimPort;
+  createContinuation?: ApprovalContinuationFactory;
+  idempotency?: IdempotencyPort;
+  auditPort?: AuditPort;
   emitEvent?: AuditEventSink;
   redact?: (value: unknown) => JsonValue;
   now?: () => Date;
 }
 
 export interface GatewayCapabilities {
-  idempotency: "in-memory-per-gateway";
-  multiProcessGuarantee: false;
+  idempotency: "in-memory-per-gateway" | "injected";
+  multiProcessGuarantee: boolean;
 }
 
 export type GatewayStatus =
@@ -75,6 +105,7 @@ export interface GatewayFailure {
   toolId: string;
   error: ToolError;
   approvalId?: string;
+  approval?: ApprovalRecord;
 }
 
 export type GatewayResult<T = unknown> = GatewaySuccess<T> | GatewayFailure;
@@ -152,15 +183,61 @@ function sanitizeExecutorError(error: unknown): ToolError {
   return { code, message, details };
 }
 
-function policyDecision(rules: { deny?: boolean; requiresApproval?: boolean; allow?: boolean; reason?: string }): PolicyDecision {
-  if (rules.deny) return { kind: "deny", reason: rules.reason ?? "Tool denied by policy" };
-  if (rules.requiresApproval) return { kind: "approval_required", reason: rules.reason ?? "Tool approval is required" };
-  if (rules.allow) return { kind: "allow", reason: rules.reason ?? "Tool allowed by policy" };
-  return { kind: "deny", reason: rules.reason ?? "Tool is not allowed by policy" };
+export function resolvePolicyDecision(rules: PolicyRules): PolicyDecision {
+  // Fail closed and keep the precedence explicit: deny > approval > allow > default deny.
+  if (rules.deny) return { kind: "deny", precedence: "deny", policyId: rules.policyId, reason: rules.reason ?? "Tool denied by policy" };
+  if (rules.requiresApproval) return { kind: "approval_required", precedence: "approval_required", policyId: rules.policyId, reason: rules.reason ?? "Tool approval is required" };
+  if (rules.allow) return { kind: "allow", precedence: "allow", policyId: rules.policyId, reason: rules.reason ?? "Tool allowed by policy" };
+  return { kind: "deny", precedence: "deny", policyId: rules.policyId, reason: rules.reason ?? "Tool is not allowed by policy" };
+}
+
+function policyRecords(source: PolicyRuleSource): { records: readonly ToolPolicyRecord[]; fallback?: PolicyRules } {
+  if (Array.isArray(source)) return { records: source };
+  if (typeof source === "function") return { records: [] };
+  if ("policies" in source) return { records: source.policies, fallback: source.fallback };
+  if ("toolId" in source) return { records: [source] };
+  return { records: [], fallback: source as PolicyRules };
+}
+
+/**
+ * Selects the most specific current record for a tool call. An explicit agent
+ * and project match outranks a single-scope match, and version breaks ties.
+ * Missing records intentionally resolve to the supplied fallback (or deny).
+ */
+export function createAgentPolicyResolver(source: Exclude<PolicyRuleSource, PolicyResolver>): PolicyResolver {
+  const { records, fallback } = policyRecords(source);
+  return (definition, context) => {
+    const candidates = records
+      .filter((record) => record.toolId === definition.id)
+      .filter((record) => record.agentId === undefined || record.agentId === context.agentId)
+      .filter((record) => record.projectId === undefined || record.projectId === context.projectId)
+      .sort((left, right) => {
+        const leftSpecificity = (left.agentId === undefined ? 0 : 2) + (left.projectId === undefined ? 0 : 1);
+        const rightSpecificity = (right.agentId === undefined ? 0 : 2) + (right.projectId === undefined ? 0 : 1);
+        return rightSpecificity - leftSpecificity || right.version - left.version || right.updatedAt.localeCompare(left.updatedAt);
+      });
+    const selected = candidates[0];
+    if (!selected) return fallback ?? {};
+    return { ...selected.rules, policyId: selected.rules.policyId ?? selected.id };
+  };
+}
+
+function policyResolver(source: PolicyRuleSource | undefined): PolicyResolver {
+  if (source === undefined) return () => ({});
+  if (typeof source === "function") return source;
+  return createAgentPolicyResolver(source);
 }
 
 export function createPolicyGateway(options: GatewayOptions): ToolGateway {
-  const tools = [...options.tools];
+  const tools = [...(options.tools ?? options.toolDefinitions ?? [])];
+  const validateInput = options.validateInput ?? (() => ({ valid: true as const }));
+  const resolvePolicy = options.resolvePolicy ?? policyResolver(options.policyRules);
+  const execute = options.execute ?? options.executor;
+  if (!execute) throw new Error("A tool executor is required");
+  const toolExecutor: ToolExecutor = execute;
+  const approvalStore = options.approvalStore ?? options.approvals;
+  const continuationPort = options.continuationPort ?? options.continuation;
+  const approvalClaimPort = options.approvalClaimPort;
   const definitions = new Map<string, ToolDefinition>();
   for (const definition of tools) {
     if (!definition.id || definitions.has(definition.id)) {
@@ -182,7 +259,8 @@ export function createPolicyGateway(options: GatewayOptions): ToolGateway {
     reason?: string,
     result?: unknown,
   ): Promise<boolean> {
-    if (!options.emitEvent) return true;
+    const auditSink = options.auditPort ? (event: AuditEvent) => options.auditPort!.append(event) : options.emitEvent;
+    if (!auditSink) return true;
     try {
       const occurredAt = now().toISOString();
       const safeCallId = redactedText(call.callId, "[REDACTED]");
@@ -206,7 +284,7 @@ export function createPolicyGateway(options: GatewayOptions): ToolGateway {
         occurredAt,
         data: record,
       };
-      await options.emitEvent(event);
+      await auditSink(event);
       return true;
     } catch {
       return false;
@@ -248,7 +326,7 @@ export function createPolicyGateway(options: GatewayOptions): ToolGateway {
       return failure(call, context, "disabled", "TOOL_DISABLED", `Tool is disabled: ${call.toolId}`, "not_evaluated");
     }
 
-    const validation = await options.validateInput(call.input, definition);
+    const validation = await validateInput(call.input, definition);
     if (!validation.valid) {
       return failure(
         call,
@@ -261,45 +339,72 @@ export function createPolicyGateway(options: GatewayOptions): ToolGateway {
       );
     }
 
-    const decision = policyDecision(await options.resolvePolicy(definition, context, call.input));
+    const decision = resolvePolicyDecision(await resolvePolicy(definition, context, call.input));
     if (decision.kind === "deny") {
       return failure(call, context, "denied", "POLICY_DENIED", decision.reason, decision.kind);
     }
 
+    let approvalId: string | undefined;
+    let approval: ApprovalRecord | undefined;
     if (decision.kind === "approval_required") {
-      const approvalId = `approval-${call.callId}`;
-      if (!options.approve) {
-        return failure(
-          call,
-          context,
-          "approval_required",
-          "APPROVAL_REQUIRED",
-          decision.reason,
-          decision.kind,
-          undefined,
-          approvalId,
-        );
-      }
-      const approval = await options.approve({ approvalId, call, definition, context, decision });
-      if (!approval.approved) {
-        return failure(
-          call,
-          context,
-          "approval_denied",
-          "APPROVAL_DENIED",
-          approval.reason ?? "Approval was denied",
-          decision.kind,
-          undefined,
-          approvalId,
-        );
+      approvalId = `approval-${call.callId}`;
+      const approvalRequest = { approvalId, call, definition, context, decision, runId: call.runId };
+      if (approvalStore) {
+        approval = await approvalStore.load(approvalId);
+        if (!approval) {
+          approval = await approvalStore.create(approvalRequest);
+          const continuation = await options.createContinuation?.(approvalRequest);
+          if (continuation && continuationPort) {
+            try {
+              await continuationPort.put(approvalId, call.callId, continuation);
+            } catch {
+              return failure(call, context, "failed", "APPROVAL_CONTINUATION_FAILED", "Approval continuation could not be persisted", decision.kind, undefined, approvalId);
+            }
+          }
+        }
+        if (approval.status === "pending") {
+          const pending = await failure(call, context, "approval_required", "APPROVAL_REQUIRED", decision.reason, decision.kind, undefined, approvalId);
+          return { ...pending, approval };
+        }
+        if (approval.status === "denied") {
+          return failure(call, context, "approval_denied", "APPROVAL_DENIED", approval.reason ?? "Approval was denied", decision.kind, undefined, approvalId);
+        }
+        if (approval.callId !== call.callId || approval.toolId !== call.toolId) {
+          return failure(call, context, "failed", "APPROVAL_MISMATCH", "Approval does not match this tool call", decision.kind, undefined, approvalId);
+        }
+      } else {
+        if (!options.approve) {
+          return failure(call, context, "approval_required", "APPROVAL_REQUIRED", decision.reason, decision.kind, undefined, approvalId);
+        }
+        const callbackDecision = await options.approve(approvalRequest);
+        if (!callbackDecision.approved) {
+          return failure(call, context, "approval_denied", "APPROVAL_DENIED", callbackDecision.reason ?? "Approval was denied", decision.kind, undefined, approvalId);
+        }
       }
     }
 
+    const executeOnce = async (): Promise<ToolResult> => {
+      if (approval?.status === "approved" && approvalClaimPort) {
+        try {
+          const claim = await approvalClaimPort.claim(approval.approvalId, call.callId);
+          if (!claim.claimed) return { ok: false, error: { code: "APPROVAL_ALREADY_CLAIMED", message: "Approval has already been claimed" } };
+        } catch {
+          return { ok: false, error: { code: "APPROVAL_CLAIM_FAILED", message: "Approval could not be claimed" } };
+        }
+      }
+      try {
+        return await toolExecutor(call, definition, context);
+      } catch {
+        return { ok: false, error: { code: "EXECUTION_FAILED", message: "Tool execution failed" } };
+      }
+    };
     let execution: ToolResult;
     try {
-      execution = await options.execute(call, definition, context);
+      execution = options.idempotency
+        ? await options.idempotency.execute(call.idempotencyKey ?? `tool-call:${call.callId}`, executeOnce)
+        : await executeOnce();
     } catch {
-      execution = { ok: false, error: { code: "EXECUTION_FAILED", message: "Tool execution failed" } };
+      execution = { ok: false, error: { code: "IDEMPOTENCY_FAILED", message: "Tool execution could not be committed" } };
     }
     if (!execution.ok) {
       const error = sanitizeExecutorError(execution.error);
@@ -321,6 +426,7 @@ export function createPolicyGateway(options: GatewayOptions): ToolGateway {
         callId: redactedText(call.callId, "[REDACTED]"),
         toolId: redactedText(call.toolId, "[REDACTED]"),
         error: { code: "AUDIT_FAILED", message: "Tool execution completed but audit emission failed" },
+        ...(approvalId === undefined ? {} : { approvalId }),
       };
     }
     return { ok: true, status: "executed", callId: call.callId, toolId: call.toolId, value: execution.value };
@@ -336,7 +442,7 @@ export function createPolicyGateway(options: GatewayOptions): ToolGateway {
 
   return {
     tools,
-    capabilities: { idempotency: "in-memory-per-gateway", multiProcessGuarantee: false },
+    capabilities: { idempotency: options.idempotency ? "injected" : "in-memory-per-gateway", multiProcessGuarantee: Boolean(options.idempotency) },
     lookup: (toolId) => definitions.get(toolId),
     async call(call, context) {
       const completed = completedResults.get(call.callId);
@@ -348,12 +454,17 @@ export function createPolicyGateway(options: GatewayOptions): ToolGateway {
       const resultPromise = runCall(call, context);
       inFlightResults.set(call.callId, resultPromise);
       const result = await resultPromise;
-      completedResults.set(call.callId, result);
+      // Approval-required is a durable pending state, not a completed call result.
+      // Do not pin it in process memory; the next request must reload the approval.
+      if (result.status !== "approval_required") completedResults.set(call.callId, result);
       inFlightResults.delete(call.callId);
       return result;
     },
   };
 }
+
+/** Direct composition name for hosts that do not need the legacy policy name. */
+export const createGateway = createPolicyGateway;
 
 export type { ToolFailure, ToolSuccess };
 
@@ -425,6 +536,7 @@ export function createRunService(options: RunServiceOptions): RunService {
     executor = (request: RunRequest, emit) => runPort.run(request, emit);
   }
   if (!executor) throw new Error("A run executor or run port is required");
+  const runExecutor: AgentExecutor = executor;
 
   const now = options.now ?? (() => new Date());
   let eventSequence = 0;
@@ -556,7 +668,7 @@ export function createRunService(options: RunServiceOptions): RunService {
       const emitProgress: RunProgressEmitter = async (data) => {
         await emit(request, "running", "run.progress", undefined, data);
       };
-      output = await executor(request, emitProgress);
+      output = await runExecutor(request, emitProgress);
     } catch (error) {
       if (request.signal?.aborted) {
         const interrupted = { code: "RUN_INTERRUPTED", message: "Run was cancelled during execution" };
@@ -605,3 +717,5 @@ export function createRunService(options: RunServiceOptions): RunService {
 }
 
 export const createExecutionService = createRunService;
+
+export * from "./runtime.ts";

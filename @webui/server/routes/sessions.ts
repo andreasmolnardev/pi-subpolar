@@ -8,7 +8,7 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
   if (path[1] === 'sessions' && path.length === 2 && request.method === 'GET') {
     const client = await deps.applicationDatabase()
     await deps.ensureUserMetadata(authenticatedUser!.id)
-    await deps.ensureNativeSessionMetadata(client, authenticatedUser!.id)
+    await deps.ensureApplicationSessionMetadata(client, authenticatedUser!.id)
     const requestedCursor = url.searchParams.get('cursor')
     const cursor = requestedCursor ? deps.decodeSessionCursor(requestedCursor) : null
     if (requestedCursor && !cursor) return deps.json({ error: 'Invalid session cursor' }, 400)
@@ -422,7 +422,27 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
           }
           // The session runtime was selected from PocketBase when the Pi session
           // was created; filesystem `/profile` commands are intentionally gone.
-          const response = await deps.sendRpc(id, { type: 'prompt', message: claimedDelivery.content }, ownedRecord)
+          // The canonical run path is request-scoped and durable. The active Pi
+          // object remains only the transient execution/streaming fast path.
+          const routedProject = await deps.ownedSessionProject(ownershipClient, ownerId, ownedRecord)
+          if (!routedProject) throw new Error('Session project is unavailable')
+          const runtimeResult = typeof deps.runStatelessPrompt === 'function'
+            ? await deps.runStatelessPrompt({
+                ownerId,
+                sessionId: id,
+                runId: claimedDelivery.messageId,
+                requestId: typeof metadata.requestId === 'string' && metadata.requestId.trim() ? metadata.requestId : claimedDelivery.messageId,
+                prompt: claimedDelivery.content,
+                metadata: {
+                  ...(Array.isArray(metadata.capabilities) ? { capabilities: metadata.capabilities.filter((value: unknown): value is string => typeof value === 'string').join(',') } : {}),
+                },
+              }, ownedRecord, routedProject)
+            : await deps.sendRpc(id, { type: 'prompt', message: claimedDelivery.content }, ownedRecord)
+          const response = runtimeResult && typeof runtimeResult === 'object' && 'state' in runtimeResult
+            ? runtimeResult.state === 'completed'
+              ? runtimeResult.output
+              : (() => { throw new Error(runtimeResult.error?.message ?? `Run ended in ${runtimeResult.state}`) })()
+            : runtimeResult
           await store.completeMessageDelivery(claimedDelivery, response)
           await store.updateRuntimeRun(ownerId, id, claimedDelivery.messageId, 'completed')
           return deps.json(deps.withDeliveryMetadata(response, deps.messageDeliveryResponse({ ...claimedDelivery, state: 'completed' })))

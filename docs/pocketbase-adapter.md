@@ -1,7 +1,7 @@
 # PocketBase Adapter Composition
 
-The Phase 0A PocketBase adapter is intentionally not wired into `@webui` or the
-bridge. Its exact composition seam is:
+The PocketBase adapter is composed by the WebUI bridge for canonical run outcomes
+and run-event replay. Its exact composition seam is:
 
 1. The application composition root supplies a `PocketBaseClientPort` whose
    `collection(name)` method wraps the concrete PocketBase SDK collections.
@@ -12,9 +12,21 @@ bridge. Its exact composition seam is:
 4. Core code receives only `adapter.agents`, `adapter.projects`,
    `adapter.sessions`, `adapter.approvals`, `adapter.audits`, `adapter.events`,
    and the capability report. It never receives a raw collection or route.
-5. A future WebUI or Pi composition layer can translate its authenticated
-   principal to the repository `ownerId` and inject the adapter into a core
-   service. That wiring is deliberately deferred.
+5. The application composition root translates its authenticated principal to
+   the repository `ownerId`, creates owner-bound run/event and gateway ports,
+   and injects them into a fresh `StatelessSubpolarRuntime` for each canonical
+   prompt run. Pi execution is supplied through the transient Pi adapter and an
+   in-memory SDK session.
+
+For tool calls, load the current records with
+`adapter.policies.list(ownerId, { agentId, projectId })` and pass them to
+`createGateway({ tools, policyRules, ...createPocketBaseGatewayPorts(adapter,
+ownerId), execute })` from `@subpolar/core`. Core owns validation, rule
+selection, deny/approval/allow precedence, durable approval state, claims,
+idempotency, and audit decisions. The executor is the only host-specific seam.
+The owner-bound helpers are `createPocketBaseApprovalStore`,
+`createPocketBaseApprovalContinuationPort`, `createPocketBaseApprovalClaimPort`,
+`createPocketBaseIdempotencyPort`, and `createPocketBaseAuditPort`.
 
 ## Capability Rules
 

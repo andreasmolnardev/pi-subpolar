@@ -27,7 +27,7 @@ export const EVENT_CONTRACT_METADATA = {
   correlationFields: CORRELATION_FIELDS,
 } as const
 
-/** Constants are part of the public compatibility promise, not implementation notes. */
+/** Constants are part of the versioned API contract, not implementation notes. */
 export const COMPATIBILITY_POLICY = {
   version: SUBPOLAR_API_VERSION,
   contract: SUBPOLAR_API_CONTRACT,
@@ -35,7 +35,6 @@ export const COMPATIBILITY_POLICY = {
   additiveChanges: 'allowed',
   breakingChanges: 'new-versioned-contract-and-route',
   unknownResponseFields: 'ignore',
-  legacyRoutes: ['/api/health'],
 } as const
 
 export type ErrorDetails = Readonly<Record<string, unknown>>
@@ -166,16 +165,6 @@ export function createHealthPayload(
   }
 }
 
-export type LegacyHealthPayload =
-  | { status: 'healthy'; timestamp: string; database: 'pocketbase'; runtime: 'pi'; pi: 'healthy' }
-  | { status: 'degraded'; timestamp: string; database: 'pocketbase-unavailable'; runtime: 'pi'; pi: 'healthy'; error: 'PocketBase is unavailable' }
-
-/** Keep the pre-v1 health wire shape explicit so compatibility changes are deliberate. */
-export function createLegacyHealthPayload(healthy: boolean, timestamp: string, _activeSessions?: number): LegacyHealthPayload {
-  return healthy
-    ? { status: 'healthy', timestamp, database: 'pocketbase', runtime: 'pi', pi: 'healthy' }
-    : { status: 'degraded', timestamp, database: 'pocketbase-unavailable', runtime: 'pi', pi: 'healthy', error: 'PocketBase is unavailable' }
-}
 
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue)

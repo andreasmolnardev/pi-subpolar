@@ -125,6 +125,7 @@ vi.mock('@/contexts/EventContext', async (importOriginal) => {
 })
 
 vi.mock('@/api/projects', () => ({
+  listProjects: vi.fn(() => Promise.resolve([])),
   getProject: vi.fn(() => Promise.resolve({
     id: 1,
     name: 'test',
@@ -188,6 +189,7 @@ describe('SessionDetail todo-header integration', () => {
     mocks.usePermissions.mockReturnValue({
       pendingCount: 0,
       hasPermissionsForSession: vi.fn(() => false),
+      getForSession: vi.fn(() => null),
       syncForSession: vi.fn(),
     })
     mocks.useQuestions.mockReturnValue({
@@ -223,10 +225,10 @@ describe('SessionDetail todo-header integration', () => {
 
   const renderSessionDetail = (sessionId: string, repoId: number) => {
     return render(
-      <MemoryRouter initialEntries={[`/repos/${repoId}/sessions/${sessionId}`]}>
+      <MemoryRouter initialEntries={[`/projects/${repoId}/sessions/${sessionId}`]}>
         <QueryClientProvider client={createQueryClient()}>
           <Routes>
-            <Route path="/repos/:id/sessions/:sessionId" element={<SessionDetail />} />
+            <Route path="/projects/:id/sessions/:sessionId" element={<SessionDetail />} />
           </Routes>
         </QueryClientProvider>
       </MemoryRouter>

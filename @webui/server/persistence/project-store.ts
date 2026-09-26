@@ -498,7 +498,7 @@ export class ProjectSessionRepository {
     const existing = await this.getProject(userId, projectId)
     if (!existing) return false
     await collection(this.client, PROJECTS_COLLECTION).delete(existing.id)
-    // Session metadata and the Pi JSONL transcript are intentionally retained.
+    // Session transcript data is application-owned and intentionally retained.
     return true
   }
 
@@ -588,7 +588,7 @@ export class ProjectSessionRepository {
     const existing = await this.getSession(userId, sessionId)
     if (!existing) return false
     await collection(this.client, SESSIONS_COLLECTION).delete(existing.recordId)
-    // Deleting metadata must never delete Pi's transcript.
+    // Deleting metadata must never delete the application transcript.
     return true
   }
 

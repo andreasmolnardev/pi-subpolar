@@ -2,8 +2,16 @@ import { UnsupportedCapabilityError } from "../../subpolar-contracts/src/index.t
 import type {
   AdapterCapability,
   AdapterCapabilities,
+  ApprovalClaimPort,
+  ApprovalContinuationPort,
+  ApprovalDecision,
+  ApprovalRecord as CoreApprovalRecord,
+  ApprovalRequest,
+  ApprovalStore,
+  AuditPort,
   AuditRecord,
   DomainEvent,
+  IdempotencyPort,
   JsonValue,
   SessionStore as CoreSessionStore,
   SessionTranscriptEntry,
@@ -12,8 +20,26 @@ import type {
   Skill,
   SkillRepository,
   EffectiveSkill,
+  EventReplayPort,
+  RunEvent,
+  RunOutcome,
+  RunStore,
 } from "../../subpolar-contracts/src/index.ts";
 import { SkillConflictError, SkillNotFoundError, SkillValidationError, createSkill, updateSkill, listSkills, resolveEffectiveSkills, assertValidSkill } from "../../subpolar-contracts/src/index.ts";
+import { createPocketBaseTargetPersistence } from "./durable.ts";
+import type {
+  ApprovalClaim,
+  ApprovalContinuationRepository,
+  ApprovalClaimRepository,
+  CanonicalTranscriptRepository,
+  CallIdempotencyRepository,
+  OpaqueContinuation,
+  RunEventRepository,
+  RunRepository,
+  ToolDefinitionRepository,
+  ToolPolicyRepository,
+} from "./durable.ts";
+export type * from "./durable.ts";
 
 export const POCKETBASE_ADAPTER_NAME = "pocketbase";
 
@@ -25,13 +51,21 @@ export type PocketBaseCapability =
   | "audit.persistence"
   | "event.publication"
   | "event.replay"
+  | "run-event.persistence"
   | "transactions"
   | "idempotency"
   | "conditional-updates"
   | "approval.atomic-decision"
   | "multi-process-concurrency"
   | "memory.persistence"
-  | "skill.persistence";
+  | "skill.persistence"
+  | "transcript.persistence"
+  | "run.persistence"
+  | "tool.persistence"
+  | "policy.persistence"
+  | "approval.continuation"
+  | "approval.atomic-claim"
+  | "call-id.idempotency";
 
 export interface PocketBaseAdapterCapabilities {
   adapter: typeof POCKETBASE_ADAPTER_NAME;
@@ -40,12 +74,12 @@ export interface PocketBaseAdapterCapabilities {
 }
 
 function commonCapability(capability: PocketBaseCapability): AdapterCapability {
-  if (capability === "session.persistence" || capability === "event.replay" || capability === "durable-approvals" || capability === "memory.persistence") {
-    return capability;
-  }
-  return capability === "multi-process-concurrency" || capability === "transactions" || capability === "idempotency" || capability === "conditional-updates" || capability === "approval.atomic-decision"
-    ? "multi-process-concurrency"
-    : "session.persistence";
+  if (capability === "event.replay" || capability === "memory.persistence") return capability;
+  if (capability === "run-event.persistence") return "event.replay";
+  if (capability === "durable-approvals" || capability === "approval.continuation") return "durable-approvals";
+  if (capability === "run.persistence") return "run.outcome.persistence";
+  if (capability === "multi-process-concurrency" || capability === "transactions" || capability === "idempotency" || capability === "conditional-updates" || capability === "approval.atomic-decision" || capability === "approval.atomic-claim" || capability === "call-id.idempotency") return "multi-process-concurrency";
+  return "session.persistence";
 }
 
 export class PocketBaseUnsupportedCapabilityError extends UnsupportedCapabilityError {
@@ -89,10 +123,25 @@ export interface PocketBaseClientPort {
 
 export interface PocketBaseTransactionPort {
   run<T>(operation: () => Promise<T>): Promise<T>;
+  /** True only when the injected transaction is atomic across adapter processes. */
+  readonly multiProcessSafe?: boolean;
+}
+
+export interface PocketBaseAtomicClaimPort {
+  /** Atomically creates or conditionally updates a claim. */
+  claim(
+    collection: PocketBaseCollectionPort,
+    id: string,
+    expected: Readonly<Record<string, unknown>>,
+    data: Record<string, unknown>,
+  ): Promise<PocketBaseStoredRecord | undefined>;
+  /** Whether the claim is guaranteed across processes/instances. */
+  readonly multiProcessSafe?: boolean;
 }
 
 export interface PocketBaseIdempotencyPort {
   execute<T>(key: string, operation: () => Promise<T>): Promise<T>;
+  readonly multiProcessSafe?: boolean;
 }
 
 export interface PocketBaseConditionalUpdatePort {
@@ -102,6 +151,7 @@ export interface PocketBaseConditionalUpdatePort {
     expected: Readonly<Record<string, unknown>>,
     data: Record<string, unknown>,
   ): Promise<PocketBaseStoredRecord | undefined>;
+  readonly multiProcessSafe?: boolean;
 }
 
 export interface PocketBaseCollectionNames {
@@ -114,6 +164,13 @@ export interface PocketBaseCollectionNames {
   memories?: string | null;
   skills?: string | null;
   skillVersions?: string | null;
+  transcripts?: string | null;
+  runs?: string | null;
+  runEvents?: string | null;
+  tools?: string | null;
+  policies?: string | null;
+  continuations?: string | null;
+  callClaims?: string | null;
 }
 
 export interface PocketBaseAdapterOptions {
@@ -123,6 +180,7 @@ export interface PocketBaseAdapterOptions {
   transaction?: PocketBaseTransactionPort;
   idempotency?: PocketBaseIdempotencyPort;
   conditionalUpdate?: PocketBaseConditionalUpdatePort;
+  atomicClaim?: PocketBaseAtomicClaimPort;
   now?: () => Date;
 }
 
@@ -197,6 +255,8 @@ export interface ApprovalCreateInput {
   callId: string;
   toolId: string;
   request: JsonValue;
+  /** Encrypted/opaque continuation material. The adapter never decrypts or logs it. */
+  continuation?: OpaqueContinuation;
 }
 
 export type ApprovalDecisionInput =
@@ -237,6 +297,7 @@ export interface ApprovalRepository {
   get(ownerId: string, approvalId: string): Promise<ApprovalRecord | undefined>;
   list(ownerId: string): Promise<ApprovalRecord[]>;
   decide(ownerId: string, approvalId: string, decision: ApprovalDecisionInput): Promise<ApprovalRecord>;
+  claim(ownerId: string, approvalId: string, callId: string): Promise<ApprovalClaim>;
 }
 
 export interface AuditRepository {
@@ -267,7 +328,15 @@ export interface PocketBaseAdapter {
   readonly agents: AgentRepository;
   readonly projects: ProjectRepository;
   readonly sessions: SessionRepository;
+  readonly transcripts: CanonicalTranscriptRepository;
+  readonly runs: RunRepository;
+  readonly runEvents: RunEventRepository;
+  readonly tools: ToolDefinitionRepository;
+  readonly policies: ToolPolicyRepository;
   readonly approvals: ApprovalRepository;
+  readonly continuations: ApprovalContinuationRepository;
+  readonly claims: ApprovalClaimRepository;
+  readonly callIds: CallIdempotencyRepository;
   readonly audits: AuditRepository;
   readonly events: EventRepository;
   readonly memories: MemoryRepository;
@@ -526,6 +595,27 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
   const memoryCollection = collection(configuredCollectionName(options.collections, "memories"));
   const skillCollection = collection(configuredCollectionName(options.collections, "skills"));
   const skillVersionCollection = collection(configuredCollectionName(options.collections, "skillVersions"));
+  const target = createPocketBaseTargetPersistence({
+    client: options.client,
+    collections: options.collections,
+    now,
+    transaction: options.transaction,
+    idempotency: options.idempotency,
+    conditionalUpdate: options.conditionalUpdate,
+    atomicClaim: options.atomicClaim,
+    unsupported: (capability) => {
+      const aliases: Record<string, PocketBaseCapability> = {
+        "transcripts.persistence": "transcript.persistence",
+        "runs.persistence": "run.persistence",
+        "runEvents.persistence": "run-event.persistence",
+        "tools.persistence": "tool.persistence",
+        "policies.persistence": "policy.persistence",
+        "continuations.persistence": "approval.continuation",
+        "callClaims.persistence": "call-id.idempotency",
+      };
+      return new PocketBaseUnsupportedCapabilityError(aliases[capability] ?? capability as PocketBaseCapability);
+    },
+  });
 
   const supports: Record<PocketBaseCapability, boolean> = {
     "agent.persistence": Boolean(agentCollection),
@@ -534,14 +624,23 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
     "durable-approvals": Boolean(approvalCollection),
     "audit.persistence": Boolean(auditCollection),
     "event.publication": Boolean(eventCollection),
+    // Adapter-level replay refers to the published domain-event repository.
     "event.replay": Boolean(eventCollection) && options.eventReplay === true,
+    "run-event.persistence": Boolean(configuredCollectionName(options.collections, "runEvents")),
     transactions: Boolean(options.transaction),
     idempotency: Boolean(options.idempotency),
     "conditional-updates": Boolean(options.conditionalUpdate),
     "approval.atomic-decision": Boolean(approvalCollection && (options.transaction || options.idempotency || options.conditionalUpdate)),
-    "multi-process-concurrency": false,
+    "multi-process-concurrency": Boolean(options.atomicClaim?.multiProcessSafe || options.transaction?.multiProcessSafe || options.conditionalUpdate?.multiProcessSafe || options.idempotency?.multiProcessSafe),
     "memory.persistence": Boolean(memoryCollection),
     "skill.persistence": Boolean(skillCollection && skillVersionCollection),
+    "transcript.persistence": Boolean(configuredCollectionName(options.collections, "transcripts")),
+    "run.persistence": Boolean(configuredCollectionName(options.collections, "runs")),
+    "tool.persistence": Boolean(configuredCollectionName(options.collections, "tools")),
+    "policy.persistence": Boolean(configuredCollectionName(options.collections, "policies")),
+    "approval.continuation": Boolean(configuredCollectionName(options.collections, "continuations")),
+    "approval.atomic-claim": Boolean(configuredCollectionName(options.collections, "continuations") && (options.atomicClaim || options.conditionalUpdate || options.transaction)),
+    "call-id.idempotency": Boolean(configuredCollectionName(options.collections, "callClaims") || options.idempotency),
   };
   const capabilities: PocketBaseAdapterCapabilities = {
     adapter: POCKETBASE_ADAPTER_NAME,
@@ -663,6 +762,9 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
         request: redactJson(input.request),
         createdAt: now().toISOString(),
       });
+      if (input.continuation !== undefined) {
+        await target.continuations.put(scopedOwner, input.approvalId, input.callId, input.continuation);
+      }
       return mapApproval(created);
     },
     async get(ownerId, approvalId) {
@@ -719,6 +821,9 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
       if (options.idempotency) return options.idempotency.execute(`approval-decision:${scopedOwner}:${approvalId}`, decideAtomically);
       if (options.conditionalUpdate) return decideAtomically();
       throw new PocketBaseUnsupportedCapabilityError("approval.atomic-decision");
+    },
+    async claim(ownerId, approvalId, callId) {
+      return target.claims.claim(owner(ownerId), requireText(approvalId, "approvalId"), requireText(callId, "callId"));
     },
   };
 
@@ -894,7 +999,15 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
     agents,
     projects,
     sessions,
+    transcripts: target.transcripts,
+    runs: target.runs,
+    runEvents: target.runEvents,
+    tools: target.tools,
+    policies: target.policies,
     approvals,
+    continuations: target.continuations,
+    claims: target.claims,
+    callIds: target.callIds,
     audits,
     events,
     memories,
@@ -919,6 +1032,38 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
  * contract. The owner is selected at composition time, never from a session
  * method argument supplied by the run service.
  */
+export function createPocketBaseRunStore(
+  adapter: Pick<PocketBaseAdapter, "capabilities" | "runs">,
+  ownerId: string,
+): RunStore {
+  const scopedOwner = owner(ownerId);
+  return {
+    capabilities: {
+      adapter: adapter.capabilities.adapter,
+      durability: "remote",
+      supports: { "run.outcome.persistence": adapter.capabilities.supports["run.persistence"] },
+    },
+    load: (runId) => adapter.runs.load(scopedOwner, runId),
+    save: async (outcome: RunOutcome) => { await adapter.runs.save(scopedOwner, outcome); },
+  };
+}
+
+export function createPocketBaseEventReplayPort(
+  adapter: Pick<PocketBaseAdapter, "capabilities" | "runEvents">,
+  ownerId: string,
+): EventReplayPort {
+  const scopedOwner = owner(ownerId);
+  return {
+    capabilities: {
+      adapter: adapter.capabilities.adapter,
+      durability: "remote",
+      supports: { "event.replay": adapter.capabilities.supports["run-event.persistence"] === true },
+    },
+    append: async (event: RunEvent) => { await adapter.runEvents.append(scopedOwner, event); },
+    replay: (runId) => adapter.runEvents.replay(scopedOwner, runId),
+  };
+}
+
 export function createPocketBaseSessionStore(
   adapter: Pick<PocketBaseAdapter, "capabilities" | "sessions">,
   ownerId: string,
@@ -946,6 +1091,90 @@ export function createPocketBaseSessionStore(
       return { sessionId: record.sessionId, transcript: clone(record.transcript), updatedAt: record.updatedAt };
     },
   };
+}
+
+/** Bind owner-scoped PocketBase approval records to the ownerless core port. */
+export function createPocketBaseApprovalStore(
+  adapter: Pick<PocketBaseAdapter, "approvals">,
+  ownerId: string,
+): ApprovalStore {
+  const scopedOwner = owner(ownerId);
+  const map = (record: ApprovalRecord): CoreApprovalRecord => ({
+    approvalId: record.approvalId,
+    callId: record.callId,
+    toolId: record.toolId,
+    request: clone(record.request),
+    status: record.status,
+    ...(record.decidedBy === undefined ? {} : { decidedBy: record.decidedBy }),
+    ...(record.reason === undefined ? {} : { reason: record.reason }),
+    createdAt: record.createdAt,
+    ...(record.decidedAt === undefined ? {} : { decidedAt: record.decidedAt }),
+  });
+  return {
+    load: async (approvalId) => {
+      const record = await adapter.approvals.get(scopedOwner, approvalId);
+      return record ? map(record) : undefined;
+    },
+    create: async (request: ApprovalRequest) => map(await adapter.approvals.create(scopedOwner, {
+      approvalId: request.approvalId,
+      callId: request.call.callId,
+      toolId: request.definition.id,
+      request: redactJson(request),
+    })),
+    decide: async (approvalId: string, decision: ApprovalDecision) => map(await adapter.approvals.decide(scopedOwner, approvalId, decision)),
+  };
+}
+
+export function createPocketBaseApprovalContinuationPort(
+  adapter: Pick<PocketBaseAdapter, "continuations">,
+  ownerId: string,
+): ApprovalContinuationPort {
+  const scopedOwner = owner(ownerId);
+  return {
+    put: (approvalId, callId, continuation) => adapter.continuations.put(scopedOwner, approvalId, callId, continuation),
+    load: (approvalId) => adapter.continuations.get(scopedOwner, approvalId),
+  };
+}
+
+export function createPocketBaseApprovalClaimPort(
+  adapter: Pick<PocketBaseAdapter, "claims">,
+  ownerId: string,
+): ApprovalClaimPort {
+  const scopedOwner = owner(ownerId);
+  return { claim: (approvalId, callId) => adapter.claims.claim(scopedOwner, approvalId, callId) };
+}
+
+export function createPocketBaseIdempotencyPort(
+  adapter: Pick<PocketBaseAdapter, "callIds">,
+  ownerId: string,
+): IdempotencyPort {
+  const scopedOwner = owner(ownerId);
+  return { execute: (key, operation) => adapter.callIds.execute(scopedOwner, key, operation) };
+}
+
+export function createPocketBaseAuditPort(
+  adapter: Pick<PocketBaseAdapter, "audits">,
+  ownerId: string,
+): AuditPort {
+  const scopedOwner = owner(ownerId);
+  return { append: async (event) => { await adapter.audits.append(scopedOwner, event.data); } };
+}
+
+/**
+ * Compose all durable gateway ports with one authenticated owner. The core
+ * remains independent of PocketBase; callers spread these ports into the core
+ * gateway options and supply only definitions, policy rules, and an executor.
+ */
+export function createPocketBaseGatewayPorts(
+  adapter: Pick<PocketBaseAdapter, "approvals" | "continuations" | "claims" | "callIds" | "audits">,
+  ownerId: string,
+) {
+  const approvalStore = createPocketBaseApprovalStore(adapter, ownerId);
+  const continuationPort = createPocketBaseApprovalContinuationPort(adapter, ownerId);
+  const approvalClaimPort = createPocketBaseApprovalClaimPort(adapter, ownerId);
+  const idempotency = createPocketBaseIdempotencyPort(adapter, ownerId);
+  const auditPort = createPocketBaseAuditPort(adapter, ownerId);
+  return { approvalStore, continuationPort, approvalClaimPort, idempotency, auditPort };
 }
 
 function mapAudit(record: PocketBaseStoredRecord): AuditRecord {

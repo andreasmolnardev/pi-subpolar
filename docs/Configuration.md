@@ -36,8 +36,8 @@ machine-specific. Create these files locally when needed.
 
 ## `projects.json`
 
-Defines virtual project roots used by `@webui/subpolar/extensions/projects.ts`. The SDK integration
-changes the root used by Pi tools without changing Pi's process directory.
+Defines virtual project roots used by the WebUI project and session routes. The application
+integration changes the root used by Pi tools without changing Pi's process directory.
 
 Accepted simple format:
 
@@ -77,11 +77,6 @@ Controls Pi defaults and loads this repository's extensions:
   "defaultModel": "openai-codex/gpt-5.4-mini",
   "sessionTitleGenModel": "openai-codex/gpt-5.4-mini",
   "extensions": [
-    "./subpolar/extensions/agent-profiles.ts",
-    "./subpolar/extensions/projects.ts",
-    "./subpolar/extensions/usage.ts",
-    "./subpolar/extensions/session-title.ts",
-    "./subpolar/extensions/session-history-search.ts",
     "./subpolar/extensions/list-tools.ts",
     "./subpolar/extensions/openapi-tools.ts"
   ]
@@ -89,9 +84,9 @@ Controls Pi defaults and loads this repository's extensions:
 ```
 
 `defaultModel` selects the default SDK model. `sessionTitleGenModel` is used by
-`session-title.ts` after a session's first assistant response. The WebUI bridge
-registers the integrations directly with the Pi SDK; this configuration is not
-loaded by a Pi CLI process.
+the WebUI application runtime after a session's first assistant response. The
+WebUI bridge registers the active integrations directly with the Pi SDK; this
+configuration is not loaded by a Pi CLI process.
 
 Do not put API keys or tokens in `settings.json`.
 

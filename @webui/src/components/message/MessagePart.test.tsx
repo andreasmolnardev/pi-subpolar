@@ -132,6 +132,7 @@ describe('MessagePart', () => {
       <MessagePart
         part={part}
         messageTextContent={TEST_CONTENT}
+        assistantMetadata={{ completed: 2000 }}
       />
     )
     
@@ -147,6 +148,7 @@ describe('MessagePart', () => {
       <MessagePart
         part={part}
         messageTextContent=""
+        assistantMetadata={{ completed: 2000 }}
       />
     )
     
@@ -161,6 +163,7 @@ describe('MessagePart', () => {
       <MessagePart
         part={part}
         messageTextContent={TEST_CONTENT}
+        assistantMetadata={{ completed: 2000 }}
       />
     )
     
@@ -175,6 +178,7 @@ describe('MessagePart', () => {
       <MessagePart
         part={part}
         messageTextContent={TEST_CONTENT}
+        assistantMetadata={{ completed: 2000 }}
       />
     )
     
@@ -202,6 +206,7 @@ describe('MessagePart', () => {
       <MessagePart
         part={part}
         messageTextContent={TEST_CONTENT}
+        assistantMetadata={{ completed: 2000 }}
       />
     )
     
@@ -220,6 +225,7 @@ describe('MessagePart', () => {
       <MessagePart
         part={part}
         messageTextContent={TEST_CONTENT}
+        assistantMetadata={{ completed: 2000 }}
       />
     )
     
@@ -236,6 +242,7 @@ describe('MessagePart', () => {
       <MessagePart
         part={part}
         messageTextContent={TEST_CONTENT}
+        assistantMetadata={{ completed: 2000 }}
       />
     )
     
@@ -251,6 +258,7 @@ describe('MessagePart', () => {
       <MessagePart
         part={part}
         messageTextContent={TEST_CONTENT}
+        assistantMetadata={{ completed: 2000 }}
       />
     )
     
@@ -267,6 +275,7 @@ describe('MessagePart', () => {
       <MessagePart
         part={part1}
         messageTextContent={TEST_CONTENT}
+        assistantMetadata={{ completed: 2000 }}
       />
     )
     
@@ -276,6 +285,7 @@ describe('MessagePart', () => {
       <MessagePart
         part={part2}
         messageTextContent={TEST_CONTENT}
+        assistantMetadata={{ completed: 2000 }}
       />
     )
     
@@ -648,7 +658,7 @@ describe('MessagePart', () => {
       })
       
       const part = createStepFinishPart()
-      const { container } = render(<MessagePart part={part} />)
+      const { container } = render(<MessagePart part={part} assistantMetadata={{ completed: 2000 }} />)
       
       expect(container.firstChild).not.toBeNull()
     })
@@ -661,7 +671,7 @@ describe('MessagePart', () => {
       sessionID: 'test-session',
     })
 
-    it('renders null for reasoning part when showReasoning is false', () => {
+    it('renders reasoning regardless of the removed showReasoning preference', () => {
       setupSettings({
         simpleChatMode: false,
         showReasoning: false,
@@ -675,7 +685,7 @@ describe('MessagePart', () => {
       const part = createReasoningPart()
       const { container } = render(<MessagePart part={part} />)
       
-      expect(container.firstChild).toBeNull()
+      expect(container.firstChild).not.toBeNull()
     })
 
     it('renders reasoning part when showReasoning is true', () => {
@@ -693,7 +703,7 @@ describe('MessagePart', () => {
       render(<MessagePart part={part} />)
       
       expect(screen.getByText('This is the reasoning text')).toBeInTheDocument()
-      expect(screen.getByText('Thinking')).toBeInTheDocument()
+      expect(screen.getByText('Thinking...')).toBeInTheDocument()
     })
 
     it('renders thinking content as plain text without Markdown emphasis markers', () => {
@@ -728,7 +738,7 @@ describe('MessagePart', () => {
       const part = createReasoningPart()
       const { container } = render(<MessagePart part={part} isActiveGenerationStep />)
 
-      expect(container.querySelector('details')).toHaveAttribute('open')
+      expect(container.querySelector('details')).not.toHaveAttribute('open')
     })
   })
 

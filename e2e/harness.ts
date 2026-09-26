@@ -107,7 +107,7 @@ export async function startHarness(options: { keep?: boolean } = {}): Promise<Ha
       XDG_DATA_HOME: join(paths.home, '.local', 'share'),
       XDG_CACHE_HOME: join(paths.home, '.cache'),
     })
-    await waitFor(`http://127.0.0.1:${bridgePort}/api/health`, 'bridge')
+    await waitFor(`http://127.0.0.1:${bridgePort}/api/v1/health`, 'bridge')
 
     spawnLogged('webui', command(process.env.E2E_WEBUI_COMMAND, ['npm', '--prefix', '@webui', 'run', 'dev', '--', '--host', '127.0.0.1', '--port', String(webPort)]), {
       WEBUI_PORT: String(bridgePort),

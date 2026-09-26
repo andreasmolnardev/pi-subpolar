@@ -4,7 +4,7 @@ import {
   CORRELATION_FIELDS,
   createCapabilitiesPayload,
   createHealthPayload,
-  createLegacyHealthPayload,
+
   deriveHealthStatus,
   errorEnvelope,
   serializeContractPayload,
@@ -60,12 +60,4 @@ describe('WebUI API contracts', () => {
     })
   })
 
-  test('keeps the legacy public health shape unchanged', () => {
-    expect(createLegacyHealthPayload(true, '2026-09-19T00:00:00.000Z', 2)).toEqual({
-      status: 'healthy', timestamp: '2026-09-19T00:00:00.000Z', database: 'pocketbase', runtime: 'pi', pi: 'healthy',
-    })
-    expect(createLegacyHealthPayload(false, '2026-09-19T00:00:00.000Z', 2)).toEqual({
-      status: 'degraded', timestamp: '2026-09-19T00:00:00.000Z', database: 'pocketbase-unavailable', runtime: 'pi', pi: 'healthy', error: 'PocketBase is unavailable',
-    })
-  })
 })

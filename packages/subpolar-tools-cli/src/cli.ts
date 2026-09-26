@@ -25,16 +25,6 @@ const adapters = new Set(['internal', 'http', 'openapi', 'mcp'])
 const risks = new Set(['read', 'write', 'delete', 'external'])
 const schemaTypes = new Set(['array', 'boolean', 'integer', 'null', 'number', 'object', 'string'])
 
-const legacyToolIds: Record<string, string> = {
-  'tools.list': 'search-tool',
-  'pi.read': 'read',
-  'pi.write': 'write',
-  'pi.edit': 'edit',
-  'pi.bash': 'bash',
-  'pi.grep': 'grep',
-  'pi.find': 'find',
-  'pi.ls': 'ls',
-}
 
 export interface CliIo {
   stdout?: (text: string) => void
@@ -187,7 +177,7 @@ function canonicalToolId(value: unknown, adapter?: unknown, namespace?: unknown)
   if (typeof value !== 'string' || !value.trim()) fail('tool ID must be a non-empty string')
   let id = value.trim()
   if (id !== value) fail('tool ID must not have leading or trailing whitespace')
-  id = legacyToolIds[id] ?? id
+
   if (adapter && adapter !== 'internal' && typeof namespace === 'string' && namespace && !id.includes('/')) {
     const operation = id.includes('.') ? id.slice(id.lastIndexOf('.') + 1) : id
     id = `${namespace}/${operation}`
@@ -384,7 +374,7 @@ function validateMetadata(value: unknown): JsonObject {
 function addDefinition(value: unknown): JsonObject {
   if (!isObject(value)) fail('add input must be a JSON object')
   const rawId = definitionField(value, 'toolId', 'tool_id')
-  if (typeof rawId === 'string' && (legacyToolIds[rawId] || builtInToolIds.has(rawId))) fail(`tool ID is reserved: ${rawId}`)
+  if (typeof rawId === 'string' && builtInToolIds.has(rawId)) fail(`tool ID is reserved: ${rawId}`)
   const namespace = requiredText(value.namespace, 'namespace', 128)
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(namespace) || namespace === 'builtin') fail('namespace must be a non-reserved identifier')
   const adapter = requiredText(value.adapter, 'adapter', 32)
@@ -580,7 +570,7 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
 
     if (command === 'health') {
       commandArgs(command, args, 0)
-      printResult(io, flags.json, command, await requestJson(base, token, flags.timeout, fetcher, '/api/health', 'GET', undefined, cancellation.signal), token)
+      printResult(io, flags.json, command, await requestJson(base, token, flags.timeout, fetcher, '/api/v1/health', 'GET', undefined, cancellation.signal), token)
       return EXIT_OK
     }
     if (command === 'list') {
@@ -668,8 +658,9 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
   }
 }
 
-if (runtime().process?.argv && runtime().process.argv[1]?.endsWith('/src/cli.ts')) {
-  runCli(runtime().process.argv.slice(2)).then((exitCode) => {
-    if (runtime().process) (runtime().process as { exitCode?: number }).exitCode = exitCode
+const entryProcess = runtime().process;
+if (entryProcess?.argv && entryProcess.argv[1]?.endsWith('/src/cli.ts')) {
+  runCli(entryProcess.argv.slice(2)).then((exitCode) => {
+    if (entryProcess) (entryProcess as { exitCode?: number }).exitCode = exitCode
   })
 }

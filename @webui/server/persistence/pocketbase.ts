@@ -178,6 +178,28 @@ async function verifyUniqueIndexesPresent(
   }
 }
 
+async function normalizeApprovalKeys(client: PocketBase): Promise<void> {
+  if (typeof (client as unknown as { collection?: unknown }).collection !== 'function') return
+  const records = await client.collection('tool_approvals').getFullList().catch(() => [])
+  const seen = new Set<string>()
+  for (const record of records) {
+    const ownerId = String(record.user_id ?? '')
+    const existingKey = typeof record.approval_key === 'string' ? record.approval_key.trim() : ''
+    const scopedKey = `${ownerId}:${existingKey}`
+    if (existingKey && !seen.has(scopedKey)) {
+      seen.add(scopedKey)
+      continue
+    }
+    const fallbackKey = String(record.id ?? '').trim()
+    if (!ownerId || !fallbackKey) continue
+    const nextKey = `${fallbackKey}`
+    const nextScopedKey = `${ownerId}:${nextKey}`
+    if (seen.has(nextScopedKey)) continue
+    await client.collection('tool_approvals').update(String(record.id), { approval_key: nextKey })
+    seen.add(nextScopedKey)
+  }
+}
+
 export async function ensureApplicationCollections(client: PocketBase): Promise<void> {
   await ensureCollection(client, 'user_preferences', [
     field('user_id', 'text', { required: true }),
@@ -235,17 +257,25 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('updated_at', 'number', { required: true }),
   ], ['CREATE UNIQUE INDEX idx_agent_tool_policies_agent_tool ON agent_tool_policies (user_id, agent_id, tool_id)'])
 
-  await ensureCollection(client, 'tool_approvals', [
+  const approvalFields = [
     field('user_id', 'text', { required: true }),
     field('agent_id', 'text', { required: true }),
     field('session_id', 'text'),
     field('tool_id', 'text', { required: true }),
     field('input', 'json'),
+    field('executable_input', 'text'),
+    field('approval_key', 'text'),
+    field('call_id', 'text'),
     field('status', 'select', { required: true, values: ['pending', 'approved', 'rejected', 'expired'], maxSelect: 1 }),
     field('reason', 'text'),
     field('created_at', 'number', { required: true }),
     field('resolved_at', 'number'),
-  ], ['CREATE INDEX idx_tool_approvals_pending ON tool_approvals (user_id, status, created_at)'])
+  ]
+  // Add the key field before normalizing rows so old records can be repaired
+  // before the unique index is created.
+  await ensureCollection(client, 'tool_approvals', approvalFields)
+  await normalizeApprovalKeys(client)
+  await ensureCollection(client, 'tool_approvals', [], ['CREATE INDEX idx_tool_approvals_pending ON tool_approvals (user_id, status, created_at)', 'CREATE UNIQUE INDEX idx_tool_approvals_user_key ON tool_approvals (user_id, approval_key)'])
 
   await ensureCollection(client, 'tool_approval_continuations', [
     field('approval_id', 'text', { required: true }),
@@ -279,6 +309,22 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('approval_id', 'text'),
     field('created_at', 'number', { required: true }),
   ], ['CREATE INDEX idx_tool_call_audit_user_created ON tool_call_audit (user_id, created_at)'])
+
+  await ensureCollection(client, 'subpolar_tool_audits', [
+    field('ownerId', 'text', { required: true }),
+    field('auditId', 'text', { required: true }),
+    field('callId', 'text', { required: true }),
+    field('toolId', 'text', { required: true }),
+    field('principalId', 'text', { required: true }),
+    field('sessionId', 'text'),
+    field('requestId', 'text', { required: true }),
+    field('decision', 'select', { required: true, values: ['deny', 'approval_required', 'allow', 'not_evaluated'], maxSelect: 1 }),
+    field('status', 'select', { required: true, values: ['unknown_tool', 'disabled', 'validation_failed', 'denied', 'approval_required', 'approval_denied', 'executed', 'failed'], maxSelect: 1 }),
+    field('input', 'json', { required: true }),
+    field('result', 'json'),
+    field('reason', 'text'),
+    field('occurredAt', 'text', { required: true }),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_audits_owner_audit ON subpolar_tool_audits (ownerId, auditId)'], true)
 
   await ensureCollection(client, 'memory_records', [
     field('owner_id', 'text', { required: true }),
@@ -324,6 +370,93 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('reference', 'text'),
   ], ['CREATE UNIQUE INDEX idx_skill_versions_owner_identity_version ON skill_versions (ownerId, skillHeadId, version)', 'CREATE INDEX idx_skill_versions_owner_skill ON skill_versions (ownerId, skillId)'], true)
 
+  await ensureCollection(client, 'canonical_transcripts', [
+    field('ownerId', 'text', { required: true }),
+    field('sessionId', 'text', { required: true }),
+    field('runId', 'text'),
+    field('messageId', 'text'),
+    field('sequence', 'number', { required: true }),
+    field('role', 'select', { required: true, values: ['system', 'user', 'assistant', 'tool'], maxSelect: 1 }),
+    field('content', 'text'),
+    field('toolCall', 'json'),
+    field('toolResult', 'json'),
+    field('error', 'json'),
+    field('usage', 'json'),
+    field('metadata', 'json'),
+    field('occurredAt', 'text', { required: true }),
+  ], ['CREATE UNIQUE INDEX idx_canonical_transcripts_order ON canonical_transcripts (ownerId, sessionId, sequence)', 'CREATE INDEX idx_canonical_transcripts_session ON canonical_transcripts (ownerId, sessionId, sequence)'], true)
+
+  await ensureCollection(client, 'subpolar_runs', [
+    field('ownerId', 'text', { required: true }),
+    field('runId', 'text', { required: true }),
+    field('requestId', 'text', { required: true }),
+    field('sessionId', 'text'),
+    field('state', 'select', { required: true, values: ['completed', 'failed', 'interrupted', 'unknown'], maxSelect: 1 }),
+    field('output', 'json'),
+    field('error', 'json'),
+    field('recoverable', 'bool', { required: true }),
+    field('occurredAt', 'text', { required: true }),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_runs_owner_run ON subpolar_runs (ownerId, runId)'], true)
+
+  await ensureCollection(client, 'subpolar_run_events', [
+    field('ownerId', 'text', { required: true }),
+    field('eventId', 'text', { required: true }),
+    field('runId', 'text', { required: true }),
+    field('requestId', 'text', { required: true }),
+    field('sessionId', 'text'),
+    field('type', 'select', { required: true, values: ['run.started', 'run.progress', 'run.completed', 'run.failed', 'run.interrupted', 'run.unknown'], maxSelect: 1 }),
+    field('state', 'select', { required: true, values: ['idle', 'running', 'completed', 'failed', 'interrupted', 'unknown'], maxSelect: 1 }),
+    field('data', 'json', { required: true }),
+    field('occurredAt', 'text', { required: true }),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_run_events_owner_event ON subpolar_run_events (ownerId, eventId)', 'CREATE INDEX idx_subpolar_run_events_run ON subpolar_run_events (ownerId, runId, occurredAt)'], true)
+
+  await ensureCollection(client, 'subpolar_tool_definitions', [
+    field('ownerId', 'text', { required: true }),
+    field('toolId', 'text', { required: true }),
+    field('namespace', 'text', { required: true }),
+    field('description', 'text', { required: true }),
+    field('inputSchema', 'json', { required: true }),
+    field('enabled', 'bool', { required: true }),
+    field('risk', 'select', { required: true, values: ['low', 'medium', 'high'], maxSelect: 1 }),
+    field('metadata', 'json'),
+    field('createdAt', 'text', { required: true }),
+    field('updatedAt', 'text', { required: true }),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_tools_owner_tool ON subpolar_tool_definitions (ownerId, toolId)'], true)
+
+  await ensureCollection(client, 'subpolar_tool_policies', [
+    field('ownerId', 'text', { required: true }),
+    field('policyId', 'text', { required: true }),
+    field('toolId', 'text', { required: true }),
+    field('agentId', 'text'),
+    field('projectId', 'text'),
+    field('rules', 'json', { required: true }),
+    field('version', 'number', { required: true }),
+    field('createdAt', 'text', { required: true }),
+    field('updatedAt', 'text', { required: true }),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_policies_owner_policy ON subpolar_tool_policies (ownerId, policyId)'], true)
+
+  await ensureCollection(client, 'subpolar_approval_continuations', [
+    field('ownerId', 'text', { required: true }),
+    field('approvalId', 'text', { required: true }),
+    field('callId', 'text', { required: true }),
+    field('opaquePayload', 'text', { required: true }),
+    field('keyId', 'text'),
+    field('requestHash', 'text', { required: true }),
+    field('expiresAt', 'text', { required: true }),
+    field('claimedAt', 'text'),
+    field('claimToken', 'text'),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_continuations_owner_approval ON subpolar_approval_continuations (ownerId, approvalId)'], true)
+
+  await ensureCollection(client, 'subpolar_call_claims', [
+    field('ownerId', 'text', { required: true }),
+    field('callId', 'text', { required: true }),
+    field('state', 'select', { required: true, values: ['pending', 'completed', 'failed'], maxSelect: 1 }),
+    field('claimedAt', 'text', { required: true }),
+    field('completedAt', 'text'),
+    field('result', 'json'),
+    field('error', 'json'),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_call_claims_owner_call ON subpolar_call_claims (ownerId, callId)', 'CREATE INDEX idx_subpolar_call_claims_state ON subpolar_call_claims (ownerId, state)'], true)
+
   await ensureCollection(client, 'gateway_credentials', [
     field('owner_id', 'text', { required: true }),
     field('principal', 'text', { required: true }),
@@ -362,6 +495,10 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('content', 'text', { required: true }), field('metadata', 'json', { required: true }), field('state', 'select', { required: true, values: ['pending', 'running', 'completed', 'interrupted', 'unknown'], maxSelect: 1 }),
     field('created_at', 'number', { required: true }), field('updated_at', 'number', { required: true }), field('response', 'json'),
   ], ['CREATE UNIQUE INDEX idx_message_deliveries_key ON message_deliveries (owner_id, session_id, message_id)', 'CREATE INDEX idx_message_deliveries_pending ON message_deliveries (owner_id, session_id, state, updated_at)'], true)
+  await ensureCollection(client, 'session_transcripts', [
+    field('owner_id', 'text', { required: true }), field('session_id', 'text', { required: true }),
+    field('entries', 'json', { required: true }), field('leaf_id', 'text'), field('updated_at', 'number', { required: true }),
+  ], ['CREATE UNIQUE INDEX idx_session_transcripts_key ON session_transcripts (owner_id, session_id)', 'CREATE INDEX idx_session_transcripts_updated ON session_transcripts (owner_id, updated_at)'], true)
   await ensureCollection(client, 'message_queue', [
     field('owner_id', 'text', { required: true }), field('session_id', 'text', { required: true }), field('client_id', 'text', { required: true }), field('content', 'text', { required: true }),
     field('kind', 'select', { required: true, values: ['steering', 'follow_up'], maxSelect: 1 }), field('state', 'select', { required: true, values: ['steering', 'enqueued', 'delivered', 'failed', 'cancelled'], maxSelect: 1 }),

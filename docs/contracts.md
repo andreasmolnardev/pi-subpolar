@@ -26,8 +26,6 @@ Provider diagnostics contain only non-secret counts/identifiers and public
 status vocabulary. Credentials, environment values, headers, filesystem paths,
 and provider error text are not part of the response.
 
-The existing `GET /api/health` response remains unchanged for compatibility.
-It is a legacy operational response, not the versioned contract.
 
 ## Error Envelope
 
@@ -47,7 +45,16 @@ New contract errors use:
 `details` and `requestId` are optional in the type, but versioned bridge
 responses include `requestId`.
 
-## Compatibility
+## Shared gateway composition
+
+`@subpolar/contracts` defines the persistence-neutral gateway ports. An
+application can bind an owner-scoped adapter to `ApprovalStore`,
+`ApprovalContinuationPort`, and `ApprovalClaimPort`, then pass the resulting
+ports to `@subpolar/core` together with tool definitions, PocketBase-derived
+`ToolPolicyRecord[]`, and an executor. Continuation payloads are opaque and
+must not be interpreted or logged by the adapter.
+
+## Versioning
 
 The v1 policy permits additive response fields and asks clients to ignore
 unknown fields. Breaking wire changes require a new versioned contract

@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { createPolicyGateway, redactAuditValue } from "../src/index.ts";
-import type { DomainEvent, ExecutionContext, ToolDefinition } from "../../subpolar-contracts/src/index.ts";
+import { createGateway, createPolicyGateway, redactAuditValue, resolvePolicyDecision } from "../src/index.ts";
+import type {
+  ApprovalContinuationPort,
+  ApprovalRecord,
+  ApprovalRequest,
+  ApprovalStore,
+  AuditEvent,
+  ExecutionContext,
+  ToolDefinition,
+  ToolPolicyRecord,
+} from "../../subpolar-contracts/src/index.ts";
 
 const context: ExecutionContext = {
   requestId: "request-1",
@@ -15,7 +24,7 @@ const tools: ToolDefinition[] = [
   { id: "disabled.tool", namespace: "disabled", description: "Disabled", inputSchema: {}, enabled: false, risk: "low" },
 ];
 
-function makeGateway(policy: (toolId: string) => { allow?: boolean; deny?: boolean; requiresApproval?: boolean }, events: DomainEvent[] = []) {
+function makeGateway(policy: (toolId: string) => { allow?: boolean; deny?: boolean; requiresApproval?: boolean }, events: AuditEvent[] = []) {
   return createPolicyGateway({
     tools,
     validateInput: async (input) => (typeof input === "object" && input !== null && "value" in input ? { valid: true } : { valid: false, errors: ["value is required"] }),
@@ -27,6 +36,75 @@ function makeGateway(policy: (toolId: string) => { allow?: boolean; deny?: boole
 }
 
 describe("subpolar-core policy gateway", () => {
+  test("uses deny, approval, allow, then default-deny precedence", () => {
+    expect(resolvePolicyDecision({ deny: true, requiresApproval: true, allow: true }).kind).toBe("deny");
+    expect(resolvePolicyDecision({ requiresApproval: true, allow: true }).kind).toBe("approval_required");
+    expect(resolvePolicyDecision({ allow: true }).kind).toBe("allow");
+    expect(resolvePolicyDecision({}).kind).toBe("deny");
+  });
+
+  test("composes directly from agent policy records and durable approval ports", async () => {
+    const records = new Map<string, ApprovalRecord>();
+    let storedContinuation = false;
+    const approvalStore: ApprovalStore = {
+      load: async (approvalId) => records.get(approvalId),
+      create: async (request: ApprovalRequest) => {
+        const record: ApprovalRecord = {
+          approvalId: request.approvalId,
+          callId: request.call.callId,
+          toolId: request.call.toolId,
+          request: { callId: request.call.callId, toolId: request.call.toolId },
+          status: "pending",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        };
+        records.set(record.approvalId, record);
+        return record;
+      },
+      decide: async (approvalId, decision) => {
+        const current = records.get(approvalId);
+        if (!current) throw new Error("approval not found");
+        const next = { ...current, status: decision.approved ? "approved" as const : "denied" as const };
+        records.set(approvalId, next);
+        return next;
+      },
+    };
+    const continuationPort: ApprovalContinuationPort = {
+      put: async () => {
+        storedContinuation = true;
+        return {
+          id: "continuation-1",
+          ownerId: "owner-1",
+          approvalId: "approval-call-direct",
+          callId: "call-direct",
+          payload: "opaque",
+          requestHash: "hash",
+          expiresAt: "2026-01-02T00:00:00.000Z",
+        };
+      },
+      load: async () => undefined,
+    };
+    const policyRecords: ToolPolicyRecord[] = [
+      { id: "policy-default", ownerId: "owner-1", toolId: "manual.deploy", rules: { allow: true }, version: 1, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+      { id: "policy-agent", ownerId: "owner-1", toolId: "manual.deploy", agentId: "agent-1", rules: { requiresApproval: true }, version: 2, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+    ];
+    let executions = 0;
+    const gateway = createGateway({
+      toolDefinitions: [tools[2]],
+      policyRules: policyRecords,
+      approvals: approvalStore,
+      continuation: continuationPort,
+      createContinuation: () => ({ payload: "opaque", requestHash: "hash", expiresAt: "2026-01-02T00:00:00.000Z" }),
+      executor: async () => { executions += 1; return { ok: true, value: "deployed" }; },
+    });
+    const directContext = { ...context, principal: { id: "owner-1", kind: "user" as const }, agentId: "agent-1" };
+
+    await expect(gateway.call({ callId: "call-direct", toolId: "manual.deploy", input: {} }, directContext)).resolves.toMatchObject({ status: "approval_required", approvalId: "approval-call-direct" });
+    expect(storedContinuation).toBe(true);
+    records.set("approval-call-direct", { ...records.get("approval-call-direct")!, status: "approved" });
+    await expect(gateway.call({ callId: "call-direct", toolId: "manual.deploy", input: {} }, directContext)).resolves.toMatchObject({ status: "executed", value: "deployed" });
+    expect(executions).toBe(1);
+  });
+
   test("redacts embedded and JSON-encoded secrets from audit values", () => {
     const value = redactAuditValue({
       message: 'request failed: apiKey=plain-secret; body={"password":"json-secret"}',

@@ -18,10 +18,20 @@ export function useAutomationTarget(projectId: number | undefined): {
   })
 
   if (isGeneralChatId(projectId)) {
+    const status = workspaceQuery.status
     return {
-      automationTarget: workspaceQuery.status && projectQuery.data ? automationTargetFromProject(projectQuery.data) : undefined,
-      isLoading: projectQuery.isLoading,
-      isError: projectQuery.isError,
+      automationTarget: status
+        ? {
+            projectId: projectId ?? 0,
+            kind: 'project',
+            name: 'General Chat',
+            subtitle: status.relativePath || status.directory,
+            fullPath: status.directory,
+            backHref: `/projects/${projectId}`,
+          }
+        : undefined,
+      isLoading: workspaceQuery.isLoading,
+      isError: workspaceQuery.isError,
     }
   }
 

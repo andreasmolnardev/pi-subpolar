@@ -5,45 +5,6 @@ import type { BridgeRequestContext } from '../bridge-route-context.ts'
 export async function handleToolsRoute(context: BridgeRequestContext): Promise<Response | undefined> {
   const { request, url, path, correlationId, deps, gatewayCredential, internalRequest } = context
   let authenticatedUser = context.authenticatedUser
-  if (path[1] === 'pi' && path[2] === 'tools' && path[3] === 'authorize' && request.method === 'POST') {
-    const input = await deps.body(request)
-    const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : ''
-    if (!sessionId) return deps.json({ ok: false, decision: 'deny', message: 'An authenticated owned session is required' }, 401)
-    try {
-      const client = await deps.applicationDatabase()
-      const session = await deps.createProjectSessionRepository(client).getSessionById(sessionId)
-      // Internal Pi calls have no browser cookie, but ownership still comes
-      // from the durable PocketBase session record, never from process-local
-      // session state or a caller-supplied userId.
-      if (!session || (authenticatedUser && session.userId !== authenticatedUser.id)) return deps.json({ ok: false, decision: 'deny', message: 'Session not found' }, 404)
-      const userId = session.userId
-      const requestedOverride = deps.requestedPermissionOverride(input.permissionOverride)
-      if (requestedOverride === null) return deps.json({ ok: false, decision: 'deny', message: 'Invalid permission override' }, 400)
-      const context = await deps.resolveToolSessionContext(client, userId, sessionId, typeof input.agentName === 'string' ? input.agentName : undefined)
-      if (requestedOverride !== undefined && requestedOverride !== context.permissionOverride) {
-        return deps.json({ ok: false, decision: 'deny', message: 'Permission override does not match the persisted session policy' }, 403)
-      }
-      const result = await deps.authorizePiToolCall(client, {
-        userId,
-        agentName: context.agentName,
-        sessionId,
-        toolName: typeof input.toolName === 'string' ? input.toolName : '',
-        input: input.input ?? {},
-        permissionOverride: context.permissionOverride,
-      })
-      if (result.decision !== 'approval') return deps.json(result)
-
-      deps.broadcastSse({
-        type: 'permission.asked',
-        directory: typeof input.cwd === 'string' ? input.cwd : undefined,
-          properties: deps.permissionAskedProperties({ id: result.approvalId ?? '', sessionId, toolId: deps.mapToolId(input.toolName), input: input.input ?? {}, reason: result.message ?? 'Tool approval required' }),
-      }, userId)
-      return deps.json({ ok: false, decision: 'approval', approvalId: result.approvalId, message: result.message }, 202)
-    } catch (error) {
-      console.warn(`Tool authorization failed: ${deps.redactedDiagnostic(error)}`)
-      return deps.json({ ok: false, decision: 'deny', message: 'Tool authorization failed' }, 503)
-    }
-  }
 
   if (path[1] === 'subpolar-cli' && path[2] === 'tools' && request.method === 'POST') {
     const input = await deps.body(request)
@@ -107,27 +68,34 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
         if (requestedOverride === null) return deps.json({ error: 'Invalid permission override' }, 400)
         const context = await deps.resolveToolSessionContext(client, executionUserId, sessionId, typeof input.agentName === 'string' ? input.agentName : undefined)
         if (requestedOverride !== undefined && requestedOverride !== context.permissionOverride) return deps.json({ error: 'Permission override does not match the persisted session policy' }, 403)
-        const gateway = deps.inProcessToolGateway ?? deps.createToolGatewayFromCallTool(client, deps.callTool)
+        const callId = typeof input.callId === 'string' && input.callId.trim() ? input.callId : crypto.randomUUID()
+        const gateway = await deps.createCoreToolGateway(client, executionUserId, {
+          onApproval: (approval: any) => {
+            const request = approval.request && typeof approval.request === 'object' ? approval.request : {}
+            deps.broadcastSse({
+              type: 'permission.asked',
+              directory: context.cwd,
+              properties: deps.permissionAskedProperties({ id: approval.approvalId, sessionId: request.sessionId ?? context.sessionId, toolId: approval.toolId, input: request.input, reason: approval.reason ?? 'Tool approval is required' }),
+            }, executionUserId)
+          },
+        })
         const result = await gateway.call(
-          { toolId: input.toolId, input: input.input ?? {} },
+          { callId, toolId: input.toolId, input: input.input ?? {}, idempotencyKey: `tool-call:${callId}` },
           {
-            userId: context.identity.userId,
-            agentName: context.agentName,
+            requestId: callId,
+            principal: { id: executionUserId, kind: 'user' },
             sessionId: context.sessionId,
+            projectId: persistedSession.projectId ? String(persistedSession.projectId) : undefined,
+            agentId: context.agentName,
             cwd: context.cwd,
-            callId: typeof input.callId === 'string' ? input.callId : crypto.randomUUID(),
-            permissionOverride: context.permission.source === 'default' ? undefined : context.permissionOverride,
-            waitForApproval: true,
-            onApproval: (approval) => {
-              deps.broadcastSse({
-                type: 'permission.asked',
-                directory: context.cwd,
-                properties: deps.permissionAskedProperties({ id: approval.id, sessionId: approval.session_id, toolId: approval.tool_id, input: approval.input, reason: approval.reason }),
-              }, context.identity.userId)
+            metadata: {
+              agentName: context.agentName,
+              ...(context.permission.source === 'default' ? {} : { permissionOverride: context.permissionOverride }),
+              ...(Array.isArray(input.capabilities) ? { capabilities: input.capabilities.filter((value: unknown): value is string => typeof value === 'string').join(',') } : {}),
             },
           },
         )
-         return deps.json(deps.redactSensitive(result), result.ok || !('approvalRequired' in result) ? 200 : 202)
+         return deps.json(deps.redactSensitive(result), result.ok || result.status !== 'approval_required' ? 200 : 202)
       }
       if (path[3] === 'continue' && typeof input.approvalId === 'string') {
         if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'approvals', { ...(typeof input.sessionId === 'string' ? { sessionId: input.sessionId } : {}) })
@@ -136,7 +104,7 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
         const session = sessionId ? await deps.createProjectSessionRepository(client).getSessionById(sessionId) : null
         if (session && session.userId !== userId) return deps.json({ error: 'Session not found' }, 404)
         if (!sessionId || !session) return deps.json({ error: 'An owned session is required' }, 404)
-        const result = await deps.continueApprovedTool(client, session.userId, input.approvalId, { sessionId: session.id, cwd: session.directory, callId: typeof input.callId === 'string' ? input.callId : crypto.randomUUID() })
+        const result = await deps.continueCoreApprovedTool(client, session.userId, input.approvalId, { sessionId: session.id, cwd: session.directory, agentName, projectId: typeof input.projectId === 'string' ? input.projectId : undefined, callId: typeof input.callId === 'string' ? input.callId : undefined })
          return deps.json(deps.redactSensitive(result), 'approvalRequired' in result && result.approvalRequired ? 202 : 200)
       }
       return deps.json({ error: 'Unknown tool gateway operation' }, 404)
@@ -161,7 +129,7 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
     const permissionUserId = authenticatedUser?.id ?? gatewayCredential?.ownerId
     if (!permissionUserId) return deps.json({ message: 'Unauthorized' }, 401)
     try {
-      const approvals = await deps.listPendingApprovals(await deps.applicationDatabase(), permissionUserId, url.searchParams.get('sessionId') ?? undefined)
+      const approvals = await deps.listPendingCoreApprovals(await deps.applicationDatabase(), permissionUserId, url.searchParams.get('sessionId') ?? undefined)
       return deps.json(approvals.map((approval) => deps.permissionAskedProperties({ id: approval.id, sessionId: approval.session_id, toolId: approval.tool_id, input: approval.input, reason: approval.reason })))
     } catch (error) { console.warn(`Approval store request failed: ${deps.redactedDiagnostic(error)}`); return deps.json({ message: 'Approval store unavailable' }, 503) }
   }
@@ -185,13 +153,13 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
     const client = await deps.applicationDatabase()
     const approvalId = decodeURIComponent(path[4])
     const waiting = deps.hasPendingApprovalWaiter(approvalId)
-    const approval = await deps.respondToApproval(client, permissionUserId, approvalId, decision, sessionId)
+    const approval = await deps.respondToCoreApproval(client, permissionUserId, approvalId, decision, sessionId)
     if (!approval) return deps.json({ message: 'Approval not found' }, 404)
     deps.notifyApprovalResolution(approval.id, approved ? 'approved' : 'rejected')
     if (!approved || waiting) return deps.json({ ok: true, approval })
     const session = await deps.createProjectSessionRepository(client).getSession(permissionUserId, sessionId)
     if (!session) return deps.json({ ok: true, approval, result: { ok: false, error: { code: 'SESSION_NOT_FOUND', message: 'Session not found' } } }, 404)
-    const result = await deps.continueApprovedTool(client, permissionUserId, approval.id, { sessionId: session.id, cwd: session.directory, callId: crypto.randomUUID() })
+    const result = await deps.continueCoreApprovedTool(client, permissionUserId, approval.id, { sessionId: session.id, cwd: session.directory, agentName: session.profile, projectId: session.projectId ? String(session.projectId) : undefined })
     return deps.json({ ok: true, approval, result })
   }
   return undefined

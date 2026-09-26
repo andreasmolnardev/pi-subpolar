@@ -1,4 +1,4 @@
-import type { ToolGateway } from "./tool-gateway.ts";
+
 import type { TaskRecord, TaskRepository } from "../task-control-plane.ts";
 
 export const CAPABILITIES = ["subagent/run", "read", "write", "bash"] as const;
@@ -68,7 +68,7 @@ export class SubagentController {
   private readonly pending = new Map<string, { input: SubagentRunInput; capabilities: Capability[] }>();
   constructor(
     private readonly tasks: TaskRepository,
-    _gateway: ToolGateway,
+    _gateway: unknown,
     private readonly execute: SubagentExecutor,
     private readonly limit = 2,
     private readonly authorizeTarget: TargetAgentAuthorizer = async () => true,

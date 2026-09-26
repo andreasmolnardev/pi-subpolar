@@ -1,13 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type PocketBase from 'pocketbase'
 import { InMemorySkillRepository } from '../../../packages/subpolar-contracts/src/index.ts'
-import {
-
-  convertLegacyPiProfile,
-  loadAgentRuntime,
-  legacyProfileToPiConfiguration,
-
-} from '../application/runtime/agent-runtime.ts'
+import { loadAgentRuntime } from '../application/runtime/agent-runtime.ts'
 import { agentTemplateDefaults, agentToolContextMode, effectiveAgentConfiguration } from '../application/tools/tools.ts'
 
 type TestRecord = Record<string, unknown>
@@ -142,25 +136,5 @@ describe('PocketBase agent runtime adapter', () => {
     })), 'user_1', 'builder')
 
     await expect(promise).rejects.toMatchObject({ code: 'AGENT_DISABLED' })
-  })
-
-  it('converts legacy profiles as sanitized read-only data', () => {
-    const conversion = convertLegacyPiProfile('legacy-builder', {
-      systemPrompt: 'Legacy instructions',
-      tools: ['read', 'subpolar-tools', 'create_agent_profile', 'not-a-tool'],
-    })
-
-    expect(conversion).toMatchObject({
-      source: 'legacy-filesystem',
-      authority: 'read-only-fallback',
-      name: 'legacy-builder',
-      profile: { systemPrompt: 'Legacy instructions', tools: ['read', 'subpolar-tools'] },
-    })
-    expect(legacyProfileToPiConfiguration(conversion!)).toMatchObject({
-      source: 'legacy-filesystem',
-      authority: 'read-only-fallback',
-      agentName: 'legacy-builder',
-    })
-    expect(convertLegacyPiProfile('master', { systemPrompt: 'do not use' })).toBeUndefined()
   })
 })

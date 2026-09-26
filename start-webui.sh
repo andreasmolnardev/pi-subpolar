@@ -39,7 +39,7 @@ for attempt in {1..50}; do
     echo "Subpolar bridge exited before becoming ready" >&2
     exit 1
   fi
-  if curl --silent --fail --max-time 1 http://127.0.0.1:"${WEBUI_PORT:-4173}"/api/health >/dev/null 2>&1; then
+  if curl --silent --fail --max-time 1 http://127.0.0.1:"${WEBUI_PORT:-4173}"/api/v1/health >/dev/null 2>&1; then
     bridge_ready=true
     break
   fi

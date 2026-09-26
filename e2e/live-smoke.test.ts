@@ -99,21 +99,6 @@ test.skipIf(!liveEnabled)('live disposable bridge smoke', async () => {
     }
     console.log(`LIVE verified: health, authentication, project ${projectId}, session ${sessionId}`)
 
-    const decisions = [
-      ['read', 'allowed'],
-      ['bash', 'denied'],
-      ['write', 'approval'],
-    ] as const
-    for (const [toolName, expected] of decisions) {
-      const result = await request(baseUrl, '/api/pi/tools/authorize', { method: 'POST', headers, body: JSON.stringify({ sessionId, toolName, input: {} }) })
-      const decision = object(result.body).decision
-      if (result.response.status === 404 || result.response.status === 405 || result.response.status === 503) {
-        skip(`${expected} tool decision endpoint unavailable (HTTP ${result.response.status})`)
-      } else {
-        expect(decision).toBe(expected)
-        console.log(`LIVE verified: ${expected} tool decision (${toolName})`)
-      }
-    }
 
     const inbox = await request(baseUrl, '/api/inbox', { headers })
     if (inbox.response.ok && Array.isArray(object(inbox.body).items)) console.log('LIVE verified: inbox status is readable')

@@ -3,17 +3,19 @@ import {
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
+  buildContextEntries,
 } from '@earendil-works/pi-coding-agent'
 import type {
   AgentSession,
   AgentSessionEvent,
   ExtensionFactory,
+  SessionEntry,
 } from '@earendil-works/pi-coding-agent'
 import type { ProviderRuntime } from './provider-runtime.ts'
 import type { AgentRuntime } from './agent-runtime.ts'
-import type { Approval } from '../tools/tools.ts'
+import type { ApprovalRecord } from '../../../../packages/subpolar-contracts/src/index.ts'
 import type { PermissionOverride } from '../../persistence/project-store.ts'
-import type { ToolGateway } from '../tools/tool-gateway.ts'
+import type { ToolGateway } from '../../../../packages/subpolar-core/src/index.ts'
 import type { createToolRoutingExtension } from '../../../subpolar/extensions/tool-routing.ts'
 
 export type Project = {
@@ -63,16 +65,17 @@ export type PiSdkSessionHost<TClient = unknown> = {
   loadRuntime: (client: TClient, userId: string, context: PiSessionContext) => Promise<PiSessionRuntime>
   getProviderRuntime: (userId: string) => Promise<ProviderRuntime>
   createRoutingExtension: (context: PiRoutingExtensionContext) => ExtensionFactory
-  createToolGateway: (client: TClient) => ToolGateway
+  createToolGateway: (client: TClient, context?: { userId: string; agentName: string; sessionId: string; cwd: string; permissionOverride: PermissionOverride; capabilities?: readonly string[] }) => Promise<ToolGateway>
   listTools: (client: TClient, userId: string, agentName: string, project?: string) => Promise<unknown>
   searchTools: (client: TClient, userId: string, agentName: string, query: string) => Promise<unknown>
   describeTool: (client: TClient, userId: string, agentName: string, toolId: string) => Promise<unknown>
-  onApproval: (record: SessionRecord, approval: Approval, directory: string) => void
+  onApproval: (record: SessionRecord, approval: ApprovalRecord, directory: string) => void
   extensionFactories: readonly ExtensionFactory[]
   baseUrl: string
   internalToken: string
-  getNativeSessionsDir: () => string
   parseModelSelection: (value: string | undefined) => SessionModelSelection | undefined
+  loadTranscript: (client: TClient, userId: string, sessionId: string) => Promise<{ entries: unknown[]; leafId: string | null }>
+  saveTranscript: (client: TClient, userId: string, sessionId: string, entries: readonly unknown[], leafId: string | null) => Promise<void>
   acknowledgeQueueReceipt: (
     record: SessionRecord,
     event: AgentSessionEvent,
@@ -97,10 +100,30 @@ export function sessionMessageText(message: unknown): string {
   }).join('\n')
 }
 
+/** Replay application-owned history into a non-persistent Pi session manager. */
+export function hydrateSessionManager(manager: SessionManager, transcript: { entries: unknown[]; leafId: string | null }): void {
+  const entries = buildContextEntries(transcript.entries as SessionEntry[], transcript.leafId)
+  for (const entry of entries) {
+    switch (entry.type) {
+      case 'message': manager.appendMessage(entry.message as never); break
+      case 'thinking_level_change': manager.appendThinkingLevelChange(entry.thinkingLevel); break
+      case 'model_change': manager.appendModelChange(entry.provider, entry.modelId); break
+      case 'session_info': if (entry.name) manager.appendSessionInfo(entry.name); break
+      case 'custom': manager.appendCustomEntry(entry.customType, entry.data); break
+      case 'custom_message': manager.appendCustomMessageEntry(entry.customType, entry.content, entry.display, entry.details); break
+      case 'compaction': manager.appendCustomMessageEntry('subpolar.compaction', `Conversation summary:\n${entry.summary}`, false); break
+      case 'branch_summary': manager.appendCustomMessageEntry('subpolar.branch-summary', `Abandoned branch summary:\n${entry.summary}`, false); break
+      // Labels remain application transcript metadata and do not affect model context.
+      default: break
+    }
+  }
+}
+
 export class PiSdkSession<TClient = unknown> {
   private readonly listeners = new Set<(message: RpcMessage) => void>()
   private readonly pendingQueueReceipts = new Map<string, PendingQueueReceipt>()
   private readonly ready: Promise<void>
+  private transcriptWrite: Promise<void> = Promise.resolve()
   private runtimeAgentName: string
   private runtimePermissionOverride: PermissionOverride
   private generationStatus: 'busy' | 'idle' = 'idle'
@@ -132,25 +155,38 @@ export class PiSdkSession<TClient = unknown> {
     this.record.profile = context.agentName
     if (context.session?.permissionOverride !== undefined) this.record.permissionOverride = context.session.permissionOverride
     const runtime = await host.loadRuntime(client, userId, context)
-    const sessionManager = await this.openOrCreateSession()
+    const persistedTranscript = await host.loadTranscript(client, userId, this.record.id)
     const sessionCwd = this.record.directory ?? this.project.path
+    const sessionManager = SessionManager.inMemory(sessionCwd, { id: this.record.id })
+    hydrateSessionManager(sessionManager, persistedTranscript)
     const resourceLoader = new DefaultResourceLoader({
-      cwd: this.project.path,
+      cwd: sessionCwd,
       agentDir: getAgentDir(),
       systemPrompt: runtime.systemPrompt,
+      // The WebUI owns its extension set. Do not load user/global Pi extension
+      // directories because those extensions may reintroduce file-backed state
+      // or bypass the Subpolar application boundary.
+      noExtensions: true,
       extensionFactories: [
         ...host.extensionFactories,
         host.createRoutingExtension({
           baseUrl: host.baseUrl,
           internalToken: host.internalToken,
-          gateway: host.createToolGateway(client),
+          gateway: await host.createToolGateway(client, {
+            userId,
+            agentName: runtime.agent.name,
+            sessionId: this.record.id,
+            cwd: sessionCwd,
+            permissionOverride: this.runtimePermissionOverride,
+            capabilities: this.options.capabilities,
+          }),
           userId,
           agentName: runtime.agent.name,
           sessionId: this.record.id,
           cwd: sessionCwd,
           permissionOverride: this.runtimePermissionOverride,
           capabilities: this.options.capabilities,
-          onApproval: (approval: Approval) => this.options.host.onApproval(this.record, approval, sessionCwd),
+          onApproval: (approval: ApprovalRecord) => this.options.host.onApproval(this.record, approval, sessionCwd),
           listTools: () => host.listTools(client, userId, runtime.agent.name, context.session?.project),
           searchTools: (query) => host.searchTools(client, userId, runtime.agent.name, query),
           describeTool: (toolId) => host.describeTool(client, userId, runtime.agent.name, toolId),
@@ -163,24 +199,20 @@ export class PiSdkSession<TClient = unknown> {
     const model = selectedModel ? this.modelRuntime.getModel(selectedModel.providerID, selectedModel.modelID) : undefined
     if (selectedModel && !model) throw new Error('Selected provider account or model is unavailable')
     const result = await createAgentSession({
-      cwd: this.project.path,
+      cwd: sessionCwd,
       modelRuntime: this.modelRuntime,
       model,
       sessionManager,
       resourceLoader,
+      // The routing extension replaces the SDK's same-named built-ins. Keeping
+      // the allowlist explicit prevents unrelated SDK tools from appearing.
       tools: [...runtime.pi.allowedToolNames],
+      noTools: 'all',
     })
     this.session = result.session
     this.session.subscribe((event) => this.handle(event))
   }
 
-  private async openOrCreateSession(): Promise<SessionManager> {
-    const cwd = this.record.directory ?? this.project.path
-    const sessionsDir = this.options.host.getNativeSessionsDir()
-    const infos = await SessionManager.list(cwd, sessionsDir)
-    const existing = infos.find((info) => info.id === this.record.id)
-    return existing ? SessionManager.open(existing.path, sessionsDir, cwd) : SessionManager.create(cwd, sessionsDir, { id: this.record.id })
-  }
 
   private handle(event: AgentSessionEvent): void {
     const sentQueueClientId = this.options.host.acknowledgeQueueReceipt(this.record, event, this.pendingQueueReceipts)
@@ -203,16 +235,21 @@ export class PiSdkSession<TClient = unknown> {
       this.generationStatus = 'idle'
       this.options.host.publishStatus(this.record, 'idle')
     }
-    if (event.type === 'agent_settled') this.options.host.onAgentSettled(this)
     if (event.type !== 'agent_settled') {
       for (const listener of this.listeners) listener(message)
       this.options.host.publishEvent(this.record, { ...message, sessionID })
     }
+    void this.persistTranscript().catch(() => undefined)
+    if (event.type === 'agent_settled') this.options.host.onAgentSettled(this)
   }
 
   onMessage(listener: (message: RpcMessage) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  get readyPromise(): Promise<void> {
+    return this.ready
   }
 
   getStatus(): 'busy' | 'idle' {
@@ -261,7 +298,18 @@ export class PiSdkSession<TClient = unknown> {
     }
     this.record.updatedAt = Date.now()
     await this.options.host.saveState(this.record)
+    await this.persistTranscript()
     return { type: 'response', id: String(command.id ?? ''), success: true, data }
+  }
+
+  private persistTranscript(): Promise<void> {
+    const clientPromise = this.options.host.getClient()
+    this.transcriptWrite = this.transcriptWrite.then(async () => {
+      await this.ready
+      const client = await clientPromise
+      await this.options.host.saveTranscript(client, this.record.userId!, this.record.id, this.session.sessionManager.getEntries(), this.session.sessionManager.getLeafId())
+    })
+    return this.transcriptWrite
   }
 
   get entries() { return this.session.sessionManager.getEntries() }

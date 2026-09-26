@@ -17,9 +17,6 @@ The adapter never reads or writes `.pi/agents.json`, `~/.pi/agent/agents.json`, 
 
 `systemPrompt` uses the PocketBase `systemPrompt`/`system_prompt` field when non-empty and falls back to the PocketBase `prompt` field when the explicit system prompt is empty. Both values remain available on the runtime object so callers do not lose the authored prompt.
 
-## Legacy boundary
-
-`readLegacyPiProfiles(cwd)` and `convertLegacyPiProfile()` are migration/inspection helpers only. Their output is tagged `source: 'legacy-filesystem'` and `authority: 'read-only-fallback'`, filters tools to centrally routed Pi wrappers, and excludes profile-management tools. They do not produce an `AgentRuntime`, do not authorize calls, and do not write files or PocketBase records. Do not use them when a PocketBase runtime can be loaded.
 
 ## Exact integration points
 
@@ -31,9 +28,9 @@ The following existing locations are intentionally unchanged by this isolated ch
    - pass `runtime.agent.name`, not the unvalidated session selector, to `createToolRoutingExtension({ agentName })`.
    The session's `userId` is the authenticated identity required by `loadAgentRuntime`; a missing identity must not be replaced by a filesystem fallback.
 
-2. **Disable the competing profile extension:** remove `agent-profiles.ts` from `@webui/bridge.ts:164-186` (`applicationExtensionPaths` and `applicationExtensionFactories`). Otherwise its `session_start` handler at `@webui/subpolar/extensions/agent-profiles.ts:334-357` will still load filesystem profiles and its `before_agent_start` handler at `:328-332` can replace the PocketBase system prompt. Keep the old extension only if its profile-management UI is changed to write PocketBase agents; it must not remain an independent runtime authority.
+2. **Keep the profile boundary application-owned:** the WebUI's `applicationExtensionPaths` and `applicationExtensionFactories` must remain limited to the active tool extensions. Profile loading, system prompts, and tool allowlists come from the PocketBase runtime rather than a filesystem extension.
 
-3. **Profile listing/activation compatibility routes:** replace the filesystem path in `@webui/bridge.ts:512-528` (`profilesForDirectory`) and the fallback in `:1180-1186` with PocketBase `list()`/`load()`. The compatibility routes at `:1590-1601` should return PocketBase-backed profile projections and persist the selected agent on the session, rather than send `/profile` to the filesystem extension. If an outage requires showing old profiles, call `readLegacyPiProfiles()` only as a read-only, visibly labeled fallback.
+3. **Profile listing/activation compatibility routes:** return PocketBase-backed profile projections and persist the selected agent on the session. Do not send `/profile` to a filesystem extension.
 
 4. **Session/request identity validation:** use the already existing `SessionContextResolver` in `@webui/server/session-context.ts:201-221` before loading the runtime. Its resolved `agentName`/`agentId` and authenticated `userId` should be the adapter inputs; request-provided names remain selectors, not ownership evidence.
 

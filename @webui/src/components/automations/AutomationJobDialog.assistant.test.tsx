@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { AutomationJobDialog } from './AutomationJobDialog'
 
 // jsdom does not implement scrollIntoView
 Element.prototype.scrollIntoView = vi.fn()
@@ -63,7 +64,7 @@ describe('automationJobDialog — assistant create guard', () => {
     const user = userEvent.setup()
 
     render(
-      <automationJobDialog
+      <AutomationJobDialog
         open
         onOpenChange={onOpenChange}
         showRepoSelector
@@ -81,10 +82,10 @@ describe('automationJobDialog — assistant create guard', () => {
 
     // The dropdown should open and show "General Chat" as an option
     await waitFor(() => {
-      expect(screen.getByText('General Chat')).toBeInTheDocument()
+      expect(screen.getByText('Workspace')).toBeInTheDocument()
     })
     // General Chat description should also be visible
-    expect(screen.getByText('Built-in assistant')).toBeInTheDocument()
+    expect(screen.getByText('Workspace root')).toBeInTheDocument()
   })
 
   it('disables submit when no repo is selected, enables when General Chat repo is selected', async () => {
@@ -93,7 +94,7 @@ describe('automationJobDialog — assistant create guard', () => {
     const user = userEvent.setup()
 
     const { rerender } = render(
-      <automationJobDialog
+      <AutomationJobDialog
         open
         onOpenChange={vi.fn()}
         showRepoSelector
@@ -128,7 +129,7 @@ describe('automationJobDialog — assistant create guard', () => {
 
     // Re-render with repoId={0} (General Chat selected) — name and prompt state persists
     rerender(
-      <automationJobDialog
+      <AutomationJobDialog
         open
         onOpenChange={vi.fn()}
         showRepoSelector

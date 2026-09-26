@@ -14,8 +14,27 @@ interface HealthResponse {
   error?: string
 }
 
+type V1HealthResponse = {
+  status: 'healthy' | 'degraded' | 'unknown'
+  timestamp: string
+  components: {
+    pocketbase?: { state: 'available' | 'unavailable' | 'unknown'; reason?: string }
+    runtime?: { state: 'available' | 'unavailable' | 'unknown'; reason?: string }
+  }
+}
+
 async function fetchHealth(): Promise<HealthResponse> {
-  return fetchWrapper<HealthResponse>('/api/health')
+  const response = await fetchWrapper<V1HealthResponse>('/api/v1/health')
+  const database = response.components.pocketbase?.state === 'available' ? 'connected' : 'disconnected'
+  const pi = response.components.runtime?.state === 'available' ? 'healthy' : 'unhealthy'
+  return {
+    status: response.status === 'unknown' ? 'degraded' : response.status,
+    timestamp: response.timestamp,
+    database,
+    runtime: 'pi',
+    pi,
+    ...(response.components.runtime?.reason ? { error: response.components.runtime.reason } : {}),
+  }
 }
 
 export function useServerHealth(enabled = true) {

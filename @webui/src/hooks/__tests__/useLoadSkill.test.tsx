@@ -94,7 +94,7 @@ describe('useLoadSkill', () => {
     })
 
     expect(result.current.error).toBeInstanceOf(Error)
-    expect((result.current.error as Error).message).toBe('No OpenCode client available')
+    expect((result.current.error as Error).message).toBe('No client available')
   })
 
   it('calls showToast.error when sendCommand fails', async () => {

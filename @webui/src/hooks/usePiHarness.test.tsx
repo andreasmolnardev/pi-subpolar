@@ -45,7 +45,7 @@ describe('useDeleteSession', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      'http://localhost/api/sessions/ses_1?directory=%2Fw%2Fstale',
+      'http://localhost/api/opencode/sessions/ses_1?directory=%2Fw%2Fstale',
       expect.objectContaining({ method: 'DELETE' }),
     )
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -121,7 +121,7 @@ describe('useSessionsAcrossDirectories', () => {
     expect(result.current.hasNextPage).toBe(false)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost/api/sessions?limit=25&order=desc&directory=%2Frepo',
+      'http://localhost/api/opencode/sessions?limit=25&order=desc&directory=%2Frepo',
       expect.objectContaining({ credentials: 'include' }),
     )
   })
@@ -207,7 +207,7 @@ describe('useSessionsAcrossDirectories', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost/api/sessions?limit=25&order=desc&search=deploy&directory=%2Frepo',
+      'http://localhost/api/opencode/sessions?limit=25&order=desc&search=deploy&directory=%2Frepo',
       expect.objectContaining({ credentials: 'include' }),
     )
   })

@@ -11,18 +11,48 @@ import {
   createWriteToolDefinition,
 } from '@earendil-works/pi-coding-agent'
 import { escapeFilter } from '../../persistence/pocketbase.ts'
-import { createApprovalFlow, type ApprovalFlowApproval } from './approval-flow.ts'
+import { createApprovalFlow } from './approval-flow.ts'
 import { createMcpAdapter, type McpToolReference } from './mcp-adapter.ts'
 import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse } from '../../core/network-policy.ts'
 import { redactSensitive, redactSensitiveText } from '../../core/security-redaction.ts'
-import { createProjectSessionRepository, type SessionContext } from '../../persistence/project-store.ts'
-import { assertPathWithinWorkspace, configuredWorkspaceRoot } from '../../core/project-filesystem.ts'
-import { discardPendingApprovalInput, retainPendingApprovalInput, takePendingApprovalInput, waitForApprovalResolution } from './approval-execution.ts'
-import type { ToolGatewayContext } from './tool-gateway.ts'
+import { decryptApprovalInput, encryptApprovalInput, takePendingApprovalInput } from './approval-execution.ts'
+type ToolExecutionContext = {
+  userId: string
+  agentName: string
+  sessionId?: string
+  cwd?: string
+  callId?: string
+  permissionOverride?: PermissionOverride
+  capabilities?: readonly string[]
+  agentId?: string
+  projectId?: string
+}
 import { PocketBaseMemoryService, type MemoryContext, type MemoryScope } from '../../persistence/memory.ts'
 import { BrowserSessionService, BrowserRuntimeError, browserProfileAllows, type BrowserContext } from '../../browser/index.ts'
 import { webFetch, webSearch, type WebFetchInput, type WebSearchInput } from './web-search.ts'
 import type { SkillRepository } from '../../../../packages/subpolar-contracts/src/index.ts'
+import { createGateway as createCoreGateway } from '../../../../packages/subpolar-core/src/index.ts'
+import type {
+  ApprovalDecision,
+  ApprovalRecord as CoreApprovalRecord,
+  ApprovalRequest,
+  ApprovalStore,
+  AuditPort,
+
+  JsonValue,
+  PolicyResolver,
+  ToolDefinition as CoreToolDefinition,
+  ToolExecutor,
+
+} from '../../../../packages/subpolar-contracts/src/index.ts'
+import {
+  createPocketBaseAdapter,
+  createPocketBaseAuditPort,
+  createPocketBaseIdempotencyPort,
+  type PocketBaseClientPort,
+  type PocketBaseStoredRecord,
+} from '../../../../packages/subpolar-adapter-pocketbase/src/index.ts'
+import type { ToolGateway as CoreToolGateway } from '../../../../packages/subpolar-core/src/index.ts'
 
 export type ToolAdapter = 'internal' | 'http' | 'openapi' | 'mcp'
 export type ToolEffect = 'allow' | 'deny' | 'approval'
@@ -34,7 +64,7 @@ export type AgentApprovalMode = 'auto' | 'ask' | 'deny'
 
 export const TOOL_CONTEXT_MODES: readonly ToolContextMode[] = ['always', 'discoverable', 'on-demand', 'disabled']
 export const SKILL_CONTEXT_MODES: readonly SkillContextMode[] = ['always-loaded', 'discoverable', 'explicit-only', 'disabled']
-export const DECLARED_CAPABILITIES = ['subagent/run', 'read', 'write', 'bash'] as const
+
 const memoryMutationTools = new Set(['memory/write', 'memory/update', 'memory/delete'])
 const profileManagementTools = new Set(['list_agent_profiles', 'create_agent_profile', 'edit_agent_profile', 'delete_agent_profile'])
 const toolManagementTools = new Set(['list_registered_tools', 'create_registered_tool', 'update_registered_tool', 'delete_registered_tool'])
@@ -135,7 +165,7 @@ const piToolIds: Record<string, string> = {
 }
 
 const mcpAdapter = createMcpAdapter()
-type SubagentToolRunner = (input: unknown, context: ToolGatewayContext) => Promise<unknown>
+type SubagentToolRunner = (input: unknown, context: ToolExecutionContext) => Promise<unknown>
 let subagentToolRunner: SubagentToolRunner | undefined
 
 export function configureSubagentToolRunner(runner: SubagentToolRunner | undefined): void {
@@ -298,11 +328,11 @@ function requiredInputError(schema: Record<string, unknown>, input: unknown): st
   return null
 }
 
-function memoryContext(context: ToolGatewayContext, agentId: string, projectId?: string): MemoryContext {
+function memoryContext(context: ToolExecutionContext, agentId: string, projectId?: string): MemoryContext {
   return { ownerId: context.userId, agentId, ...(projectId ? { projectId } : {}) }
 }
 
-const legacyToolIds: Record<string, string> = {
+const migrationToolIds: Record<string, string> = {
   'web-search': 'web.search',
   'tools.list': 'search-tool',
   'pi.read': 'read',
@@ -315,8 +345,6 @@ const legacyToolIds: Record<string, string> = {
 }
 
 export function canonicalToolId(toolId: string, adapter?: ToolAdapter, namespace?: string): string {
-  const legacy = legacyToolIds[toolId]
-  if (legacy) return legacy
   if (adapter && adapter !== 'internal' && namespace && !toolId.includes('/')) {
     const operation = toolId.includes('.') ? toolId.slice(toolId.lastIndexOf('.') + 1) : toolId
     return `${namespace}/${operation}`
@@ -384,11 +412,15 @@ async function findAgent(client: PocketBase, userId: string, nameOrId: string): 
   return record ? toAgent(record) : null
 }
 
+function migrateToolId(toolId: string, adapter?: ToolAdapter, namespace?: string): string {
+  return canonicalToolId(migrationToolIds[toolId] ?? toolId, adapter, namespace)
+}
+
 export async function ensureToolRegistry(client: PocketBase): Promise<void> {
   const existingTools = await client.collection('tool_registry').getFullList()
   for (const record of existingTools) {
     const oldId = String(record.tool_id ?? '')
-    const nextId = canonicalToolId(oldId, String(record.adapter) as ToolAdapter, String(record.namespace ?? ''))
+    const nextId = migrateToolId(oldId, String(record.adapter) as ToolAdapter, String(record.namespace ?? ''))
     if (nextId === oldId) continue
     const conflict = existingTools.find((candidate) => String(candidate.tool_id) === nextId)
     if (!conflict) await client.collection('tool_registry').update(record.id, { tool_id: nextId, namespace: String(record.namespace ?? 'builtin'), updated_at: Date.now() })
@@ -636,10 +668,6 @@ export async function describeToolForAgent(client: PocketBase, userId: string, a
   return { ...tool, outputSchema: definition.output_schema, risk: definition.risk, examples: definition.metadata.examples ?? [] }
 }
 
-async function getTool(client: PocketBase, toolId: string): Promise<ToolDefinition | null> {
-  const record = await client.collection('tool_registry').getFirstListItem(`tool_id = "${escapeFilter(toolId)}" && enabled = true`).catch(() => null)
-  return record ? toTool(record) : null
-}
 
 async function writeAudit(client: PocketBase, data: Record<string, unknown>): Promise<void> {
   const memoryAudit = typeof data.tool_id === 'string' && data.tool_id.startsWith('memory/')
@@ -650,18 +678,6 @@ async function writeAudit(client: PocketBase, data: Record<string, unknown>): Pr
 }
 
 
-export async function listPendingApprovals(client: PocketBase, userId: string, sessionId?: string): Promise<Approval[]> {
-  const result = await createApprovalFlow(client).pending({ userId }, sessionId)
-  return result.approvals.map(toApproval)
-}
-
-export async function respondToApproval(client: PocketBase, userId: string, approvalId: string, decision: boolean | 'approve' | 'approved' | 'reject' | 'rejected', sessionId: string): Promise<Approval | null> {
-  if (!sessionId.trim()) return null
-  const resolved = await createApprovalFlow(client).resolve({ userId, sessionId }, approvalId, decision)
-  if (!resolved.ok || (resolved.state !== 'approved' && resolved.state !== 'rejected')) return null
-  if (resolved.state === 'rejected') discardPendingApprovalInput(resolved.approval.id)
-  return toApproval(resolved.approval)
-}
 
 function profileProjection(record: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -853,10 +869,196 @@ export async function manageRegisteredTool(client: PocketBase, operation: string
 
 
 
-async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext & { agentId?: string; projectId?: string }): Promise<unknown> {
+function pocketBaseClientPort(client: PocketBase): PocketBaseClientPort {
+  return {
+    collection(name) {
+      const collection = client.collection(name)
+      return {
+        async list() { return await collection.getFullList() as PocketBaseStoredRecord[] },
+        async get(id) { return await collection.getOne(id).catch(() => undefined) as PocketBaseStoredRecord | undefined },
+        async create(data) { return await collection.create(data) as PocketBaseStoredRecord },
+        async update(id, data) { return await collection.update(id, data).catch(() => undefined) as PocketBaseStoredRecord | undefined },
+      }
+    },
+  }
+}
+
+function coreToolRisk(risk: ToolRisk): CoreToolDefinition['risk'] {
+  return risk === 'read' ? 'low' : risk === 'external' ? 'high' : 'medium'
+}
+
+function coreToolDefinition(tool: ToolDefinition): CoreToolDefinition {
+  return {
+    id: tool.tool_id,
+    namespace: tool.namespace,
+    description: tool.description,
+    inputSchema: tool.input_schema as JsonValue,
+    enabled: tool.enabled,
+    risk: coreToolRisk(tool.risk),
+    metadata: {
+      webuiDefinition: JSON.stringify(tool),
+      adapter: tool.adapter,
+      target: tool.target,
+      operation: tool.operation,
+    },
+  }
+}
+
+async function coreToolDefinitions(client: PocketBase): Promise<CoreToolDefinition[]> {
+  const records = await client.collection('tool_registry').getFullList({ filter: 'enabled = true', sort: 'namespace,tool_id' })
+  return records.map((record) => coreToolDefinition(toTool(record)))
+}
+
+export function validateToolInput(input: unknown, definition: CoreToolDefinition): { valid: true } | { valid: false; errors: string[] } {
+  const schema = recordObject(definition.inputSchema)
+  const error = requiredInputError(schema, input)
+  return error ? { valid: false, errors: [error] } : { valid: true }
+}
+
+function coreDefinitionTool(definition: CoreToolDefinition): ToolDefinition {
+  try {
+    const parsed = JSON.parse(definition.metadata?.webuiDefinition ?? '')
+    return toTool(parsed)
+  } catch {
+    throw new Error(`Tool definition is missing its WebUI execution metadata: ${definition.id}`)
+  }
+}
+
+function coreApprovalRecord(record: Record<string, unknown>, approvalId: string, fallback?: ApprovalRequest): CoreApprovalRecord {
+  const status = String(record.status ?? '')
+  const input = fallback?.call.input ?? record.input
+  return {
+    approvalId,
+    callId: String(record.call_id ?? fallback?.call.callId ?? ''),
+    toolId: String(record.tool_id ?? fallback?.call.toolId ?? ''),
+    ...(fallback?.runId ? { runId: fallback.runId } : {}),
+    request: redactSensitive({
+      input,
+      callId: String(record.call_id ?? fallback?.call.callId ?? ''),
+      toolId: String(record.tool_id ?? fallback?.call.toolId ?? ''),
+      sessionId: record.session_id ?? fallback?.context.sessionId,
+      agentId: fallback?.context.agentId,
+    }) as JsonValue,
+    status: status === 'approved' ? 'approved' : status === 'rejected' || status === 'denied' ? 'denied' : 'pending',
+    ...(typeof record.reason === 'string' ? { reason: redactSensitiveText(record.reason) } : {}),
+    createdAt: new Date(Number(record.created_at ?? Date.now())).toISOString(),
+    ...(typeof record.resolved_at === 'number' ? { decidedAt: new Date(record.resolved_at).toISOString() } : {}),
+  }
+}
+
+function createWebUiApprovalStore(client: PocketBase, ownerId: string, onApproval?: (approval: CoreApprovalRecord) => void | Promise<void>): ApprovalStore {
+  const flow = createApprovalFlow(client)
+  const find = async (approvalId: string): Promise<Record<string, unknown> | undefined> => {
+    const byId = await client.collection('tool_approvals').getOne(approvalId).catch(() => null)
+    if (byId) return byId as Record<string, unknown>
+    return await client.collection('tool_approvals').getFirstListItem(`approval_key = "${escapeFilter(approvalId)}" && user_id = "${escapeFilter(ownerId)}"`).catch(() => undefined) as Record<string, unknown> | undefined
+  }
+  return {
+    async load(approvalId) {
+      const record = await find(approvalId)
+      if (!record || record.user_id !== ownerId) return undefined
+      return coreApprovalRecord(record, String(record.approval_key ?? approvalId))
+    },
+    async create(request) {
+      const created = await flow.create({
+        userId: ownerId,
+        agentId: request.context.agentId ?? request.context.metadata?.agentName ?? 'master',
+        sessionId: request.context.sessionId,
+        toolId: request.call.toolId,
+        input: request.call.input,
+        reason: request.decision.reason,
+      })
+      const encryptedInput = encryptApprovalInput(request.call.input)
+      const patch = {
+        approval_key: request.approvalId,
+        call_id: request.call.callId,
+        ...(encryptedInput ? { executable_input: encryptedInput } : {}),
+      }
+      let stored: Record<string, unknown>
+      try {
+        stored = await client.collection('tool_approvals').update(created.approval.id, patch) as Record<string, unknown>
+      } catch {
+        const existing = await find(request.approvalId)
+        if (!existing) throw new Error('Approval could not be durably created')
+        return coreApprovalRecord(existing, request.approvalId, request)
+      }
+      const approval = coreApprovalRecord({ ...created.approval, ...stored }, request.approvalId, request)
+      await onApproval?.(approval)
+      return approval
+    },
+    async decide(approvalId, decision: ApprovalDecision) {
+      const record = await find(approvalId)
+      if (!record || record.user_id !== ownerId) throw new Error('Approval was not found')
+      const resolved = await flow.resolve({ userId: ownerId, sessionId: typeof record.session_id === 'string' ? record.session_id : undefined }, String(record.id), decision.approved ? 'approve' : 'reject')
+      if (!resolved.ok || !('approval' in resolved)) throw new Error(resolved.error.message)
+      return coreApprovalRecord({ ...record, ...resolved.approval }, String(record.approval_key ?? approvalId))
+    },
+  }
+}
+
+export type CoreGatewayOptions = {
+  onApproval?: (approval: CoreApprovalRecord) => void | Promise<void>
+}
+
+export async function createCoreToolGateway(client: PocketBase, ownerId: string, options: CoreGatewayOptions = {}): Promise<CoreToolGateway> {
+  const definitions = await coreToolDefinitions(client)
+  const adapter = createPocketBaseAdapter({
+    client: pocketBaseClientPort(client),
+    collections: { audits: 'subpolar_tool_audits', callClaims: 'subpolar_call_claims' },
+  })
+  const auditPort: AuditPort = createPocketBaseAuditPort(adapter, ownerId)
+  const idempotency = createPocketBaseIdempotencyPort(adapter, ownerId)
+  const approvalStore = createWebUiApprovalStore(client, ownerId, options.onApproval)
+  const resolvePolicy: PolicyResolver = async (definition, context) => {
+    const agentName = context.metadata?.agentName ?? context.agentId ?? 'master'
+    const agent = agentName === 'master'
+      ? await findAgent(client, ownerId, agentName) ?? await ensureUserDefaults(client, ownerId)
+      : await findAgent(client, ownerId, agentName)
+    if (!agent || !agent.enabled) return { deny: true, reason: 'Agent is disabled or does not exist' }
+    const effective = effectiveAgentConfiguration(agent, context.projectId)
+    const webTool = coreDefinitionTool(definition)
+    const override = context.metadata?.permissionOverride as PermissionOverride | undefined
+    const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(ownerId)}" && agent_id = "${escapeFilter(agent.id)}"` })
+    const matching = policies.filter((item) => item.tool_id === definition.id || item.tool_id === '*')
+    const mode = toolContextMode(effective, definition.id)
+    if (mode === 'disabled' || matching.some((item) => item.effect === 'deny') || override === 'none' || effective.approval_mode === 'deny') return { deny: true, reason: `Agent is not allowed to use ${definition.id}` }
+    if (profileManagementTools.has(definition.id) && agent.name !== 'master') return { deny: true, reason: 'Agent profile management requires the master agent' }
+    if (toolManagementTools.has(definition.id) && agent.name !== 'master') return { deny: true, reason: 'Registered tool management requires the master agent' }
+    if (cliManagementTools.has(definition.id) && agent.name !== 'master') return { deny: true, reason: 'CLI tool management requires the master agent' }
+    if (definition.id.startsWith('memory/') && !memoryPolicyAllows(effective, definition.id)) return { deny: true, reason: 'Memory is disabled for this agent' }
+    if (definition.id.startsWith('browser/') && (effective.policies.browser !== true || (browserMutationGroups.has(String(webTool.metadata.policyGroup)) && !browserProfileAllows(String(webTool.metadata.policyGroup), agent.template === 'plan' || agent.template === 'reviewer')))) return { deny: true, reason: 'Browser capability is not allowed for this agent' }
+    if (memoryMutationTools.has(definition.id) && (agent.template === 'plan' || agent.template === 'reviewer')) return { deny: true, reason: 'This agent profile is query-only for memory' }
+    const explicitlyAllowed = matching.some((item) => item.effect === 'allow' || item.effect === 'approval')
+    if (override !== 'allow_all' && !explicitlyAllowed && agent.name !== 'master' && !matching.some((item) => item.tool_id === generatedSkillName(definition.id))) return { deny: true, reason: `Agent is not allowed to use ${definition.id}` }
+    const masterWebSearch = agent.name === 'master' && definition.id === 'web.search'
+    const needsApproval = !masterWebSearch && (requiresManualApproval(definition.id, webTool.target) || effective.approval_mode === 'ask' || override === 'ask' || (override !== 'allow_all' && (webTool.requires_approval || matching.some((item) => item.effect === 'approval'))))
+    return needsApproval ? { requiresApproval: true, allow: true, reason: `${definition.id} requires approval` } : { allow: true }
+  }
+  const execute: ToolExecutor = async (call, definition, context) => {
+    const tool = coreDefinitionTool(definition)
+    try {
+      const value = await invokeExternalTool(client, tool, call.input, context.cwd ?? process.cwd(), call.callId, {
+        userId: context.principal.id,
+        agentName: context.metadata?.agentName ?? context.agentId ?? 'master',
+        agentId: context.agentId,
+        projectId: context.projectId,
+        sessionId: context.sessionId,
+        cwd: context.cwd,
+        callId: call.callId,
+        capabilities: context.metadata?.capabilities?.split(',').filter(Boolean),
+      })
+      return { ok: true, value }
+    } catch (error) {
+      return { ok: false, error: { code: 'TOOL_EXECUTION_FAILED', message: redactSensitiveText(error instanceof Error ? error.message : 'Tool execution failed') } }
+    }
+  }
+  return createCoreGateway({ tools: definitions, validateInput: validateToolInput, resolvePolicy, approvalStore, idempotency, auditPort, execute })
+}
+
+async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolExecutionContext): Promise<unknown> {
   if (tool.target === 'subagent' && tool.operation === 'run') {
     if (!subagentToolRunner) throw new Error('Subagent execution host is unavailable')
-    return subagentToolRunner(input, { ...context, cwd, callId } as ToolGatewayContext)
+    return subagentToolRunner(input, { ...context, cwd, callId } as ToolExecutionContext)
   }
   if (tool.target === 'memory') {
     if (!context?.agentId) throw new Error('Memory requires an active agent')
@@ -901,7 +1103,7 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
   return definition.execute(callId, input as never, undefined, undefined, undefined as never)
 }
 
-async function invokeExternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolGatewayContext & { agentId?: string; projectId?: string }): Promise<unknown> {
+export async function invokeExternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolExecutionContext): Promise<unknown> {
   if (tool.adapter === 'internal') {
     if (['pi', 'memory', 'browser', 'web', 'web-search', 'subagent', 'agent-profiles', 'tool-registry', 'cli'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
     return { routed: true, toolId: tool.tool_id, operation: tool.operation, input }
@@ -976,143 +1178,6 @@ async function invokeExternalTool(client: PocketBase, tool: ToolDefinition, inpu
   try { return JSON.parse(text) } catch { return text }
 }
 
-export async function callTool(client: PocketBase, userId: string, agentName: string, toolId: string, input: unknown, sessionId?: string, override?: PermissionOverride, options: { cwd?: string; callId?: string; waitForApproval?: boolean; onApproval?: (approval: Approval) => void | Promise<void>; capabilities?: readonly string[] } = {}) {
-  let canonicalId: string
-  try { canonicalId = canonicalToolId(toolId) } catch { return { ok: false as const, toolId, error: { code: 'UNKNOWN_TOOL', message: 'Tool does not exist or is disabled' } } }
-  if (options.capabilities?.some((capability) => !(DECLARED_CAPABILITIES as readonly string[]).includes(capability))) {
-    return { ok: false as const, toolId: canonicalId, error: { code: 'CAPABILITY_INVALID', message: 'Unknown execution capability' } }
-  }
-  if (!sessionId?.trim()) {
-    await writeAudit(client, { user_id: userId, tool_id: canonicalId, input, status: 'denied', error_code: 'SESSION_REQUIRED' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'SESSION_REQUIRED', message: 'An owned session is required for tool execution' } }
-  }
-  const persistedSession = await createProjectSessionRepository(client).getSessionById(sessionId)
-  if (!persistedSession || persistedSession.userId !== userId) {
-    await writeAudit(client, { user_id: userId, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'SESSION_NOT_FOUND' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'SESSION_NOT_FOUND', message: 'The session is not owned by the requesting user' } }
-  }
-  const tool = await getTool(client, canonicalId)
-  if (!tool) {
-    await writeAudit(client, { user_id: userId, session_id: sessionId, tool_id: canonicalId, input, status: 'error', error_code: 'UNKNOWN_TOOL' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'UNKNOWN_TOOL', message: 'Tool does not exist or is disabled' } }
-  }
-
-  const agent = agentName === 'master'
-    ? await findAgent(client, userId, agentName) ?? await ensureUserDefaults(client, userId)
-    : await findAgent(client, userId, agentName)
-  if (!agent || !agent.enabled) {
-    await writeAudit(client, { user_id: userId, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'UNKNOWN_AGENT' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'UNKNOWN_AGENT', message: 'Agent is disabled or does not exist' } }
-  }
-  const effective = effectiveAgentConfiguration(agent, persistedSession.projectId ? String(persistedSession.projectId) : undefined)
-  const validationError = requiredInputError(tool.input_schema, input)
-  if (validationError) {
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'error', error_code: 'VALIDATION_FAILED' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'VALIDATION_FAILED', message: validationError } }
-  }
-  if (profileManagementTools.has(canonicalId) && agent.name !== 'master') {
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MASTER_REQUIRED' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'MASTER_REQUIRED', message: 'Agent profile management requires the master agent' } }
-  }
-  if (toolManagementTools.has(canonicalId) && agent.name !== 'master') {
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MASTER_REQUIRED' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'MASTER_REQUIRED', message: 'Registered tool management requires the master agent' } }
-  }
-  if (cliManagementTools.has(canonicalId) && agent.name !== 'master') {
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MASTER_REQUIRED' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'MASTER_REQUIRED', message: 'CLI tool management requires the master agent' } }
-  }
-  if (canonicalId.startsWith('memory/') && effective.policies.memory !== true) {
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MEMORY_DISABLED' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'MEMORY_DISABLED', message: 'Memory is disabled for this agent' } }
-  }
-  if (canonicalId.startsWith('browser/') && effective.policies.browser !== true) {
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'BROWSER_DISABLED' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'BROWSER_DISABLED', message: 'Browser capability is disabled for this agent' } }
-  }
-  if (canonicalId.startsWith('browser/') && browserMutationGroups.has(String(tool.metadata.policyGroup)) && !browserProfileAllows(String(tool.metadata.policyGroup), agent.template === 'plan' || agent.template === 'reviewer')) {
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'READ_ONLY_PROFILE' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'READ_ONLY_PROFILE', message: 'This profile cannot mutate browser state' } }
-  }
-  if (memoryMutationTools.has(canonicalId) && (agent.template === 'plan' || agent.template === 'reviewer')) {
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'MEMORY_QUERY_ONLY' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'MEMORY_QUERY_ONLY', message: 'This agent profile is query-only for memory' } }
-  }
-
-  const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(userId)}" && agent_id = "${escapeFilter(agent.id)}"` })
-  const matching = policies.filter((item) => item.tool_id === canonicalId || item.tool_id === '*')
-  const mode = toolContextMode(effective, canonicalId)
-  if (mode === 'disabled' || matching.some((item) => item.effect === 'deny') || override === 'none' || effective.approval_mode === 'deny') {
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'PERMISSION_DENIED' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'PERMISSION_DENIED', message: `Agent is not allowed to use ${canonicalId}` } }
-  }
-
-  const needsManualApproval = requiresManualApproval(canonicalId, tool.target)
-  // Master is the full-access orchestration agent. Public web search is a
-  // read-only discovery operation and should not pause that agent, even when
-  // a session uses the default `ask` permission or an older persisted policy
-  // still contains an approval effect. Explicit deny/`none` checks above still
-  // apply to keep user restrictions authoritative.
-  const masterWebSearch = agent.name === 'master' && canonicalId === 'web.search'
-  const needsApproval = !masterWebSearch && (needsManualApproval || effective.approval_mode === 'ask' || override === 'ask' || (override !== 'allow_all' && (tool.requires_approval || matching.some((item) => item.effect === 'approval'))))
-  if (needsApproval) {
-    const created = await createApprovalFlow(client).create({ userId, agentId: agent.id, sessionId, toolId: canonicalId, input, reason: `${canonicalId} requires approval` })
-    retainPendingApprovalInput(created.approval.id, input)
-    const approval: Approval = {
-      id: created.approval.id,
-      user_id: created.approval.user_id,
-      agent_id: created.approval.agent_id,
-      session_id: created.approval.session_id,
-      tool_id: created.approval.tool_id,
-      input: created.approval.input,
-      status: created.approval.status,
-      reason: created.approval.reason,
-      created_at: created.approval.created_at,
-      resolved_at: created.approval.resolved_at,
-      expires_at: created.approval.expires_at,
-    }
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'approval_required', approval_id: approval.id })
-    // Register before publishing the event so an immediately resolved approval
-    // cannot be missed. The waiter is process-local; durable continuation still
-    // handles calls whose original bridge process is gone.
-    const resolution = options.waitForApproval === true
-      ? waitForApprovalResolution(approval.id, approval.expires_at)
-      : undefined
-    await options.onApproval?.(approval)
-    if (canonicalId === 'subagent/run' && subagentToolRunner) {
-      const task = await subagentToolRunner({ ...recordObject(input), approvalId: approval.id }, { userId, agentName, sessionId, cwd: options.cwd, callId: options.callId, permissionOverride: override, capabilities: options.capabilities })
-      if (!resolution) return { ok: false as const, toolId: canonicalId, approvalRequired: true, approvalId: approval.id, message: approval.reason, task } as never
-    }
-    if (resolution) {
-      const decision = await resolution
-      if (decision !== 'approved') {
-        discardPendingApprovalInput(approval.id)
-        return { ok: false as const, toolId: canonicalId, error: { code: 'PERMISSION_DENIED', message: `Tool approval ${decision}` } }
-      }
-      const continued = await continueApprovedTool(client, userId, approval.id, { sessionId, cwd: options.cwd, callId: options.callId })
-      return continued.ok ? continued : { ...continued, toolId: continued.toolId ?? canonicalId }
-    }
-    // Non-blocking callers receive a durable approval and continue it through
-    // continueApprovedTool(), including after a bridge restart.
-    return { ok: false as const, toolId: canonicalId, approvalRequired: true, approvalId: approval.id, message: approval.reason }
-  }
-
-  const explicitlyAllowed = matching.some((item) => item.effect === 'allow' || item.effect === 'approval')
-  if (override !== 'allow_all' && !explicitlyAllowed && agent.name !== 'master' && !matching.some((item) => item.tool_id === generatedSkillName(canonicalId))) {
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'denied', error_code: 'PERMISSION_DENIED' })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'PERMISSION_DENIED', message: `Agent is not allowed to use ${canonicalId}` } }
-  }
-
-  try {
-    const result = await invokeExternalTool(client, tool, input, options.cwd ?? process.cwd(), options.callId ?? crypto.randomUUID(), { userId, agentName, agentId: agent.id, projectId: persistedSession.projectId ? String(persistedSession.projectId) : undefined, sessionId, permissionOverride: override, capabilities: options.capabilities })
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'success', result_summary: `Executed ${tool.adapter} tool` })
-    return { ok: true as const, toolId: canonicalId, result }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Tool execution failed'
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: sessionId, tool_id: canonicalId, input, status: 'error', error_code: 'TOOL_EXECUTION_FAILED', error_message: message })
-    return { ok: false as const, toolId: canonicalId, error: { code: 'TOOL_EXECUTION_FAILED', message: redactSensitiveText(message) } }
-  }
-}
 
 function shortDescription(description: string): string {
   const short = description.trim().split(/(?<=[.!?])\s+/)[0] ?? description.trim()
@@ -1148,103 +1213,52 @@ export async function searchToolsForAgent(client: PocketBase, userId: string, ag
     .map(({ tool }) => ({ tool: tool.tool_id, description: shortDescription(tool.description), usage: toolUsage(tool) }))
 }
 
-export async function continueApprovedTool(client: PocketBase, userId: string, approvalId: string, options: { sessionId?: string; cwd?: string; callId?: string } = {}) {
-  if (!options.sessionId?.trim()) return { ok: false as const, error: { code: 'SESSION_REQUIRED', message: 'An owned session is required for tool execution' } }
-  const repository = createProjectSessionRepository(client)
-  const context = await repository.getSessionContext(userId, options.sessionId)
-  if (!context) return { ok: false as const, error: { code: 'SESSION_NOT_FOUND', message: 'The session is not owned by the requesting user or its project context is invalid' } }
-  const flow = createApprovalFlow(client)
-  let continued
-  try {
-    continued = await flow.continue({ userId, sessionId: options.sessionId }, approvalId, async (approval) => {
-      const executableInput = takePendingApprovalInput(approval.id)
-      if (executableInput === undefined) return { ok: false as const, toolId: approval.tool_id, error: { code: 'APPROVAL_INTERRUPTED', message: 'Approval input is unavailable; it cannot be resumed after a restart' } }
-      const current = await repository.getSessionContext(userId, options.sessionId!)
-      if (!current) return { ok: false as const, toolId: approval.tool_id, error: { code: 'APPROVAL_INTERRUPTED', message: 'The persisted session or project context changed; create a new approval' } }
-      return executeApprovedTool(client, userId, approval, executableInput, current, options.callId ?? crypto.randomUUID())
-    })
-  } catch (error) {
-    return { ok: false as const, error: { code: 'APPROVAL_INTERRUPTED', message: redactSensitiveText(error instanceof Error ? error.message : 'Approval continuation failed') } }
-  }
-  if (!continued.ok) return { ok: false as const, error: continued.error }
-  if (continued.state === 'pending') return { ok: false as const, toolId: continued.approval.tool_id, approvalRequired: true, approvalId: continued.approval.id, message: continued.approval.reason }
-  if (continued.state === 'rejected' || continued.state === 'expired') {
-    discardPendingApprovalInput(continued.approval.id)
-    return { ok: false as const, toolId: continued.approval.tool_id, error: { code: 'APPROVAL_REJECTED', message: `Approval ${continued.state}` } }
-  }
-  if (continued.state === 'approved') return { ok: false as const, toolId: continued.approval.tool_id, approvalRequired: true, approvalId: continued.approval.id, message: 'Approval granted; continue execution' }
-  if (continued.state !== 'continued') return { ok: false as const, error: { code: 'APPROVAL_INVALID_STATE', message: 'Approval is not ready to continue' } }
-  return continued.result
+export async function listPendingCoreApprovals(client: PocketBase, userId: string, sessionId?: string): Promise<Approval[]> {
+  const pending = await createApprovalFlow(client).pending({ userId }, sessionId)
+  return Promise.all(pending.approvals.map(async (approval) => {
+    const record = await client.collection('tool_approvals').getOne(approval.id).catch(() => null) as Record<string, unknown> | null
+    const key = typeof record?.approval_key === 'string' ? record.approval_key : approval.id
+    return { ...toApproval(approval), id: key }
+  }))
 }
 
-async function executeApprovedTool(
-  client: PocketBase,
-  userId: string,
-  approval: ApprovalFlowApproval,
-  input: unknown,
-  context: SessionContext,
-  callId: string,
-) {
-  const session = context.session
-  const toolId = canonicalToolId(approval.tool_id)
-  const tool = await getTool(client, toolId)
-  if (!tool) return { ok: false as const, toolId, error: { code: 'UNKNOWN_TOOL', message: 'Tool does not exist or is disabled' } }
-  const agent = await findAgent(client, userId, session.profile?.trim() || approval.agent_id)
-  if (!agent || !agent.enabled || agent.id !== approval.agent_id) {
-    await writeAudit(client, { user_id: userId, agent_id: approval.agent_id, session_id: session.id, tool_id: toolId, input, status: 'denied', error_code: 'PERMISSION_DENIED' })
-    return { ok: false as const, toolId, error: { code: 'PERMISSION_DENIED', message: 'The approved agent or session policy has changed' } }
-  }
-  if (tool.tool_id !== toolId) return { ok: false as const, toolId, error: { code: 'UNKNOWN_TOOL', message: 'Approved tool no longer matches the registered tool' } }
-  const validationError = requiredInputError(tool.input_schema, input)
-  if (validationError) return { ok: false as const, toolId, error: { code: 'VALIDATION_FAILED', message: validationError } }
-  const effective = effectiveAgentConfiguration(agent, session.projectId ? String(session.projectId) : undefined)
-  if (toolId.startsWith('memory/') && effective.policies.memory !== true) return { ok: false as const, toolId, error: { code: 'MEMORY_DISABLED', message: 'Memory is disabled for this agent' } }
-  if (memoryMutationTools.has(toolId) && (agent.template === 'plan' || agent.template === 'reviewer')) return { ok: false as const, toolId, error: { code: 'MEMORY_QUERY_ONLY', message: 'This agent profile is query-only for memory' } }
-  const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(userId)}" && agent_id = "${escapeFilter(agent.id)}"` })
-  const matching = policies.filter((item) => item.tool_id === toolId || item.tool_id === '*')
-  const explicitlyAllowed = matching.some((item) => item.effect === 'allow' || item.effect === 'approval')
-  if (session.permissionOverride === 'none' || matching.some((item) => item.effect === 'deny')
-    || (agent.name !== 'master' && !explicitlyAllowed && !matching.some((item) => item.tool_id === generatedSkillName(toolId)))) {
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: session.id, tool_id: toolId, input, status: 'denied', error_code: 'PERMISSION_DENIED' })
-    return { ok: false as const, toolId, error: { code: 'PERMISSION_DENIED', message: 'Current permission policy does not allow the approved tool' } }
-  }
-  const cwd = session.directory ? assertPathWithinWorkspace(session.directory) : context.project?.path ?? configuredWorkspaceRoot()
-  try {
-    const resumedInput = toolId === 'subagent/run' ? { ...recordObject(input), approvalId: approval.id } : input
-    const requestedCapabilities = recordObject(input).capabilities
-    const result = await invokeExternalTool(client, tool, resumedInput, cwd, callId, {
-      userId,
-      agentName: agent.name,
-      agentId: agent.id,
-      projectId: session.projectId ? String(session.projectId) : undefined,
-      sessionId: session.id,
-      cwd,
-      permissionOverride: session.permissionOverride,
-      capabilities: Array.isArray(requestedCapabilities) ? requestedCapabilities.filter((value: unknown): value is string => typeof value === 'string') : undefined,
-    })
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: session.id, tool_id: toolId, input, status: 'success', result_summary: `Executed ${tool.adapter} tool` })
-    return { ok: true as const, toolId, result }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Tool execution failed'
-    await writeAudit(client, { user_id: userId, agent_id: agent.id, session_id: session.id, tool_id: toolId, input, status: 'error', error_code: 'TOOL_EXECUTION_FAILED', error_message: message })
-    return { ok: false as const, toolId, error: { code: 'TOOL_EXECUTION_FAILED', message: redactSensitiveText(message) } }
-  }
+export async function respondToCoreApproval(client: PocketBase, userId: string, approvalId: string, decision: boolean | 'approve' | 'approved' | 'reject' | 'rejected', sessionId: string): Promise<Approval | null> {
+  const record = await client.collection('tool_approvals').getOne(approvalId).catch(() => null)
+    ?? await client.collection('tool_approvals').getFirstListItem(`approval_key = "${escapeFilter(approvalId)}" && user_id = "${escapeFilter(userId)}"`).catch(() => null)
+  if (!record || record.user_id !== userId || (record.session_id && record.session_id !== sessionId)) return null
+  const resolved = await createApprovalFlow(client).resolve({ userId, sessionId }, String(record.id), decision)
+  if (!resolved.ok || !('approval' in resolved)) return null
+  const approval = toApproval(resolved.approval)
+  return { ...approval, id: typeof record.approval_key === 'string' ? record.approval_key : approval.id }
 }
 
-export function mapPiToolName(toolName: string): string | null {
-  return piToolIds[toolName] ?? null
+export async function continueCoreApprovedTool(client: PocketBase, userId: string, approvalId: string, options: { sessionId: string; cwd?: string; agentName?: string; projectId?: string; permissionOverride?: PermissionOverride; callId?: string } ): Promise<unknown> {
+  const record = await client.collection('tool_approvals').getOne(approvalId).catch(() => null)
+    ?? await client.collection('tool_approvals').getFirstListItem(`approval_key = "${escapeFilter(approvalId)}" && user_id = "${escapeFilter(userId)}"`).catch(() => null)
+  if (!record || record.user_id !== userId || record.session_id !== options.sessionId) return { ok: false, error: { code: 'APPROVAL_NOT_FOUND', message: 'Approval was not found' } }
+  if (record.status !== 'approved') return { ok: false, toolId: String(record.tool_id), approvalRequired: true, approvalId, message: 'Tool approval is still pending' }
+  const input = takePendingApprovalInput(String(record.id)) ?? decryptApprovalInput(record.executable_input)
+  if (input === undefined) return { ok: false, toolId: String(record.tool_id), error: { code: 'APPROVAL_INTERRUPTED', message: 'Approval input is unavailable; configure SUBPOLAR_APPROVAL_KEY or recreate the approval' } }
+  const gateway = await createCoreToolGateway(client, userId)
+  const callId = options.callId ?? String(record.call_id ?? crypto.randomUUID())
+  return gateway.call(
+    { callId, toolId: String(record.tool_id), input, idempotencyKey: `tool-call:${callId}` },
+    {
+      requestId: callId,
+      principal: { id: userId, kind: 'user' },
+      sessionId: options.sessionId,
+      projectId: options.projectId,
+      agentId: options.agentName,
+      cwd: options.cwd,
+      metadata: {
+        agentName: options.agentName ?? 'master',
+        ...(options.permissionOverride === undefined ? {} : { permissionOverride: options.permissionOverride }),
+      },
+    },
+  )
 }
 
-export async function authorizePiToolCall(client: PocketBase, input: { userId: string; agentName: string; sessionId: string; toolName: string; input: unknown; permissionOverride?: PermissionOverride }) {
-  if (!input.sessionId.trim()) return { ok: false as const, decision: 'deny' as const, message: 'An owned session is required' }
-  const session = await createProjectSessionRepository(client).getSessionById(input.sessionId)
-  if (!session || session.userId !== input.userId) return { ok: false as const, decision: 'deny' as const, message: 'Session not found' }
-  const toolId = mapPiToolName(input.toolName)
-  if (!toolId) return { ok: false as const, decision: 'deny' as const, message: `Unknown Pi tool: ${input.toolName}` }
-  const result = await callTool(client, input.userId, input.agentName, toolId, input.input, input.sessionId, input.permissionOverride)
-  if (result.ok) return { ok: true as const, decision: 'allow' as const }
-  if ('approvalRequired' in result && result.approvalRequired) return { ok: false as const, decision: 'approval' as const, approvalId: result.approvalId, message: result.message }
-  return { ok: false as const, decision: 'deny' as const, message: result.error?.message ?? 'Tool call was denied' }
-}
+
+
 
 export type { PocketBase }

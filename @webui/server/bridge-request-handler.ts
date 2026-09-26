@@ -46,15 +46,7 @@ export function createBridgeRequestHandler(deps: BridgeRequestDependencies) {
     const path = url.pathname.split('/').filter(Boolean)
     if (request.method === 'OPTIONS') return new Response(null, { status: 204 })
 
-    if (request.method === 'GET' && url.pathname === '/api/health') {
-      try {
-        await deps.applicationDatabase()
-        return deps.json(deps.createLegacyHealthPayload(true, new Date().toISOString()))
-      } catch (error) {
-        console.warn(`Health check degraded: ${deps.redactedDiagnostic(error)}`)
-        return deps.json(deps.createLegacyHealthPayload(false, new Date().toISOString()), 503)
-      }
-    }
+
     if (request.method === 'GET' && url.pathname === '/api/v1/capabilities') {
       return deps.json(deps.createCapabilitiesPayload(correlationId))
     }
