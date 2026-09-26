@@ -17,6 +17,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -739,15 +740,6 @@ export function SessionDetail() {
                 />
               )}
               <SessionSendErrorBanner sessionId={sessionId} />
-              {inFlightPrompt && (
-                <div
-                  role="status"
-                  data-testid="in-flight-prompt-state"
-                  className="mb-2 rounded-xl border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-sm text-blue-900 dark:text-blue-100"
-                >
-                  {inFlightPrompt.routing ? 'Routing...' : 'Prompt delivery is in progress. It will not be sent again automatically.'}
-                </div>
-              )}
               {interruptedPrompt && (
                 <div
                   role="alert"

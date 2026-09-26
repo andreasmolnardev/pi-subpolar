@@ -151,7 +151,8 @@ describe('SessionDetail interrupted first-send handoff', () => {
 
     renderSession()
 
-    expect(await screen.findByTestId('in-flight-prompt-state')).toBeTruthy()
+    await waitFor(() => expect(mocks.sendPrompt).toHaveBeenCalledTimes(1))
+    expect(screen.queryByTestId('in-flight-prompt-state')).toBeNull()
     expect(mocks.sendPrompt).toHaveBeenCalledTimes(1)
     const [, options] = mocks.sendPrompt.mock.calls[0]
     await act(async () => {
@@ -168,7 +169,7 @@ describe('SessionDetail interrupted first-send handoff', () => {
     cleanup()
     renderSession()
 
-    expect(await screen.findByTestId('in-flight-prompt-state')).toBeTruthy()
+    expect(screen.queryByTestId('in-flight-prompt-state')).toBeNull()
     expect(mocks.sendPrompt).toHaveBeenCalledTimes(1)
   })
 
