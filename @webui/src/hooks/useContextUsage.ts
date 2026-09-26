@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useMessages } from './usePiHarness'
+import { useConfig, useMessages, useSession } from './usePiHarness'
 import { useQuery } from '@tanstack/react-query'
 import { fetchWrapper } from '@/api/fetchWrapper'
 
@@ -8,6 +8,8 @@ interface ContextUsage {
   contextLimit: number | null
   usagePercentage: number | null
   currentModel: string | null
+  modelName: string | null
+  pricing: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
   isLoading: boolean
 }
 
@@ -16,6 +18,7 @@ type AssistantMessage = {
     role: string
     modelID?: string
     providerID?: string
+    model?: { providerID?: string; modelID?: string }
     tokens?: {
       input?: number
       output?: number
@@ -43,7 +46,12 @@ interface ModelLimit {
 interface ProviderModel {
   id: string
   name: string
-  limit: ModelLimit
+  limit?: ModelLimit
+  cost?: {
+    input: number
+    output: number
+    cache: { read: number; write: number }
+  }
 }
 
 interface Provider {
@@ -89,6 +97,8 @@ function getMessageModel(message: AssistantMessage | undefined): string | null {
 
 export const useContextUsage = (apiUrl: string | null | undefined, sessionID: string | undefined, directory?: string): ContextUsage => {
   const { data: messages, isLoading: messagesLoading } = useMessages(apiUrl, sessionID, directory)
+  const { data: session, isLoading: sessionLoading } = useSession(apiUrl, sessionID, directory)
+  const { data: config, isLoading: configLoading } = useConfig(apiUrl, directory)
 
   const { data: providersData } = useQuery({
     queryKey: ['providers', apiUrl],
@@ -108,16 +118,28 @@ export const useContextUsage = (apiUrl: string | null | undefined, sessionID: st
       latestAssistantMessage = assistantMessages[assistantMessages.length - 2]
     }
 
-    const currentModel = getMessageModel(latestAssistantMessage)
+    const messageModel = getMessageModel(latestAssistantMessage)
+    const currentModel = messageModel ?? session?.model ?? config?.model ?? null
 
     let contextLimit: number | null = null
+    let modelName: string | null = null
+    let pricing: ContextUsage['pricing'] = null
     if (currentModel && providersData) {
-      const [providerId, modelId] = currentModel.split('/')
+      const separator = currentModel.indexOf('/')
+      const providerId = separator >= 0 ? currentModel.slice(0, separator) : ''
+      const modelId = separator >= 0 ? currentModel.slice(separator + 1) : currentModel
       const provider = providersData.providers.find(p => p.id === providerId)
       if (provider?.models) {
         const model = provider.models[modelId]
-        if (model?.limit) {
-          contextLimit = model.limit.context
+        if (model) {
+          modelName = model.name
+          contextLimit = model.limit?.context ?? null
+          pricing = model.cost ? {
+            input: model.cost.input,
+            output: model.cost.output,
+            cacheRead: model.cost.cache.read,
+            cacheWrite: model.cost.cache.write,
+          } : null
         }
       }
     }
@@ -128,7 +150,9 @@ export const useContextUsage = (apiUrl: string | null | undefined, sessionID: st
         contextLimit,
         usagePercentage: contextLimit ? 0 : null,
         currentModel,
-        isLoading: messagesLoading
+        modelName,
+        pricing,
+        isLoading: messagesLoading || sessionLoading || configLoading,
       }
     }
     
@@ -141,7 +165,9 @@ export const useContextUsage = (apiUrl: string | null | undefined, sessionID: st
       contextLimit,
       usagePercentage,
       currentModel,
+      modelName,
+      pricing,
       isLoading: false
     }
-  }, [messages, messagesLoading, providersData])
+  }, [messages, messagesLoading, session?.model, sessionLoading, config?.model, configLoading, providersData])
 }

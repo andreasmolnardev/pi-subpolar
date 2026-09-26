@@ -3,12 +3,13 @@ import { CopyButton } from '@/components/ui/copy-button'
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Download } from 'lucide-react'
 import type { MessageWithParts, Part } from '@/api/types'
 
 interface ContextUsageIndicatorProps {
@@ -18,6 +19,8 @@ interface ContextUsageIndicatorProps {
   isConnected: boolean
   isReconnecting?: boolean
   messages?: MessageWithParts[]
+  onDownloadTranscript: (format: 'markdown' | 'text' | 'json') => void
+  isDownloadingTranscript: boolean
 }
 
 const getUsageTextColor = (percentage: number) => {
@@ -46,8 +49,8 @@ const getConversationHistory = (messages: MessageWithParts[] = []) => {
     .join('\n\n---\n\n')
 }
 
-export function ContextUsageIndicator({ apiUrl, sessionID, directory, isConnected, isReconnecting, messages }: ContextUsageIndicatorProps) {
-  const { totalTokens, contextLimit, usagePercentage, currentModel, isLoading } = useContextUsage(apiUrl, sessionID, directory)
+export function ContextUsageIndicator({ apiUrl, sessionID, directory, isConnected, isReconnecting, messages, onDownloadTranscript, isDownloadingTranscript }: ContextUsageIndicatorProps) {
+  const { totalTokens, contextLimit, usagePercentage, currentModel, modelName, pricing, isLoading } = useContextUsage(apiUrl, sessionID, directory)
 
   if (isLoading) {
     return (
@@ -85,8 +88,24 @@ export function ContextUsageIndicator({ apiUrl, sessionID, directory, isConnecte
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-80 p-3">
         <div className="flex items-start justify-between gap-3">
-          <DropdownMenuLabel className="px-0 py-0 text-foreground">Conversation context</DropdownMenuLabel>
-          <CopyButton content={conversationHistory} title="Copy conversation history" iconSize="sm" variant="ghost" />
+          <DropdownMenuLabel className="px-0 py-0 text-foreground">Session Info</DropdownMenuLabel>
+          <div className="flex items-center gap-1">
+            <CopyButton content={conversationHistory} title="Copy message history" iconSize="sm" variant="ghost" />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Download transcript" disabled={isDownloadingTranscript}>
+                  <Download className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel>Download transcript</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => onDownloadTranscript('markdown')}>Markdown</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onDownloadTranscript('text')}>Plain text</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onDownloadTranscript('json')}>JSON</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
         <DropdownMenuSeparator className="my-3" />
         <div className="grid gap-2 text-xs">
@@ -96,7 +115,7 @@ export function ContextUsageIndicator({ apiUrl, sessionID, directory, isConnecte
           </div>
           <div className="flex justify-between gap-3">
             <span className="text-muted-foreground">Context limit</span>
-            <span className="font-medium text-foreground">{contextLimit ? contextLimit.toLocaleString() : 'Unknown'}</span>
+            <span className="font-medium text-foreground">{contextLimit ? contextLimit.toLocaleString() : 'Unavailable'}</span>
           </div>
           <div className="flex justify-between gap-3">
             <span className="text-muted-foreground">Usage</span>
@@ -112,8 +131,30 @@ export function ContextUsageIndicator({ apiUrl, sessionID, directory, isConnecte
           </div>
           <div className="flex justify-between gap-3">
             <span className="text-muted-foreground">Model</span>
-            <span className="max-w-44 truncate text-right font-medium text-foreground">{currentModel || 'Unknown'}</span>
+            <span className="max-w-44 truncate text-right font-medium text-foreground" title={currentModel ?? undefined}>{modelName || currentModel || 'Unavailable'}</span>
           </div>
+          {pricing && (
+            <>
+              <DropdownMenuSeparator className="my-1" />
+              <div className="font-medium text-muted-foreground">Cost per million tokens</div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Input</span>
+                <span className="font-medium text-foreground">${pricing.input.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Output</span>
+                <span className="font-medium text-foreground">${pricing.output.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Cached read</span>
+                <span className="font-medium text-foreground">${pricing.cacheRead.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Cached write</span>
+                <span className="font-medium text-foreground">${pricing.cacheWrite.toFixed(2)}</span>
+              </div>
+            </>
+          )}
         </div>
       </DropdownMenuContent>
     </DropdownMenu>
