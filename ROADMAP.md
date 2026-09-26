@@ -282,7 +282,7 @@ packages/
   subpolar-db/               # durable server storage/identity implementation
   subpolar-adapter-local/     # ephemeral + minimal filesystem state for standalone CLI
   subpolar-cli/              # terminal UX, local runtime composition
-  subpolar-tools-cli/        # remote tool-only gateway client
+  subpolar-tools/            # tool registry, execution contracts, and remote CLI
 apps/
   webui/                     # HTTP/WS/SSE adapters, routes, PocketBase composition
 ```
@@ -1320,7 +1320,7 @@ Keep **tool access for external harnesses** separate from **running the full Sub
 
 ## Tools CLI — Remote Tool Gateway Utility (P0 after Phase 0)
 
-Replace the planned general-purpose `@agents-cli` harness with a **tools-only CLI**, provisionally named `@subpolar/tools-cli` / `subpolar-tools` (final package/binary name can be settled during implementation). Do not use this tool utility to create agent sessions, send chat messages, steer, queue, or run Pi.
+Replace the planned general-purpose `@agents-cli` harness with a **tools-only CLI**, provided as `@subpolar/tools` / `subpolar-tools` (final package/binary name can be settled during implementation). Do not use this tool utility to create agent sessions, send chat messages, steer, queue, or run Pi.
 
 The tools CLI is an authenticated HTTP client of a running Subpolar deployment. It must not import `subpolar-core`, embed Pi, instantiate local adapters, or access PocketBase directly.
 

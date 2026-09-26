@@ -45,9 +45,9 @@ packages/
 │   ├── internal tools
 │   ├── HTTP/OpenAPI/MCP tools
 │   ├── browser, memory, and subagent tools
-│   └── execution adapters
+│   ├── execution adapters
+│   └── remote `subpolar-tools` CLI (`@subpolar/tools/cli`)
 ├── subpolar-runtime-cli (`@subpolar/runtime-cli`)
-├── subpolar-tools-cli (`@subpolar/tools-cli`)
 ├── subpolar-webui-server
 └── subpolar-webui (`@subpolar/webui`)
 ```

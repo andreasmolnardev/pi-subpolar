@@ -3,10 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "subpolar-tools": "./src/cli.ts"
+  },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
   },
   "scripts": {
+    "start": "bun ./src/cli.ts",
     "test": "bun test test"
   }
 }
