@@ -184,6 +184,24 @@ const isDeliveredUserMessage = (message: Message): boolean => {
   return (message as Message & { queueDelivery?: string }).queueDelivery === 'sent'
 }
 
+export function formatSentTimestamp(timestamp: number, now = new Date()): string {
+  const messageDate = new Date(timestamp)
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const messageDay = new Date(messageDate.getFullYear(), messageDate.getMonth(), messageDate.getDate())
+  const yesterday = new Date(today)
+  yesterday.setDate(yesterday.getDate() - 1)
+  const weekAgo = new Date(today)
+  weekAgo.setDate(weekAgo.getDate() - 7)
+  const time = messageDate.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+
+  if (messageDay.getTime() === today.getTime()) return time
+  if (messageDay.getTime() === yesterday.getTime()) return `Yesterday ${time}`
+  if (messageDay > weekAgo && messageDay < yesterday) {
+    return `${messageDate.toLocaleDateString(undefined, { weekday: 'long' })} ${time}`
+  }
+  return `${messageDate.toLocaleDateString(undefined, { dateStyle: 'medium' })} ${time}`
+}
+
 const isWaitingForAssistant = (messages: MessageWithParts[], pendingAssistantId: string | undefined): boolean => {
   if (pendingAssistantId) return false
 
@@ -351,12 +369,10 @@ const MessageRow = memo(function MessageRow({
       key={msg.id}
       className={`flex flex-col group ${messageAlignment}`}
     >
-      <div className={`flex flex-col gap-1 ${messageWidth}`}>
+      <div className={`flex flex-col ${msg.role === 'user' ? 'gap-1' : 'gap-0'} ${messageWidth}`}>
         <div className={`flex items-center justify-between gap-2 px-1 ${msg.role === 'user' ? 'hidden' : ''}`}>
           <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground">
-              {msg.role === 'user' ? 'You' : 'General Chat'}
-            </span>
+            {msg.role === 'user' && <span className="text-xs font-medium text-muted-foreground">You</span>}
             {msg.role === 'user' && msg.time && (
               <span className="text-xs text-muted-foreground">
                 {new Date(msg.time.created).toLocaleTimeString()}
@@ -411,14 +427,18 @@ const MessageRow = memo(function MessageRow({
               <AttemptTabs attempts={attempts} activeAttemptID={activeAttemptID} onSelect={setActiveAttemptID} />
             )}
             <div
-              className={`rounded-3xl px-4 py-2 ${
+              className={`${
+                msg.role === 'user'
+                  ? 'rounded-3xl px-4 py-2'
+                  : ''
+              } ${
                 msg.role === 'user'
                   ? isQueued
                     ? 'bg-amber-500/10 border border-amber-500/30'
-                    : isEditingThisMessage
-                      ? 'bg-primary/30 border border-primary/50 text-primary-foreground'
-                      : 'bg-primary text-primary-foreground border border-primary'
-                  : 'rounded-lg p-1.5 bg-card/50 border border-border'
+                  : isEditingThisMessage
+                    ? 'bg-primary/30 border border-primary/50 text-primary-foreground'
+                    : 'bg-primary text-primary-foreground border border-primary'
+                  : 'bg-transparent border-transparent'
               } ${streaming ? 'animate-pulse-subtle' : ''}`}
             >
               <div className="space-y-2">
@@ -664,10 +684,15 @@ export const MessageThread = memo(function MessageThread({
   return (
     <div className="flex flex-col space-y-2 p-2 overflow-x-hidden">
         {messages.map((msgWithParts, messageIndex) => (
-        <div key={msgWithParts.info.id} className="relative">
+        <div key={msgWithParts.info.id} className="relative w-full">
         {msgWithParts.info.role === 'user' && messageIndex === messages.findIndex((message) => message.info.role === 'user') && sessionStartedAt && (
           <div className="pointer-events-none absolute inset-x-0 -top-6 text-center text-xs text-muted-foreground">
             {new Date(sessionStartedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+          </div>
+        )}
+        {msgWithParts.info.role === 'user' && msgWithParts.info.time && (
+          <div className="w-full pb-1 text-center text-xs text-muted-foreground">
+            {formatSentTimestamp(msgWithParts.info.time.created)}
           </div>
         )}
         <MessageRow

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { MessageThread } from './MessageThread'
+import { formatSentTimestamp, MessageThread } from './MessageThread'
 import { useUIState } from '@/stores/uiStateStore'
 
 const mocks = vi.hoisted(() => ({
@@ -389,7 +389,8 @@ describe('MessageThread', () => {
     )
 
     expect(screen.getByText('This is a response')).toBeInTheDocument()
-    expect(screen.getByText('General Chat')).toBeInTheDocument()
+    expect(screen.queryByText('General Chat')).not.toBeInTheDocument()
+    expect(screen.getByText('This is a response').closest('[class*="bg-transparent"]')).toBeInTheDocument()
   })
 
   it('renders assistant message with text and subtask normally with header', () => {
@@ -416,7 +417,7 @@ describe('MessageThread', () => {
 
     expect(screen.getByText('Here is the analysis')).toBeInTheDocument()
     expect(screen.getByText('Review changes')).toBeInTheDocument()
-    expect(screen.getByText('General Chat')).toBeInTheDocument()
+    expect(screen.queryByText('General Chat')).not.toBeInTheDocument()
   })
 
   it('renders user messages normally', () => {
@@ -461,6 +462,40 @@ describe('MessageThread', () => {
 
     const timestamp = screen.getByText(new Date(startedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }))
     expect(timestamp.closest('.pointer-events-none')).toHaveClass('absolute', 'inset-x-0', 'text-center')
+  })
+
+  it('centers each sent timestamp across the full message container', () => {
+    setupSettings({ simpleChatMode: false, showReasoning: false })
+    const sentAt = new Date(2024, 0, 6, 15, 8).getTime()
+    const message = createUserMessage('1', 'Hello')
+    message.info.time.created = sentAt
+
+    render(
+      <MessageThread
+        apiUrl="http://localhost:5551"
+        sessionID="test-session"
+        messages={[message] as any}
+      />,
+    )
+
+    const timestamp = screen.getByText(formatSentTimestamp(sentAt))
+    expect(timestamp).toHaveClass('w-full', 'text-center')
+    expect(timestamp.parentElement).toHaveClass('relative', 'w-full')
+  })
+
+  it('formats sent timestamps by how recently they were sent', () => {
+    const now = new Date(2026, 8, 26, 15, 0)
+    const at = (daysAgo: number) => {
+      const date = new Date(now)
+      date.setDate(date.getDate() - daysAgo)
+      date.setHours(11, 8, 0, 0)
+      return date.getTime()
+    }
+
+    expect(formatSentTimestamp(at(0), now)).toBe('11:08 AM')
+    expect(formatSentTimestamp(at(1), now)).toBe('Yesterday 11:08 AM')
+    expect(formatSentTimestamp(at(3), now)).toBe('Wednesday 11:08 AM')
+    expect(formatSentTimestamp(at(8), now)).toBe('Sep 18, 2026 11:08 AM')
   })
 
   it('keeps global editing state active when edit textarea blurs', () => {
