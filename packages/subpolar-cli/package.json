@@ -1,5 +1,5 @@
 {
-  "name": "@subpolar/cli",
+  "name": "@subpolar/runtime-cli",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -14,9 +14,9 @@
     "test": "bun test test"
   },
   "dependencies": {
-    "@subpolar/adapter-local": "workspace:*",
-    "@subpolar/adapter-pi": "workspace:*",
-    "@subpolar/contracts": "workspace:*",
-    "@subpolar/core": "workspace:*"
+    "@subpolar/db-local": "workspace:*",
+    "@subpolar/runtime-pi": "workspace:*",
+    "@subpolar/shared": "workspace:*",
+    "@subpolar/runtime": "workspace:*"
   }
 }

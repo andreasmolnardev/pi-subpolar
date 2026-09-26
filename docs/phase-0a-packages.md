@@ -1,7 +1,7 @@
 # Phase 0A Local Packages
 
-The new `packages/subpolar-contracts`, `packages/subpolar-core`,
-`packages/subpolar-adapter-local`, and `packages/subpolar-cli` packages are the
+The new shared package set (`@subpolar/shared`, `@subpolar/runtime`,
+`@subpolar/db-local`, and `@subpolar/runtime-cli`) is the
 bounded foundation for later Pi composition.
 
 ## State And Persistence

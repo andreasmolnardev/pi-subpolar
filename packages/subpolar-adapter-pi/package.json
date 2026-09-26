@@ -1,5 +1,5 @@
 {
-  "name": "@subpolar/adapter-pi",
+  "name": "@subpolar/runtime-pi",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,6 +7,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@subpolar/contracts": "workspace:*"
+    "@subpolar/shared": "workspace:*"
   }
 }

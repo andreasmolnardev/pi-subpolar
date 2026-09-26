@@ -1,10 +1,10 @@
 {
-  "name": "@subpolar/core",
+  "name": "@subpolar/runtime",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "dependencies": {
-    "@subpolar/contracts": "workspace:*"
+    "@subpolar/shared": "workspace:*"
   },
   "exports": {
     ".": "./src/index.ts"

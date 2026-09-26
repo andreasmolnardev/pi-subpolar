@@ -22,37 +22,37 @@ At runtime initialization, and whenever a new execution or tool call requires co
 
 ```text
 packages/
-├── subpolar-contracts
+├── subpolar-shared (`@subpolar/shared`)
 │   ├── domain records and DTOs
 │   ├── runtime, run, tool, approval, audit, and event contracts
 │   └── persistence and executor ports
-├── subpolar-core
+├── subpolar-runtime (`@subpolar/runtime`)
 │   ├── StatelessSubpolarRuntime
 │   ├── context loading and validation
 │   ├── run orchestration
 │   ├── policy evaluation
 │   ├── approval state transitions
 │   └── central tool gateway
-├── subpolar-adapter-pocketbase
+├── subpolar-db (`@subpolar/db`)
 │   ├── owner-scoped repositories
 │   ├── sessions and canonical transcripts
 │   ├── agents, projects, tools, and policies
 │   ├── approvals, runs, audits, events, and idempotency
 │   └── PocketBase-specific transactions and capabilities
-├── subpolar-adapter-pi
+├── subpolar-runtime-pi (`@subpolar/runtime-pi`)
 │   └── transient Pi SDK execution adapter
-├── subpolar-tools
+├── subpolar-tools (`@subpolar/tools`)
 │   ├── internal tools
 │   ├── HTTP/OpenAPI/MCP tools
 │   ├── browser, memory, and subagent tools
 │   └── execution adapters
-├── subpolar-cli
-├── subpolar-tools-cli
-├── webui-server
-└── webui
+├── subpolar-runtime-cli (`@subpolar/runtime-cli`)
+├── subpolar-tools-cli (`@subpolar/tools-cli`)
+├── subpolar-webui-server
+└── subpolar-webui (`@subpolar/webui`)
 ```
 
-`subpolar-contracts` and `subpolar-core` must not import PocketBase, Hono, React, filesystem-specific WebUI modules, or Pi implementation modules. The adapters depend on the contracts and are composed by an application boundary.
+`@subpolar/shared` and `@subpolar/runtime` must not import PocketBase, Hono, React, filesystem-specific WebUI modules, or Pi implementation modules. The adapters depend on the contracts and are composed by an application boundary.
 
 ## Runtime composition
 
@@ -184,7 +184,7 @@ In-memory maps may be used as optional fast paths for cancellation or active str
 
 The architecture is considered implemented when:
 
-1. `subpolar-core` can run without PocketBase, WebUI, or Pi imports.
+1. `@subpolar/runtime` can run without PocketBase, WebUI, or Pi imports.
 2. The WebUI composes the core with PocketBase and Pi adapters instead of owning duplicate policy logic.
 3. Pi creates no persistent session or transcript files.
 4. A new runtime can reconstruct a session entirely from PocketBase.
@@ -200,7 +200,7 @@ The production WebUI composition has completed the run-lifecycle cutover:
 
 - `POST /api/sessions/:id/runs` constructs a fresh runtime with an authenticated owner-bound PocketBase adapter.
 - `subpolar_runs` and `subpolar_run_events` are durable sources for run outcomes and replay.
-- Pi execution is wrapped by `subpolar-adapter-pi` and uses `SessionManager.inMemory()` only.
+- Pi execution is wrapped by `@subpolar/runtime-pi` and uses `SessionManager.inMemory()` only.
 - The active-session map is only a streaming/cancellation fast path; terminal replay does not require it.
 - Existing routes for projects, history, usage, tools, agents, approvals, voice, automations, subagents, and CLI compatibility remain in place.
 

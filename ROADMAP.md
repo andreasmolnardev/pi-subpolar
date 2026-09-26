@@ -277,9 +277,9 @@ Proposed package boundaries (illustrative names; align with existing monorepo co
 
 ```text
 packages/
-  subpolar-core/             # Pi SDK orchestration, context, tool gateway, policy
-  subpolar-contracts/        # types, domain records, events, errors, ports
-  subpolar-adapter-pocketbase/# durable server storage/identity implementation
+  subpolar-runtime/          # Pi SDK orchestration, context, tool gateway
+  subpolar-shared/           # types, domain records, events, errors, ports
+  subpolar-db/               # durable server storage/identity implementation
   subpolar-adapter-local/     # ephemeral + minimal filesystem state for standalone CLI
   subpolar-cli/              # terminal UX, local runtime composition
   subpolar-tools-cli/        # remote tool-only gateway client

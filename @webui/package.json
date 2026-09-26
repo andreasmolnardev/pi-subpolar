@@ -1,5 +1,5 @@
 {
-  "name": "pi-webui",
+  "name": "@subpolar/webui",
   "private": true,
   "type": "module",
   "scripts": {

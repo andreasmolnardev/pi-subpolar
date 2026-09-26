@@ -1,5 +1,5 @@
 {
-  "name": "@subpolar/operations",
+  "name": "@subpolar/shared-operations",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,6 +10,6 @@
     "test": "bun test test"
   },
   "dependencies": {
-    "@subpolar/contracts": "workspace:*"
+    "@subpolar/shared": "workspace:*"
   }
 }
