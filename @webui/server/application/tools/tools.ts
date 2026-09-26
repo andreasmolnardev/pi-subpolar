@@ -51,7 +51,7 @@ import {
   createPocketBaseIdempotencyPort,
   type PocketBaseClientPort,
   type PocketBaseStoredRecord,
-} from '../../../../packages/subpolar-adapter-pocketbase/src/index.ts'
+} from '../../../../packages/subpolar-persistance-pocketbase/src/index.ts'
 import type { ToolGateway as CoreToolGateway } from '../../../../packages/subpolar-core/src/index.ts'
 
 export type ToolAdapter = 'internal' | 'http' | 'openapi' | 'mcp'

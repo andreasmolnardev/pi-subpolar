@@ -2,7 +2,7 @@ import type {
   PocketBaseClientPort,
   PocketBaseCollectionPort,
   PocketBaseStoredRecord,
-} from "../packages/subpolar-adapter-pocketbase/src/index.ts";
+} from "../packages/subpolar-persistance-pocketbase/src/index.ts";
 
 export class InMemoryPocketBaseCollection implements PocketBaseCollectionPort {
   private readonly records = new Map<string, PocketBaseStoredRecord>();

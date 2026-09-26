@@ -37,7 +37,7 @@ Requirements:
 Implementation tasks:
 - [ ] P0A-001 Create `packages/subpolar-contracts` package and tests.
 - [ ] P0A-002 Create `packages/subpolar-core` policy gateway and tests.
-- [ ] P0A-003 Create `packages/subpolar-adapter-local` ephemeral store.
+- [ ] P0A-003 Create `packages/subpolar-persistance-local` ephemeral store.
 - [ ] P0A-004 Create `packages/subpolar-cli` command surface and JSON output.
 - [x] P0A-005 Add root test/typecheck scripts and package documentation.
 

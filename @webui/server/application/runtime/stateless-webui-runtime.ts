@@ -5,7 +5,7 @@ import {
   createPocketBaseRunStore,
   type PocketBaseClientPort,
   type PocketBaseCollectionPort,
-} from '../../../../packages/subpolar-adapter-pocketbase/src/index.ts'
+} from '../../../../packages/subpolar-persistance-pocketbase/src/index.ts'
 import type {
   Principal,
   RuntimeContext,

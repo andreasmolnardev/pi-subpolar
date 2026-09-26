@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createLocalAdapter } from "../../subpolar-adapter-local/src/index.ts";
+import { createLocalAdapter } from "../../subpolar-persistance-local/src/index.ts";
 import { createGateway, createPolicyGateway, createRunService } from "../../subpolar-core/src/index.ts";
 import { UnsupportedCapabilityError } from "../../subpolar-contracts/src/index.ts";
 import type { DomainEvent, SessionTranscriptEntry, ToolDefinition } from "../../subpolar-contracts/src/index.ts";

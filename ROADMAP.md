@@ -280,7 +280,7 @@ packages/
   subpolar-runtime/          # Pi SDK orchestration, context, tool gateway
   subpolar-shared/           # types, domain records, events, errors, ports
   subpolar-db/               # durable server storage/identity implementation
-  subpolar-adapter-local/     # ephemeral + minimal filesystem state for standalone CLI
+  subpolar-persistance-local/     # ephemeral + minimal filesystem state for standalone CLI
   subpolar-cli/              # terminal UX, local runtime composition
   subpolar-tools/            # tool registry, execution contracts, and remote CLI
 apps/

@@ -59,5 +59,5 @@ silently degrading.
 Run the package contract tests with:
 
 ```sh
-bun test packages/subpolar-adapter-pocketbase
+bun test packages/subpolar-persistance-pocketbase
 ```

@@ -153,7 +153,7 @@ import {
   createStatelessWebUiRuntime,
   type StatelessWebUiRunInput,
 } from './server/application/runtime/stateless-webui-runtime.ts'
-import { createPiRunPort } from '../packages/subpolar-adapter-pi/src/index.ts'
+import { createPiRunPort } from '../packages/subpolar-core-pi/src/index.ts'
 import type { RuntimeContext, RuntimeExecution, StatelessRunRequest } from '../packages/subpolar-contracts/src/index.ts'
 
 import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/core/project-filesystem.ts'

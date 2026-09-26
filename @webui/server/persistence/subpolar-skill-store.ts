@@ -3,7 +3,7 @@ import {
   createPocketBaseAdapter,
   type PocketBaseCollectionPort,
   type PocketBaseStoredRecord,
-} from '../../../packages/subpolar-adapter-pocketbase/src/index.ts'
+} from '../../../packages/subpolar-persistance-pocketbase/src/index.ts'
 import type {
   CreateSkillInput,
   GetSkillInput,

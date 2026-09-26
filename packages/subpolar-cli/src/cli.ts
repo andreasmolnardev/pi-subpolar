@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { createLocalAdapter } from "../../subpolar-adapter-local/src/index.ts";
-import { createPiRunPort, resolvePiExecutorFactory, type PiExecutorFactory, type PiExecutorModule, type PiRunRequest } from "../../subpolar-adapter-pi/src/index.ts";
+import { createLocalAdapter } from "../../subpolar-persistance-local/src/index.ts";
+import { createPiRunPort, resolvePiExecutorFactory, type PiExecutorFactory, type PiExecutorModule, type PiRunRequest } from "../../subpolar-core-pi/src/index.ts";
 import type { AgentExecutor, RunContext, RunEvent, ToolDefinition, ToolExecutor } from "../../subpolar-contracts/src/index.ts";
 import { createPolicyGateway, createRunService, redactAuditValue } from "../../subpolar-core/src/index.ts";
 

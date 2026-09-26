@@ -39,7 +39,7 @@ packages/
 │   ├── agents, projects, tools, and policies
 │   ├── approvals, runs, audits, events, and idempotency
 │   └── PocketBase-specific transactions and capabilities
-├── subpolar-runtime-pi (`@subpolar/runtime-pi`)
+├── subpolar-core-pi (`@subpolar/runtime-pi`)
 │   └── transient Pi SDK execution adapter
 ├── subpolar-tools (`@subpolar/tools`)
 │   ├── internal tools

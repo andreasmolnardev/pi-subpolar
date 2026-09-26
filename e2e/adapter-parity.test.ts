@@ -2,12 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLocalAdapter, EphemeralSessionStore } from "../packages/subpolar-adapter-local/src/index.ts";
+import { createLocalAdapter, EphemeralSessionStore } from "../packages/subpolar-persistance-local/src/index.ts";
 import {
   createPocketBaseAdapter,
   PocketBaseUnsupportedCapabilityError,
   type PocketBaseAdapter,
-} from "../packages/subpolar-adapter-pocketbase/src/index.ts";
+} from "../packages/subpolar-persistance-pocketbase/src/index.ts";
 import type { AdapterCapabilities, MemoryRecord, SessionTranscriptEntry } from "../packages/subpolar-contracts/src/index.ts";
 import { InMemoryPocketBaseClient } from "./adapter-parity-fixture.ts";
 
