@@ -45,6 +45,7 @@ export interface PendingSessionPrompt {
   prompt: string;
   messageID: string;
   model?: string;
+  variant?: string;
   agent?: string;
   permission?: string;
   routing?: boolean;
@@ -66,6 +67,7 @@ interface ChatInputBarProps {
   agent?: string;
   permission?: string;
   model?: string;
+  variant?: string;
   onModelChange?: (model: string) => void;
   routingEnabled?: boolean;
   sendImmediately?: boolean;
@@ -91,6 +93,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     agent,
     permission,
     model,
+    variant,
     onModelChange,
     routingEnabled = false,
     sendImmediately = false,
@@ -573,6 +576,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
              parts: attachmentParts.length ? [{ type: "text", content: prompt }, ...attachmentParts.filter((part) => part.type !== "text")] : undefined,
             messageID: clientId,
             model: currentModel === "__auto__" ? undefined : currentModel,
+            variant,
             agent: selectedAgentForRequest,
             permission: selectedPermissionForRequest,
             routing: routingEnabled,
@@ -600,6 +604,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
           prompt,
           messageID,
           model: currentModel === "__auto__" ? undefined : currentModel,
+          variant,
           agent: selectedAgentForRequest,
           permission: selectedPermissionForRequest,
           routing: routingEnabled,
@@ -625,6 +630,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
           parts: attachmentParts.length ? [{ type: "text", content: prompt }, ...attachmentParts.filter((part) => part.type !== "text")] : undefined,
           messageID,
           model: currentModel === "__auto__" ? undefined : currentModel,
+          variant,
           agent: selectedAgentForRequest,
           permission: selectedPermissionForRequest,
           routing: routingEnabled,
@@ -642,8 +648,9 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       const pendingPrompt = {
         prompt,
         messageID,
-        model: currentModel === "__auto__" ? undefined : currentModel,
-        agent: selectedAgentForRequest,
+          model: currentModel === "__auto__" ? undefined : currentModel,
+          variant,
+          agent: selectedAgentForRequest,
         permission: selectedPermissionForRequest,
         routing: routingEnabled,
       } satisfies PendingSessionPrompt;
@@ -680,6 +687,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     onSend,
     selectedAgentForRequest,
     currentModel,
+    variant,
     selectedPermissionForRequest,
     selectedProject,
     selectedDirectory,

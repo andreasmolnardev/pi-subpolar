@@ -182,6 +182,7 @@ export interface ProviderCatalogModel {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow: number;
   maxTokens: number;
+  variants?: Record<string, Record<string, unknown>>;
 }
 
 export interface ProviderCatalogProvider {
@@ -244,6 +245,7 @@ interface ConfigProvider {
 interface ConfigModel {
   id?: string;
   name?: string;
+  variants?: Record<string, Record<string, unknown>>;
   limit?: {
     context?: number;
     output?: number;
@@ -293,6 +295,7 @@ function catalogProviderToLegacyProviders(catalog: ProviderCatalog): Provider[] 
           },
           limit: { context: catalogModel.contextWindow, output: catalogModel.maxTokens },
           modalities: { input: [...catalogModel.input], output: ['text'] },
+          ...(catalogModel.variants ? { variants: catalogModel.variants } : {}),
         };
       }
 
@@ -448,6 +451,7 @@ async function getConfiguredProviders(connectedIds: Set<string>): Promise<Provid
             id: typeof modelConfig.id === 'string' ? modelConfig.id : modelId,
             key: modelId,
             name: modelConfig.name || modelId,
+            ...(modelConfig.variants && typeof modelConfig.variants === 'object' ? { variants: modelConfig.variants as Record<string, Record<string, unknown>> } : {}),
             limit: modelConfig.limit ? {
               context: modelConfig.limit.context || 0,
               output: modelConfig.limit.output || 0,
