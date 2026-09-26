@@ -439,6 +439,28 @@ describe('MessageThread', () => {
 
     expect(screen.getByText('Hello')).toBeInTheDocument()
     expect(screen.getByText('You')).toBeInTheDocument()
+    expect(screen.getByText('Hello').closest('.rounded-3xl')).toHaveClass('bg-primary', 'text-primary-foreground')
+    expect(screen.getByTitle('Copy message')).toBeInTheDocument()
+    expect(screen.queryByTitle('Download message')).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Undo this message')).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Edit message')).not.toBeInTheDocument()
+  })
+
+  it('shows session start date and time centered across message thread', () => {
+    setupSettings({ simpleChatMode: false, showReasoning: false })
+    const startedAt = new Date(2024, 0, 2, 15, 8).getTime()
+
+    render(
+      <MessageThread
+        apiUrl="http://localhost:5551"
+        sessionID="test-session"
+        sessionStartedAt={startedAt}
+        messages={[createUserMessage('1', 'Hello')] as any}
+      />,
+    )
+
+    const timestamp = screen.getByText(new Date(startedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }))
+    expect(timestamp.closest('.pointer-events-none')).toHaveClass('absolute', 'inset-x-0', 'text-center')
   })
 
   it('keeps global editing state active when edit textarea blurs', () => {
@@ -460,7 +482,7 @@ describe('MessageThread', () => {
       />
     )
 
-    fireEvent.click(screen.getByTitle('Edit message'))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }))
     const textarea = screen.getByPlaceholderText('Edit your message...')
     fireEvent.focus(textarea)
     expect(useUIState.getState().isEditingMessage).toBe(true)
@@ -546,6 +568,20 @@ describe('MessageThread', () => {
     expect(screen.queryByText('Sending...')).not.toBeInTheDocument()
   })
 
+  it('does not label the first message as queued before any assistant response', () => {
+    setupSettings({ simpleChatMode: false, showReasoning: false })
+
+    render(
+      <MessageThread
+        apiUrl="http://localhost:5551"
+        sessionID="test-session"
+        messages={[createUserMessage('1', 'First prompt')] as any}
+      />,
+    )
+
+    expect(screen.queryByText('QUEUED')).not.toBeInTheDocument()
+  })
+
   it('resends an edited prompt after the edit textarea blurs', () => {
     setupSettings({
       simpleChatMode: false,
@@ -570,7 +606,7 @@ describe('MessageThread', () => {
       />
     )
 
-    fireEvent.click(screen.getByTitle('Edit message'))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }))
     const textarea = screen.getByPlaceholderText('Edit your message...')
     fireEvent.change(textarea, { target: { value: 'Updated prompt' } })
     fireEvent.blur(textarea)

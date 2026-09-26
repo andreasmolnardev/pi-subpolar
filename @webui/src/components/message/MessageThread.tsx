@@ -1,8 +1,9 @@
 import { memo, useMemo, useState, useCallback, useEffect } from 'react'
-import { Pencil, Send } from 'lucide-react'
+import { Pencil, RotateCcw, Send } from 'lucide-react'
+import { CopyButton } from '@/components/ui/copy-button'
 import { MessagePart } from './MessagePart'
-import { UserMessageActionButtons } from './UserMessageActionButtons'
 import { EditableUserMessage, ClickableUserMessage } from './EditableUserMessage'
+import { useRefreshMessage } from '@/hooks/useRemoveMessage'
 import { MessageError } from './MessageError'
 import { AssistantSuggestions } from './AssistantSuggestions'
 import type { Message, Part, MessageWithParts } from '@/api/types'
@@ -28,10 +29,10 @@ interface MessageThreadProps {
   messages?: MessageWithParts[]
   onFileClick?: (filePath: string, lineNumber?: number) => void
   onChildSessionClick?: (sessionId: string) => void
-  onUndoMessage?: (restoredPrompt: string) => void
   model?: string
   suggestionsByAssistantId?: ReadonlyMap<string, string[]>
   onSuggestionSelect?: (suggestion: string) => void
+  sessionStartedAt?: number
 }
 
 function SendingIndicator() {
@@ -199,13 +200,40 @@ const isWaitingForAssistant = (messages: MessageWithParts[], pendingAssistantId:
   return isDeliveredUserMessage(messages[lastUserIndex].info)
 }
 
+function AttemptTabs({
+  attempts,
+  activeAttemptID,
+  onSelect,
+}: {
+  attempts: Array<{ id: string; content: string }>
+  activeAttemptID: string
+  onSelect: (id: string) => void
+}) {
+  if (attempts.length < 2) return null
+  return (
+    <div className="mb-1 flex w-full justify-center gap-1" role="tablist" aria-label="Message attempts">
+      {attempts.map((attempt, index) => (
+        <button
+          key={attempt.id}
+          type="button"
+          role="tab"
+          aria-selected={attempt.id === activeAttemptID}
+          onClick={() => onSelect(attempt.id)}
+          className={`rounded px-2 py-0.5 text-xs ${attempt.id === activeAttemptID ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/60'}`}
+        >
+          Attempt {index + 1}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 interface MessageRowProps {
   msgWithParts: MessageWithParts
   nextAssistantMessage: MessageWithParts | undefined
   pendingAssistantId: string | undefined
   lastUserMessageId: string | undefined
   isSessionBusy: boolean
-  onUndoMessage?: (restoredPrompt: string) => void
   editingUserMessageId: string | null
   editingForAssistantId: string | null
   apiUrl: string
@@ -219,6 +247,12 @@ interface MessageRowProps {
   simpleChatMode: boolean
   suggestions?: string[]
   onSuggestionSelect?: (suggestion: string) => void
+  attempts: Array<{ id: string; content: string }>
+  activeAttemptID: string
+  setActiveAttemptID: (id: string) => void
+  sessionStartedAt?: number
+  onRetryRequest: (messageID: string, content: string, assistantMessageID: string, model?: string) => Promise<void>
+  retryingMessageID: string | null
 }
 
 const MessageRow = memo(function MessageRow({
@@ -227,7 +261,6 @@ const MessageRow = memo(function MessageRow({
   pendingAssistantId,
   lastUserMessageId,
   isSessionBusy,
-  onUndoMessage,
   editingUserMessageId,
   editingForAssistantId,
   apiUrl,
@@ -241,6 +274,12 @@ const MessageRow = memo(function MessageRow({
   simpleChatMode,
   suggestions,
   onSuggestionSelect,
+  attempts,
+  activeAttemptID,
+  setActiveAttemptID,
+  sessionStartedAt,
+  onRetryRequest,
+  retryingMessageID,
 }: MessageRowProps) {
   const msg = msgWithParts.info
   const parts = msgWithParts.parts
@@ -263,7 +302,7 @@ const MessageRow = memo(function MessageRow({
   const nextAssistantMsg = nextAssistantMessage?.info
   const isUserBeforeAssistant = msg.role === 'user' && nextAssistantMessage
   const canEditUserMessage = isLastUserMessage && isUserBeforeAssistant && !isSessionBusy
-  const canUndoUserMessage = isLastUserMessage && nextAssistantMessage && !isSessionBusy && onUndoMessage
+  const canRetryUserMessage = isLastUserMessage && nextAssistantMessage && !isSessionBusy
 
   const isEditingThisMessage = editingUserMessageId === msg.id
 
@@ -313,7 +352,7 @@ const MessageRow = memo(function MessageRow({
       className={`flex flex-col group ${messageAlignment}`}
     >
       <div className={`flex flex-col gap-1 ${messageWidth}`}>
-        <div className="flex items-center justify-between gap-2 px-1">
+        <div className={`flex items-center justify-between gap-2 px-1 ${msg.role === 'user' ? 'hidden' : ''}`}>
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium text-muted-foreground">
               {msg.role === 'user' ? 'You' : 'General Chat'}
@@ -323,7 +362,7 @@ const MessageRow = memo(function MessageRow({
                 {new Date(msg.time.created).toLocaleTimeString()}
               </span>
             )}
-            {canEditUserMessage && nextAssistantMsg && (
+            {msg.role !== 'user' && canEditUserMessage && nextAssistantMsg && (
               <button
                 onClick={() => handleStartEditUserMessage(msg.id, nextAssistantMsg.id)}
                 className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
@@ -344,16 +383,6 @@ const MessageRow = memo(function MessageRow({
             )}
           </div>
           
-          {msg.role === 'user' && canUndoUserMessage && (
-            <UserMessageActionButtons
-              apiUrl={apiUrl}
-              sessionId={sessionID}
-              directory={directory}
-              userMessageId={msg.id}
-              userMessageContent={messageTextContent}
-              onUndo={onUndoMessage}
-            />
-          )}
         </div>
 
         {aboveBubbleParts.length > 0 && (
@@ -377,19 +406,25 @@ const MessageRow = memo(function MessageRow({
         )}
 
         {(bubbleParts.length > 0 || (msg.role === 'user' && isEditingThisMessage && editingForAssistantId) || hasError) && (
-          <div
-            className={`rounded-lg p-1.5 ${
-              msg.role === 'user'
-                ? isQueued
-                  ? 'bg-amber-500/10 border border-amber-500/30'
-                  : isEditingThisMessage
-                    ? 'bg-blue-600/30 border border-blue-600/50'
-                    : 'bg-blue-600/20 border border-blue-600/30'
-                : 'bg-card/50 border border-border'
-            } ${streaming ? 'animate-pulse-subtle' : ''}`}
-          >
-            <div className="space-y-2">
-              {msg.role === 'user' && isEditingThisMessage && editingForAssistantId ? (
+          <div className={`group/message relative ${msg.role === 'user' ? 'flex flex-col items-end gap-1' : ''}`}>
+            {msg.role === 'user' && (
+              <AttemptTabs attempts={attempts} activeAttemptID={activeAttemptID} onSelect={setActiveAttemptID} />
+            )}
+            <div
+              className={`rounded-3xl px-4 py-2 ${
+                msg.role === 'user'
+                  ? isQueued
+                    ? 'bg-amber-500/10 border border-amber-500/30'
+                    : isEditingThisMessage
+                      ? 'bg-primary/30 border border-primary/50 text-primary-foreground'
+                      : 'bg-primary text-primary-foreground border border-primary'
+                  : 'rounded-lg p-1.5 bg-card/50 border border-border'
+              } ${streaming ? 'animate-pulse-subtle' : ''}`}
+            >
+              <div className="space-y-2">
+              {msg.role === 'user' && attempts.length > 1 ? (
+                attempts.find((attempt) => attempt.id === activeAttemptID)?.content ?? messageTextContent
+              ) : msg.role === 'user' && isEditingThisMessage && editingForAssistantId ? (
                 <EditableUserMessage
                   apiUrl={apiUrl}
                   sessionId={sessionID}
@@ -399,7 +434,7 @@ const MessageRow = memo(function MessageRow({
                   onCancel={handleCancelEdit}
                   model={model}
                 />
-              ) : msg.role === 'user' && canEditUserMessage && nextAssistantMsg ? (
+              ) : msg.role === 'user' && canEditUserMessage && nextAssistantMsg && !simpleChatMode ? (
                 <ClickableUserMessage
                   content={messageTextContent}
                   onClick={() => handleStartEditUserMessage(msg.id, nextAssistantMsg.id)}
@@ -431,7 +466,36 @@ const MessageRow = memo(function MessageRow({
               {hasError && (
                 <MessageError error={msg.error as RuntimeError} />
               )}
+              </div>
             </div>
+          {msg.role === 'user' && !isEditingThisMessage && (
+              <div className="flex items-center gap-1 pr-2 text-muted-foreground opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100">
+              <CopyButton content={messageTextContent} title="Copy message" iconSize="md" variant="ghost" />
+              {canEditUserMessage && nextAssistantMsg && (
+                <button
+                  type="button"
+                  onClick={() => handleStartEditUserMessage(msg.id, nextAssistantMsg.id)}
+                  className="rounded p-1 hover:bg-accent hover:text-foreground"
+                  title="Edit message"
+                  aria-label="Edit message"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              )}
+              {canRetryUserMessage && (
+                <button
+                  type="button"
+                  onClick={() => void onRetryRequest(msg.id, messageTextContent, nextAssistantMsg.info.id, model)}
+                  disabled={retryingMessageID === msg.id}
+                  className="rounded p-1 hover:bg-accent hover:text-foreground disabled:opacity-50"
+                  title="Retry request"
+                  aria-label="Retry request"
+                >
+                  <RotateCcw className={`h-4 w-4 ${retryingMessageID === msg.id ? 'animate-spin' : ''}`} />
+                </button>
+              )}
+              </div>
+            )}
           </div>
         )}
 
@@ -469,13 +533,17 @@ export const MessageThread = memo(function MessageThread({
   messages, 
   onFileClick, 
   onChildSessionClick,
-  onUndoMessage,
   model,
   suggestionsByAssistantId,
   onSuggestionSelect,
+  sessionStartedAt,
 }: MessageThreadProps) {
   const [editingUserMessageId, setEditingUserMessageId] = useState<string | null>(null)
   const [editingForAssistantId, setEditingForAssistantId] = useState<string | null>(null)
+  const [attemptsByMessageID, setAttemptsByMessageID] = useState<Record<string, Array<{ id: string; content: string }>>>({})
+  const [activeAttemptByMessageID, setActiveAttemptByMessageID] = useState<Record<string, string>>({})
+  const [retryingMessageID, setRetryingMessageID] = useState<string | null>(null)
+  const retryMutation = useRefreshMessage({ apiUrl, sessionId: sessionID, directory })
   const sessionStatus = useSessionStatusForSession(sessionID)
   const { preferences } = useSettings()
   const simpleChatMode = preferences?.simpleChatMode ?? false
@@ -558,6 +626,32 @@ export const MessageThread = memo(function MessageThread({
     setEditingUserMessageId(null)
     setEditingForAssistantId(null)
   }, [])
+
+  const handleRetryMessage = useCallback((messageID: string, content: string): string => {
+    const attempt = { id: `attempt-${Date.now()}-${Math.random()}`, content }
+    setAttemptsByMessageID((current) => ({
+      ...current,
+      [messageID]: [...(current[messageID] ?? [{ id: messageID, content }]), attempt],
+    }))
+    setActiveAttemptByMessageID((active) => ({ ...active, [messageID]: attempt.id }))
+    return attempt.id
+  }, [])
+
+  const handleRetryRequest = useCallback(async (messageID: string, content: string, assistantMessageID: string, requestModel?: string) => {
+    setRetryingMessageID(messageID)
+    const attemptID = handleRetryMessage(messageID, content)
+    try {
+      await retryMutation.mutateAsync({ assistantMessageID, userMessageContent: content, model: requestModel })
+    } catch {
+      setAttemptsByMessageID((current) => ({
+        ...current,
+        [messageID]: (current[messageID] ?? []).filter((attempt) => attempt.id !== attemptID),
+      }))
+      setActiveAttemptByMessageID((current) => ({ ...current, [messageID]: messageID }))
+    } finally {
+      setRetryingMessageID(null)
+    }
+  }, [handleRetryMessage, retryMutation])
   
   if (!messages || messages.length === 0) {
     return (
@@ -569,15 +663,25 @@ export const MessageThread = memo(function MessageThread({
 
   return (
     <div className="flex flex-col space-y-2 p-2 overflow-x-hidden">
-      {messages.map((msgWithParts) => (
+        {messages.map((msgWithParts, messageIndex) => (
+        <div key={msgWithParts.info.id} className="relative">
+        {msgWithParts.info.role === 'user' && messageIndex === messages.findIndex((message) => message.info.role === 'user') && sessionStartedAt && (
+          <div className="pointer-events-none absolute inset-x-0 -top-6 text-center text-xs text-muted-foreground">
+            {new Date(sessionStartedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+          </div>
+        )}
         <MessageRow
-          key={msgWithParts.info.id}
           msgWithParts={msgWithParts}
           nextAssistantMessage={nextAssistantByMessageId.get(msgWithParts.info.id)}
           pendingAssistantId={pendingAssistantId}
           lastUserMessageId={lastUserMessageId}
           isSessionBusy={isSessionBusy}
-          onUndoMessage={onUndoMessage}
+          attempts={attemptsByMessageID[msgWithParts.info.id] ?? [{ id: msgWithParts.info.id, content: getMessageTextContent(msgWithParts.parts) }]}
+          activeAttemptID={activeAttemptByMessageID[msgWithParts.info.id] ?? msgWithParts.info.id}
+          setActiveAttemptID={(attemptID) => setActiveAttemptByMessageID((current) => ({ ...current, [msgWithParts.info.id]: attemptID }))}
+          sessionStartedAt={sessionStartedAt}
+          onRetryRequest={handleRetryRequest}
+          retryingMessageID={retryingMessageID}
           editingUserMessageId={editingUserMessageId}
           editingForAssistantId={editingForAssistantId}
           apiUrl={apiUrl}
@@ -592,6 +696,7 @@ export const MessageThread = memo(function MessageThread({
           suggestions={suggestionsByAssistantId?.get(msgWithParts.info.id)}
           onSuggestionSelect={onSuggestionSelect}
         />
+        </div>
       ))}
       {isWaitingForAssistantResponse && <SendingIndicator />}
     </div>

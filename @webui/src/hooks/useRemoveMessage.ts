@@ -68,28 +68,32 @@ interface UseRefreshMessageOptions {
   directory?: string
 }
 
+export interface RefreshMessageRequest {
+  assistantMessageID: string
+  userMessageContent: string
+  model?: string
+  agent?: string
+  permission?: string
+  routing?: boolean
+}
+
 export function useRefreshMessage({ apiUrl, sessionId, directory }: UseRefreshMessageOptions) {
   const queryClient = useQueryClient()
-  const removeMessage = useRemoveMessage({ apiUrl, sessionId, directory })
 
   return useMutation({
     mutationFn: async ({ 
       assistantMessageID, 
       userMessageContent,
       model,
-      agent
-    }: { 
-      assistantMessageID: string
-      userMessageContent: string
-      model?: string
-      agent?: string
-    }) => {
+      agent,
+      permission,
+      routing,
+    }: RefreshMessageRequest) => {
       if (!apiUrl) throw new Error('Subpolar URL not available')
-      
-      await removeMessage.mutateAsync({ messageID: assistantMessageID })
-      
+
       const client = createSubpolarClient(apiUrl, directory)
-      
+      await client.revertMessage(sessionId, { messageID: assistantMessageID })
+
       const optimisticUserID = `optimistic_user_${Date.now()}_${Math.random()}`
       const userMessageInfo = {
         id: optimisticUserID,
@@ -120,6 +124,8 @@ export function useRefreshMessage({ apiUrl, sessionId, directory }: UseRefreshMe
         parts: Array<{ type: 'text'; text: string }>
         model?: { providerID: string; modelID: string }
         agent?: string
+        permission?: string
+        routing?: boolean
       }
       
       const requestData: SendPromptRequest = {
@@ -135,6 +141,12 @@ export function useRefreshMessage({ apiUrl, sessionId, directory }: UseRefreshMe
       
       if (agent) {
         requestData.agent = agent
+      }
+      if (permission) {
+        requestData.permission = permission
+      }
+      if (routing) {
+        requestData.routing = true
       }
       
       await client.sendPrompt(sessionId, requestData)
