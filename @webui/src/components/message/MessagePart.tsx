@@ -36,13 +36,17 @@ interface AssistantMetadata {
   completed?: number
 }
 
-export function ThinkingBlock({ text, active = false, label = 'Thinking...' }: { text: string; active?: boolean; label?: string }) {
+export function ThinkingBlock({ text, active = false, durationSeconds }: { text: string; active?: boolean; durationSeconds?: number }) {
   const plainText = normalizeThinkingText(text)
   return (
     <details open={false} className="group my-2 text-sm text-muted-foreground">
       <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md py-1 text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
         <Brain className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className={active ? 'reasoning-text-trail font-medium' : 'font-medium text-muted-foreground'}>{label}</span>
+        <span className="font-medium">
+          {!active && durationSeconds !== undefined ? `Thought for ${durationSeconds.toFixed(1)}s` : 'Thinking'}
+        </span>
+        {active && plainText && <span className="min-w-0 truncate text-muted-foreground">{plainText}</span>}
+        {active && !plainText && <span className="reasoning-text-trail text-muted-foreground">Thinking...</span>}
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
       </summary>
       <div className="overflow-hidden whitespace-pre-wrap pl-6 pt-1 text-muted-foreground/90 animate-disclosure-down">{plainText}</div>
@@ -156,7 +160,12 @@ export const MessagePart = memo(function MessagePart({ part, role, allParts, par
       return <ToolCallPart part={part} onFileClick={onFileClick} onChildSessionClick={onChildSessionClick} />
     case 'reasoning':
       if (simpleChatMode) return null
-      return <ThinkingBlock text={part.text || ''} active={isActiveGenerationStep} />
+      {
+        const durationSeconds = 'time' in part && part.time.end !== undefined
+          ? Math.max(0, part.time.end - part.time.start) / 1000
+          : undefined
+        return <ThinkingBlock text={part.text || ''} active={isActiveGenerationStep} durationSeconds={durationSeconds} />
+      }
     case 'snapshot':
       if (simpleChatMode) return null
       return (

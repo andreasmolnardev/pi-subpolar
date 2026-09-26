@@ -703,7 +703,8 @@ describe('MessagePart', () => {
       render(<MessagePart part={part} />)
       
       expect(screen.getByText('This is the reasoning text')).toBeInTheDocument()
-      expect(screen.getByText('Thinking...')).toBeInTheDocument()
+      expect(screen.getByText('Thinking')).toBeInTheDocument()
+      expect(screen.queryByText('Thinking...')).not.toBeInTheDocument()
     })
 
     it('renders thinking content as plain text without Markdown emphasis markers', () => {
@@ -735,10 +736,30 @@ describe('MessagePart', () => {
         mode: 'build',
       })
 
-      const part = createReasoningPart()
+      const part = { ...createReasoningPart(), time: { start: 1000, end: 3750 } }
       const { container } = render(<MessagePart part={part} isActiveGenerationStep />)
 
       expect(container.querySelector('details')).not.toHaveAttribute('open')
+      expect(screen.getByText('Thinking')).toBeInTheDocument()
+      expect(screen.getAllByText('This is the reasoning text')).toHaveLength(2)
+      expect(screen.queryByText('Thought for 2.8s')).not.toBeInTheDocument()
+    })
+
+    it('shows completed thinking duration in the summary', () => {
+      setupSettings({
+        simpleChatMode: false,
+        showReasoning: true,
+        expandToolCalls: false,
+        expandDiffs: true,
+        autoScroll: true,
+        theme: 'dark',
+        mode: 'build',
+      })
+
+      render(<MessagePart part={{ ...createReasoningPart(), time: { start: 1000, end: 3750 } }} />)
+
+      expect(screen.getByText('Thought for 2.8s')).toBeInTheDocument()
+      expect(screen.queryByText('Thinking')).not.toBeInTheDocument()
     })
   })
 
