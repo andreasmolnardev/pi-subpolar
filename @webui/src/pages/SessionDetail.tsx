@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getProject, hasProjectId, listProjects } from "@/api/projects";
 import { MessageThread } from "@/components/message/MessageThread";
 import { ChatInputBar, type ChatInputBarHandle } from "@/components/chat/ChatInputBar";
-import { ChevronDown, CornerUpLeft, Download } from "lucide-react";
+import { ChevronDown, CornerUpLeft } from "lucide-react";
 import { Header } from "@/components/ui/header";
 import { SessionList } from "@/components/session/SessionList";
 import { ProjectNotFoundDialog } from "@/components/project/ProjectNotFoundDialog";
@@ -17,7 +17,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -269,6 +268,7 @@ export function SessionDetail() {
   const pendingPrompt = (location.state as PendingPromptLocationState | null)?.pendingPrompt
     ?? (sessionId ? loadPendingSessionPrompt(sessionId) : undefined);
   const inFlightPrompt = pendingPrompt?.status === 'in-flight' ? pendingPrompt : undefined;
+  const notYetSentPrompt = pendingPrompt?.status !== 'in-flight' && pendingPrompt?.status !== 'interrupted' && pendingPrompt?.status !== 'unknown';
   const interruptedPrompt = pendingPrompt?.status === 'interrupted' || pendingPrompt?.status === 'unknown'
     ? pendingPrompt
     : undefined;
@@ -321,8 +321,14 @@ export function SessionDetail() {
           return;
         }
 
-        if (state === 'pending' || state === 'running' || !state) {
+        if (state === 'pending' || state === 'running') {
           savePendingSessionPrompt(sessionId, inFlightPrompt);
+          setPendingPromptVersion((version) => version + 1);
+          return;
+        }
+
+        if (!state) {
+          savePendingSessionPrompt(sessionId, { ...inFlightPrompt, status: 'unknown' });
           setPendingPromptVersion((version) => version + 1);
           return;
         }
@@ -342,7 +348,7 @@ export function SessionDetail() {
   }, [sendPendingPrompt, sessionId]);
 
   useEffect(() => {
-    if (!pendingPrompt || pendingPrompt.status === 'in-flight' || pendingPrompt.status === 'interrupted' || pendingPrompt.status === 'unknown' || !sessionId || !isConnected || messagesLoading) return
+    if (!pendingPrompt || !notYetSentPrompt || !sessionId || !isConnected || messagesLoading) return
 
     const pendingPromptKey = `${sessionId}:${pendingPrompt.messageID}`
     if (consumedPendingPromptRef.current === pendingPromptKey) return
@@ -356,6 +362,7 @@ export function SessionDetail() {
     location.search,
     messagesLoading,
     navigate,
+    notYetSentPrompt,
     pendingPrompt,
     sessionId,
     submitPendingPrompt,
@@ -522,10 +529,6 @@ export function SessionDetail() {
     }
   }, [navigate, repoId, session?.parentID, sessionRouteSuffix]);
 
-  const handleUndoMessage = useCallback((restoredPrompt: string) => {
-    promptInputRef.current?.setPromptValue(restoredPrompt)
-  }, []);
-
   const handleSuggestionSelect = useCallback((suggestion: string) => {
     promptInputRef.current?.submitPrompt(suggestion)
   }, [])
@@ -661,24 +664,12 @@ export function SessionDetail() {
               apiUrl={apiUrl}
               sessionID={sessionId}
               directory={repoDirectory}
-              isConnected={isConnected}
-              isReconnecting={isReconnecting}
-              messages={messages}
-            />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" aria-label="Export transcript" disabled={exportingFormat !== null}>
-                  <Download className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuLabel>Export transcript</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => void handleExport('markdown')}>Markdown</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => void handleExport('text')}>Plain text</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => void handleExport('json')}>JSON</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+               isConnected={isConnected}
+               isReconnecting={isReconnecting}
+               messages={messages}
+               onDownloadTranscript={(format) => void handleExport(format)}
+               isDownloadingTranscript={exportingFormat !== null}
+             />
             <SessionMoreButton />
           </Header.Actions>
         </Header>
@@ -699,7 +690,7 @@ export function SessionDetail() {
               directory={repoDirectory}
               messages={messages}
               onChildSessionClick={handleChildSessionClick}
-              onUndoMessage={handleUndoMessage}
+              sessionStartedAt={session?.time?.created}
               model={modelString || undefined}
               suggestionsByAssistantId={suggestionsByAssistantId}
               onSuggestionSelect={handleSuggestionSelect}

@@ -619,6 +619,21 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
           },
         });
         onSend?.();
+        sendPrompt.mutate({
+          sessionID: session.id,
+          prompt,
+          parts: attachmentParts.length ? [{ type: "text", content: prompt }, ...attachmentParts.filter((part) => part.type !== "text")] : undefined,
+          messageID,
+          model: currentModel === "__auto__" ? undefined : currentModel,
+          agent: selectedAgentForRequest,
+          permission: selectedPermissionForRequest,
+          routing: routingEnabled,
+        }, {
+          onSuccess: () => {
+            onScrollToBottom?.();
+            onSend?.();
+          },
+        });
         return;
       }
 

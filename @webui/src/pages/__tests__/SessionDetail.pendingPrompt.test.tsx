@@ -161,7 +161,7 @@ describe('SessionDetail interrupted first-send handoff', () => {
     await waitFor(() => {
       expect(loadPendingSessionPrompt('session-1')).toMatchObject({
         messageID: 'optimistic_user_original',
-        status: 'in-flight',
+        status: deliveryState ? 'in-flight' : 'unknown',
       })
     })
 
@@ -170,6 +170,22 @@ describe('SessionDetail interrupted first-send handoff', () => {
 
     expect(await screen.findByTestId('in-flight-prompt-state')).toBeTruthy()
     expect(mocks.sendPrompt).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks a successful response with unknown delivery state for explicit recovery', async () => {
+    savePendingSessionPrompt('session-1', {
+      prompt: 'Run this once',
+      messageID: 'optimistic_user_original',
+    })
+
+    renderSession()
+    const [, options] = mocks.sendPrompt.mock.calls[0]
+    await act(async () => {
+      options.onSuccess({})
+    })
+
+    expect(await screen.findByTestId('interrupted-prompt-state')).toBeTruthy()
+    expect(loadPendingSessionPrompt('session-1')).toMatchObject({ status: 'unknown' })
   })
 
   it('retries with a new ID and preserves the handoff until success', async () => {
