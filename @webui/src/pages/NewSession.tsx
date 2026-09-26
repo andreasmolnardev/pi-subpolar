@@ -15,6 +15,32 @@ import { FetchError } from '@/api/fetchWrapper'
 import { newSessionPath, parseNewSessionRoute } from '@/lib/new-session-route'
 import { useSidebarAction } from '@/hooks/useSidebarAction'
 
+const MOTIVATIONAL_MESSAGES = [
+  'Ready to dive in',
+  'Explore the iceberg - no matter how deep',
+  'Beneath the surface lies the unknown. Brave enough to explore?',
+  'The deeper you go, the greater the discovery.',
+  'Submerge into the unknown and emerge with wisdom.',
+  'The greatest adventures start where the map ends.',
+  'Exploring the depths of data for you.',
+  'Submerge into data, emerge with clarity.',
+  "There's more beneath the surface.",
+  'Every discovery begins with a question.',
+  'Curious minds dive deeper.',
+  'The unknown is waiting to be explored.',
+  'Ready to explore what lies beneath?',
+  'Some answers are worth diving for.',
+  'A whole world awaits beneath the surface.',
+  'Dive deep. Discover more.',
+  'Where curiosity meets the unknown.',
+  'The surface is just the beginning.',
+  'Every question opens a new depth.',
+  "There's always another layer to uncover.",
+  'Beyond the familiar lies discovery.',
+  'Let curiosity lead the way.',
+  'The deeper the question, the greater the discovery.',
+]
+
 function NewSessionError({ error }: { error: unknown }) {
   const code = error instanceof FetchError ? error.code : undefined
   const message = error instanceof Error ? error.message : 'Unable to resolve this new session'
@@ -30,6 +56,7 @@ function NewSessionError({ error }: { error: unknown }) {
 }
 
 export function NewSession() {
+  const [motivationalMessage] = useState(() => MOTIVATIONAL_MESSAGES[Math.floor(Math.random() * MOTIVATIONAL_MESSAGES.length)])
   const location = useLocation()
   const navigate = useNavigate()
   const route = parseNewSessionRoute(location.pathname)
@@ -48,6 +75,7 @@ export function NewSession() {
   const [agentName, setAgentName] = useState<string>()
   const [permission, setPermission] = useState<string>()
   const [model, setModel] = useState('__auto__')
+  const [variant, setVariant] = useState('')
   const [customized, setCustomized] = useState(() => Boolean(route.agentName))
   const [hoveringCustomize, setHoveringCustomize] = useState(() => Boolean(route.agentName))
   const [controlsPinned, setControlsPinned] = useState(false)
@@ -85,12 +113,15 @@ export function NewSession() {
         value: `${provider.id}/${modelId}`,
         label: providerModel.name || modelId,
         provider: provider.name || provider.id,
+        variants: providerModel.variants ?? {},
       })))
     if (model !== '__auto__' && !values.some((option) => option.value === model)) {
-      values.unshift({ value: model, label: model, provider: 'Configured' })
+      values.unshift({ value: model, label: model, provider: 'Configured', variants: {} })
     }
     return values
   }, [model, providersQuery.data])
+  const selectedModelOption = modelOptions.find((option) => option.value === model)
+  const variantOptions = Object.keys(selectedModelOption?.variants ?? {})
 
   if (contextQuery.isLoading) return <div className="flex h-dvh items-center justify-center">Loading...</div>
   if (contextQuery.isError || !contextQuery.data) return <NewSessionError error={contextQuery.error} />
@@ -140,7 +171,7 @@ export function NewSession() {
             onMouseLeave={scheduleCustomizationHide}
             onFocus={() => { cancelCustomizationHide(); setHoveringCustomize(true) }}
           >
-            <p className="mb-2 text-2xl text-muted-foreground">Ready to dive in</p>
+            <p className="mb-2 text-2xl text-muted-foreground">{motivationalMessage}</p>
             <div className="relative h-8 max-h-8 overflow-hidden">
               <div
                 aria-hidden={controlsVisible}
@@ -201,7 +232,7 @@ export function NewSession() {
                     </SelectContent>
                   </Select>
                   <span aria-hidden="true" className="text-muted-foreground">•</span>
-                  <Select onOpenChange={handleSelectOpenChange} value={model} onValueChange={(value) => { if (value !== model) markCustomized(); setModel(value) }}>
+                  <Select onOpenChange={handleSelectOpenChange} value={model} onValueChange={(value) => { if (value !== model) markCustomized(); setModel(value); setVariant('') }}>
                     <SelectTrigger className="h-8 w-auto max-w-48 gap-1 border-0 bg-transparent px-2 text-sm font-normal shadow-none hover:bg-accent focus:ring-0 [&>svg:last-child]:hidden">
                       <SelectValue placeholder="Auto model" />
                       <CircleChevronDown className="h-4 w-4 text-muted-foreground" />
@@ -214,6 +245,17 @@ export function NewSession() {
                           {modelOptions.filter((item) => item.provider === option.provider).map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
                         </SelectGroup>
                       ))}
+                    </SelectContent>
+                  </Select>
+                  <span aria-hidden="true" className="text-muted-foreground">•</span>
+                  <Select onOpenChange={handleSelectOpenChange} value={variant || '__default__'} onValueChange={(value) => { const nextVariant = value === '__default__' ? '' : value; if (nextVariant !== variant) markCustomized(); setVariant(nextVariant) }} disabled={variantOptions.length === 0}>
+                    <SelectTrigger className="h-8 w-auto gap-1 border-0 bg-transparent px-2 text-sm font-normal shadow-none hover:bg-accent focus:ring-0 [&>svg:last-child]:hidden">
+                      <SelectValue placeholder="Default thinking" />
+                      <CircleChevronDown className="h-4 w-4 text-muted-foreground" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__default__">Default thinking</SelectItem>
+                      {variantOptions.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}
                     </SelectContent>
                   </Select>
                   <span aria-hidden="true" className="text-muted-foreground">•</span>
@@ -243,6 +285,7 @@ export function NewSession() {
             agent={agentName}
             permission={selectedPermission}
             model={model}
+            variant={variant || undefined}
             onModelChange={(value) => { if (value !== model) markCustomized(); setModel(value) }}
             routingEnabled={!customized}
             hideModelSelect

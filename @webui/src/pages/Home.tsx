@@ -14,6 +14,21 @@ const MOTIVATIONAL_MESSAGES = [
   'The greatest adventures start where the map ends.',
   'Exploring the depths of data for you.',
   'Submerge into data, emerge with clarity.',
+  "There's more beneath the surface.",
+  'Every discovery begins with a question.',
+  'Curious minds dive deeper.',
+  'The unknown is waiting to be explored.',
+  'Ready to explore what lies beneath?',
+  'Some answers are worth diving for.',
+  'A whole world awaits beneath the surface.',
+  'Dive deep. Discover more.',
+  'Where curiosity meets the unknown.',
+  'The surface is just the beginning.',
+  'Every question opens a new depth.',
+  "There's always another layer to uncover.",
+  'Beyond the familiar lies discovery.',
+  'Let curiosity lead the way.',
+  'The deeper the question, the greater the discovery.',
 ]
 
 export function Home() {
