@@ -62,6 +62,7 @@ interface Agent {
     edit?: 'ask' | 'allow' | 'deny'
     bash?: 'ask' | 'allow' | 'deny' | Record<string, 'ask' | 'allow' | 'deny'>
     webfetch?: 'ask' | 'allow' | 'deny'
+    websearch?: 'ask' | 'allow' | 'deny'
   }
   icon?: string
   skills?: string[]
@@ -79,6 +80,7 @@ interface Agent {
 const BUILTIN_TOOL_LABELS: Record<string, string> = {
   edit: 'Edit Files',
   webfetch: 'Web Fetch',
+  'web.search': 'Web Search',
   'other-bash': 'Other Bash Commands',
 }
 
@@ -119,11 +121,12 @@ function buildToolAccess(agent?: Agent, policies: AgentToolPolicy[] = []): ToolA
   const fallback = [
     { type: 'builtin' as const, id: 'edit', permission: permissionFrom(agent?.permission?.edit, 'allow') },
     { type: 'builtin' as const, id: 'webfetch', permission: permissionFrom(agent?.permission?.webfetch, 'allow') },
+    { type: 'builtin' as const, id: 'web.search', permission: permissionFrom(agent?.permission?.websearch, 'allow') },
     { type: 'builtin' as const, id: 'other-bash', permission: piBashPolicy ? policyPermission(piBashPolicy.effect) : typeof bashPermission === 'string' ? permissionFrom(bashPermission, 'ask') : 'deny' },
     ...(agent?.allowedCommands || []).map((command): ToolAccess => ({ type: 'cli', id: command, command, permission: 'allow' })),
   ]
   const base = configured ?? fallback
-  const builtinToolIds = new Set(['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'search-tool'])
+  const builtinToolIds = new Set(['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'search-tool', 'web.search'])
   const subpolar = policies.filter(policy => !builtinToolIds.has(policy.tool_id)).map((policy): ToolAccess => ({
     type: 'subpolar',
     id: policy.tool_id,
@@ -360,6 +363,7 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
       const builtinTools = Object.fromEntries(effectiveToolAccess.filter(tool => tool.type === 'builtin').map(tool => [tool.id, tool]))
       const editPermission = builtinTools.edit?.permission || 'deny'
       const webfetchPermission = builtinTools.webfetch?.permission || 'deny'
+      const websearchPermission = builtinTools['web.search']?.permission || 'deny'
       const otherBashPermission = builtinTools['other-bash']?.permission || 'deny'
       // The legacy agent API only accepts allow/ask/deny. Keep the richer
       // auto value in toolAccess for the Pi permissions extension.
@@ -368,10 +372,12 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
         edit: editPermission !== 'deny',
         bash: otherBashPermission !== 'deny' || effectiveToolAccess.some(tool => tool.type === 'cli'),
         webfetch: webfetchPermission !== 'deny',
+        websearch: websearchPermission !== 'deny',
       }
       agent.permission = {
         edit: legacyPermission(editPermission),
         webfetch: legacyPermission(webfetchPermission),
+        websearch: legacyPermission(websearchPermission),
         bash: legacyPermission(otherBashPermission),
       }
       agent.allowedCommands = Array.from(new Set(effectiveToolAccess.filter(tool => tool.type === 'cli').map(tool => ('command' in tool ? tool.command : undefined) || tool.id)))
