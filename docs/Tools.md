@@ -8,11 +8,22 @@ A registered definition is Subpolar's contract for a tool: its stable `namespace
 
 At a high level, a call is resolved against the registry, checked for enabled state and input requirements, evaluated against the active agent/session policy, and then dispatched through the definition's adapter. Results and execution failures return through the same tool-call path. Calls, denials, approvals, and execution failures are audited by Subpolar.
 
+## Permissions
+
+New chats offer four session permission modes:
+
+- **Default Permissions** adds no session-wide override. The selected agent's tool grants and approval mode decide access. An agent tool grant of `allow` (shown as **Default Permissions** in the agent editor) permits that tool unless the registry requires approval. Tools without an explicit grant follow the agent's `approval_mode`; `ask` requests approval and `deny` blocks them.
+- **Ask for Permissions** requires approval for each tool call, even when the agent grants that tool `allow`.
+- **No Permissions** denies tool calls for the session.
+- **Dangerously Allow All** skips ordinary approval requirements and allows otherwise-unconfigured tools, but does not override explicit denials, disabled tools, agent restrictions, or hard-coded manual-approval gates.
+
+Agent tool grants configure access independently of tool discovery. `allow` permits the tool, `ask` requires approval, and `deny` blocks it. An explicit agent `allow` takes precedence over the agent-wide `approval_mode: ask`; the session-wide **Ask for Permissions** mode still requires approval. Registry `requires_approval` settings and hard-coded manual-approval gates continue to apply under Default Permissions.
+
 ## Approval and model-visible results
 
 Approval is part of the central tool runtime, not an adapter feature. An adapter does not decide whether a call is allowed: the registry's risk and approval settings and the active agent/session policy determine whether it may execute. A denied call must return a denial to the model; an allowed call proceeds to the adapter and returns its result.
 
-**Current implementation caveat:** when a call needs manual approval, the in-process tool router currently creates a pending approval, sends a `permission.asked` event to the WebUI over the session event stream, and returns an `approvalRequired` result to the model without waiting for the user's decision. The WebUI submits its decision through the permission HTTP endpoint. This is not the desired resolver behavior: the model-facing call should remain pending while the WebUI decides, proceed on approval, and report a denial only on rejection. The current event/HTTP exchange is not a WebSocket request/response. The approval path needs to be aligned with that desired behavior before this page's high-level flow should be read as a guarantee that approvals are hidden from the model.
+When a call needs approval, the router emits a `permission.asked` event and keeps the model-facing tool call pending while the WebUI waits for the user's decision. Approval resumes execution and returns its result; rejection returns a denial. The WebUI decision uses the permission HTTP endpoint while the event stream delivers the approval card.
 
 ## Tool adapters
 
