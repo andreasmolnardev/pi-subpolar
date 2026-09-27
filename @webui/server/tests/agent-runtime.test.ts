@@ -99,6 +99,16 @@ describe('PocketBase agent runtime adapter', () => {
     expect(runtime.pi.excludedToolNames).toEqual(['bash'])
   })
 
+  it('routes profile-allowed web search through the external gateway', async () => {
+    const runtime = await loadAgentRuntime(clientFor(baseData({
+      agent: { ...baseData().agent, permission: { websearch: 'allow' } },
+      tools: [{ id: 't_web_search', tool_id: 'web.search', namespace: 'builtin', enabled: true }],
+    })), 'user_1', 'builder')
+
+    expect(runtime.toolPolicy.allowedToolIds).toEqual(['web.search'])
+    expect(runtime.pi.initialActiveToolNames).toContain('web_search')
+  })
+
   it('renders durable skill metadata and bodies using repository and project precedence', async () => {
     const repository = new InMemorySkillRepository()
     await repository.create('user_1', {

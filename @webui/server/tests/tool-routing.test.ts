@@ -2,6 +2,30 @@ import { describe, expect, it, vi } from 'vitest'
 import { createToolRoutingExtension } from '../../subpolar/extensions/tool-routing.ts'
 
 describe('WebUI tool routing boundary', () => {
+  it('exposes web search directly and routes its call under canonical web.search ID', async () => {
+    const registered = new Map<string, { execute: (id: string, input: unknown) => Promise<unknown> }>()
+    const gateway = { call: vi.fn(async () => ({ ok: true, value: { results: [] } })) }
+    const factory = createToolRoutingExtension({
+      gateway: gateway as never,
+      userId: 'owner-1',
+      agentName: 'researcher',
+      sessionId: 'session-1',
+      cwd: '/workspace/project',
+    })
+    factory({
+      registerTool: (definition: { name: string; execute: (id: string, input: unknown) => Promise<unknown> }) => registered.set(definition.name, definition),
+      hook: vi.fn(),
+    } as never)
+
+    const result = await registered.get('web_search')?.execute('call-search', { query: 'Dashwise features' })
+
+    expect(result).toMatchObject({ content: [{ text: expect.stringContaining('"ok": true') }] })
+    expect(gateway.call).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: 'call-search', toolId: 'web.search', input: { query: 'Dashwise features' } }),
+      expect.objectContaining({ sessionId: 'session-1', metadata: expect.objectContaining({ agentName: 'researcher' }) }),
+    )
+  })
+
   it('routes SDK tool calls through the central gateway with approval context', async () => {
     const calls: unknown[] = []
     const registered = new Map<string, { execute: (id: string, input: unknown) => Promise<unknown> }>()

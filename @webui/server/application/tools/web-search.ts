@@ -1,7 +1,7 @@
 import { createMcpAdapter, McpAdapterError, type McpCallResult } from './mcp-adapter.ts'
 import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse, type NetworkPolicyOptions } from '../../core/network-policy.ts'
 
-export type WebSearchProvider = 'exa' | 'parallel'
+export type WebSearchProvider = 'exa' | 'firecrawl' | 'parallel'
 
 export type WebSearchInput = {
   query: string
@@ -20,6 +20,7 @@ export type WebFetchResponse = { url: string; title: string; content: string }
 export type WebSearchOptions = {
   fetch?: typeof globalThis.fetch
   provider?: WebSearchProvider
+  providers?: readonly WebSearchProvider[]
   protocolVersion?: '2025-06-18' | '2026-07-28'
   networkPolicy?: NetworkPolicyOptions
   endpointOverrides?: Partial<Record<WebSearchProvider, string>>
@@ -35,6 +36,7 @@ export class WebSearchError extends Error {
 
 export const WEB_SEARCH_PROVIDERS: Readonly<Record<WebSearchProvider, { endpoint: string; toolName: string; keyEnv: string }>> = {
   exa: { endpoint: 'https://mcp.exa.ai/mcp', toolName: 'web_search_exa', keyEnv: 'EXA_API_KEY' },
+  firecrawl: { endpoint: 'https://mcp.firecrawl.dev/v2/mcp', toolName: 'firecrawl_search', keyEnv: 'FIRECRAWL_API_KEY' },
   parallel: { endpoint: 'https://search.parallel.ai/mcp', toolName: 'web_search', keyEnv: 'PARALLEL_API_KEY' },
 }
 
@@ -45,7 +47,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function providerValue(value: unknown): WebSearchProvider | undefined {
-  return value === 'exa' || value === 'parallel' ? value : undefined
+  return value === 'exa' || value === 'firecrawl' || value === 'parallel' ? value : undefined
 }
 
 function boundedString(value: unknown, name: string, max: number, required = false): string | undefined {
@@ -64,6 +66,7 @@ function inputArgs(input: WebSearchInput, provider: WebSearchProvider): Record<s
   const query = boundedString(input.query, 'query', WEB_SEARCH_LIMITS.maxQueryLength, true)!
   const numResults = boundedInteger(input.resultCount, 'resultCount', 1, WEB_SEARCH_LIMITS.maxResults, 5)
   if (provider === 'exa') return { query, type: 'auto', numResults, livecrawl: 'fallback' }
+  if (provider === 'firecrawl') return { query, limit: numResults }
   return { objective: query, search_queries: [query] }
 }
 
@@ -116,30 +119,53 @@ function parseResults(result: McpCallResult, maxResults: number, contextSize: nu
 }
 
 export async function webSearch(input: WebSearchInput, options: WebSearchOptions = {}): Promise<WebSearchResponse> {
-  const configured = options.provider ?? providerValue(process.env.SUBPOLAR_WEB_SEARCH_PROVIDER) ?? 'exa'
   const contextSize = boundedInteger(input.contextSize, 'contextSize', 1, WEB_SEARCH_LIMITS.maxContextSize, 8_000)
-  const args = inputArgs(input, configured)
-  const provider = WEB_SEARCH_PROVIDERS[configured]
-  const apiKey = options.apiKeys?.[configured] ?? process.env[provider.keyEnv]
+  const defaultProvider = options.provider ?? providerValue(process.env.SUBPOLAR_WEB_SEARCH_PROVIDER) ?? 'exa'
+  const providers = [...new Set(options.providers?.map(providerValue).filter((provider): provider is WebSearchProvider => Boolean(provider)) ?? [defaultProvider])]
+  if (providers.length === 0) throw new WebSearchError('PROVIDER_UNAVAILABLE', 'No web search providers are enabled')
   const environmentProtocolVersion = process.env.SUBPOLAR_WEB_SEARCH_MCP_PROTOCOL_VERSION
   const protocolVersion = options.protocolVersion
     ?? (environmentProtocolVersion === '2026-07-28' ? '2026-07-28' : '2025-06-18')
-  const adapter = createMcpAdapter({
-    fetch: options.fetch,
-    defaults: { transport: 'http', protocolVersion, networkPolicy: options.networkPolicy },
-  })
-  try {
-    const result = await adapter.invoke({ tool_id: `web-search/${configured}`, namespace: 'web-search', target: options.endpointOverrides?.[configured] ?? provider.endpoint, operation: provider.toolName, metadata: { transport: 'http', toolName: provider.toolName, ...(apiKey ? { headers: configured === 'exa' ? { 'x-api-key': apiKey } : { authorization: `Bearer ${apiKey}` } } : {}) } }, args)
-    if (result.isError) throw new WebSearchError('PROVIDER_UNAVAILABLE', 'Web search provider returned an error')
-    return { results: parseResults(result, boundedInteger(input.resultCount, 'resultCount', 1, WEB_SEARCH_LIMITS.maxResults, 5), contextSize) }
-  } catch (error) {
-    if (error instanceof WebSearchError) throw error
-    const mcpCode = error instanceof McpAdapterError ? error.code : typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : undefined
-    const code = mcpCode === 'MCP_TIMEOUT' || mcpCode === 'MCP_CONNECTION_ERROR' || error instanceof Error && /MCP_(TIMEOUT|CONNECTION)|Could not send MCP|NetworkPolicy|timed out|connect failed/i.test(error.message) ? 'NETWORK_ERROR' : 'PROTOCOL_ERROR'
-    throw new WebSearchError(code, code === 'NETWORK_ERROR' ? 'Web search provider is unavailable' : 'Web search provider returned an invalid response')
-  } finally {
-    await adapter.close()
+  let lastError: WebSearchError | undefined
+  let hadSuccessfulProvider = false
+  const resultCount = boundedInteger(input.resultCount, 'resultCount', 1, WEB_SEARCH_LIMITS.maxResults, 5)
+  for (const configured of providers) {
+    const provider = WEB_SEARCH_PROVIDERS[configured]
+    const apiKey = options.apiKeys?.[configured] ?? process.env[provider.keyEnv]
+    const adapter = createMcpAdapter({
+      fetch: options.fetch,
+      defaults: { transport: 'http', protocolVersion, networkPolicy: options.networkPolicy },
+    })
+    try {
+      const result = await adapter.invoke({
+        tool_id: `web-search/${configured}`,
+        namespace: 'web-search',
+        target: options.endpointOverrides?.[configured] ?? provider.endpoint,
+        operation: provider.toolName,
+        metadata: {
+          transport: 'http',
+          toolName: provider.toolName,
+          ...(apiKey ? { headers: configured === 'exa' ? { 'x-api-key': apiKey } : { authorization: `Bearer ${apiKey}` } } : {}),
+        },
+      }, inputArgs(input, configured))
+      if (result.isError) throw new WebSearchError('PROVIDER_UNAVAILABLE', `${configured} search provider returned an error`)
+      const results = parseResults(result, resultCount, contextSize)
+      hadSuccessfulProvider = true
+      if (results.length > 0) return { results }
+    } catch (error) {
+      if (error instanceof WebSearchError) {
+        lastError = error
+      } else {
+        const mcpCode = error instanceof McpAdapterError ? error.code : typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : undefined
+        const code = mcpCode === 'MCP_TIMEOUT' || mcpCode === 'MCP_CONNECTION_ERROR' || error instanceof Error && /MCP_(TIMEOUT|CONNECTION)|Could not send MCP|NetworkPolicy|timed out|connect failed/i.test(error.message) ? 'NETWORK_ERROR' : 'PROTOCOL_ERROR'
+        lastError = new WebSearchError(code, `${configured} search provider is unavailable`)
+      }
+    } finally {
+      await adapter.close()
+    }
   }
+  if (hadSuccessfulProvider) return { results: [] }
+  throw lastError ?? new WebSearchError('PROVIDER_UNAVAILABLE', 'No web search providers are available')
 }
 
 export type WebFetchOptions = { fetch?: typeof globalThis.fetch; networkPolicy?: NetworkPolicyOptions }

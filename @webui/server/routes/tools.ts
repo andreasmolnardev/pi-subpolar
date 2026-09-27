@@ -42,7 +42,10 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
 
       if (path[3] === 'list') {
         if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'list', { agentName })
-        return deps.json({ tools: await deps.listToolsForAgent(client, userId, agentName) })
+        const sessionId = typeof input.sessionId === 'string' && input.sessionId.trim() ? input.sessionId : undefined
+        const session = sessionId ? await deps.createProjectSessionRepository(client).getSessionById(sessionId) : null
+        if (sessionId && (!session || session.userId !== userId)) return deps.json({ error: 'Session not found' }, 404)
+        return deps.json({ tools: await deps.listToolsForAgent(client, userId, agentName, session?.projectId ? String(session.projectId) : undefined, true) })
       }
       if (path[3] === 'search') {
         if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'query', { agentName })

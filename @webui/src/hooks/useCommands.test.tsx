@@ -19,8 +19,8 @@ describe('useCommands', () => {
       'clear',
       'compact',
       'continue',
+      'debug',
       'details',
-      'editor',
     ])
   })
 
@@ -34,6 +34,14 @@ describe('useCommands', () => {
     expect(result.current.filterCommands('do').map(command => command.name)).toEqual([
       'redo',
       'undo',
+    ])
+  })
+
+  it('includes /debug in built-in commands', () => {
+    const { result } = renderHook(() => useCommands(null))
+
+    expect(result.current.filterCommands('debug')).toMatchObject([
+      { name: 'debug', description: 'Inspect and run tools available to the current agent' },
     ])
   })
 

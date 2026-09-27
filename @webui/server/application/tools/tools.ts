@@ -131,6 +131,9 @@ export type AgentDefinition = {
   model: string
   thinking: 'off' | 'minimal' | 'low' | 'medium' | 'high'
   approval_mode: AgentApprovalMode
+  /** Legacy UI permissions, including detailed Pi toolAccess entries. */
+  permission?: Record<string, unknown>
+  toolAccess?: Array<{ type?: string; id?: string; permission?: string; command?: string }>
   policies: AgentPolicySet
   project_overrides: Record<string, AgentProjectOverride>
   tool_context_modes: Record<string, ToolContextMode>
@@ -138,6 +141,25 @@ export type AgentDefinition = {
   effective_source: AgentEffectiveSource
   created_at?: number
   updated_at?: number
+}
+
+export function agentProfileToolEffect(agent: AgentDefinition, toolId: string): ToolEffect | undefined {
+  const canonical = canonicalToolId(toolId)
+  const configuredTool = agent.toolAccess?.find((entry) => typeof entry.id === 'string' && canonicalToolId(entry.id === 'other-bash' ? 'bash' : entry.id) === canonical)
+  const configured = configuredTool?.permission
+  if (configured === 'allow' || configured === 'auto') return 'allow'
+  if (configured === 'ask') return 'approval'
+  if (configured === 'deny') return 'deny'
+
+  const legacyKey: Record<string, string> = {
+    'web.search': 'websearch',
+    'web.fetch': 'webfetch',
+  }
+  const legacyValue = agent.permission?.[legacyKey[canonical] ?? canonical]
+  if (legacyValue === 'allow') return 'allow'
+  if (legacyValue === 'ask') return 'approval'
+  if (legacyValue === 'deny') return 'deny'
+  return undefined
 }
 
 export type Approval = {
@@ -162,6 +184,7 @@ const piToolIds: Record<string, string> = {
   grep: 'grep',
   find: 'find',
   ls: 'ls',
+  'web.search': 'web_search',
 }
 
 const mcpAdapter = createMcpAdapter()
@@ -248,6 +271,8 @@ function toAgent(value: unknown): AgentDefinition {
     model: typeof record.model === 'string' ? record.model : fallback.model,
     thinking: validThinking(record.thinking) ?? fallback.thinking,
     approval_mode: validApproval(record.approval_mode) ?? fallback.approval_mode,
+    permission: recordObject(record.permission),
+    toolAccess: Array.isArray(record.toolAccess) ? record.toolAccess as AgentDefinition['toolAccess'] : [],
     policies: normalizePolicies(record.policies ?? fallback.policies),
     project_overrides: normalizeProjectOverrides(record.project_overrides),
     tool_context_modes: modes,
@@ -637,12 +662,12 @@ function toolContextMode(agent: AgentDefinition, toolId: string): ToolContextMod
   return agent.template ? 'disabled' : 'always'
 }
 
-export async function listToolsForAgent(client: PocketBase, userId: string, agentName = 'master', projectId?: string): Promise<Array<{ id: string; description: string; inputSchema: Record<string, unknown>; requiresApproval: boolean; contextMode: ToolContextMode }>> {
-  let agent = agentName === 'master'
+export async function listToolsForAgent(client: PocketBase, userId: string, agentName = 'master', projectId?: string, includeOnDemand = false): Promise<Array<{ id: string; description: string; inputSchema: Record<string, unknown>; requiresApproval: boolean; contextMode: ToolContextMode }>> {
+  const agentRecord = agentName === 'master'
     ? await findAgent(client, userId, agentName) ?? await ensureUserDefaults(client, userId)
     : await findAgent(client, userId, agentName)
-  if (!agent || !agent.enabled) return []
-  agent = effectiveAgentConfiguration(agent, projectId)
+  if (!agentRecord || !agentRecord.enabled) return []
+  let agent = effectiveAgentConfiguration(agentRecord, projectId)
   const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(userId)}" && agent_id = "${escapeFilter(agent.id)}"` })
   const policyMap = new Map(policies.map((item) => [String(item.tool_id), String(item.effect) as ToolEffect]))
   const tools = await client.collection('tool_registry').getFullList({ filter: 'enabled = true', sort: 'namespace,tool_id' })
@@ -652,7 +677,7 @@ export async function listToolsForAgent(client: PocketBase, userId: string, agen
     if (tool.tool_id.startsWith('browser/') && agent.policies.browser !== true) return []
     const contextMode = toolContextMode(agent, tool.tool_id)
     const effect = policyMap.get(tool.tool_id)
-    if (contextMode === 'disabled' || contextMode === 'on-demand' || effect === 'deny' || (!effect && !agent.name.startsWith('master'))) return []
+    if (contextMode === 'disabled' || (!includeOnDemand && contextMode === 'on-demand') || effect === 'deny' || (!effect && !agent.name.startsWith('master'))) return []
     return [{ id: tool.tool_id, description: tool.description, inputSchema: tool.input_schema, requiresApproval: tool.requires_approval || effect === 'approval', contextMode: tool.context_mode ?? contextMode }]
   })
 }
@@ -1020,18 +1045,19 @@ export async function createCoreToolGateway(client: PocketBase, ownerId: string,
     const override = context.metadata?.permissionOverride as PermissionOverride | undefined
     const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(ownerId)}" && agent_id = "${escapeFilter(agent.id)}"` })
     const matching = policies.filter((item) => item.tool_id === definition.id || item.tool_id === '*')
+    const profileEffect = agentProfileToolEffect(agent, definition.id)
     const mode = toolContextMode(effective, definition.id)
-    if (mode === 'disabled' || matching.some((item) => item.effect === 'deny') || override === 'none' || effective.approval_mode === 'deny') return { deny: true, reason: `Agent is not allowed to use ${definition.id}` }
+    if (mode === 'disabled' || matching.some((item) => item.effect === 'deny') || profileEffect === 'deny' || override === 'none' || effective.approval_mode === 'deny') return { deny: true, reason: `Agent is not allowed to use ${definition.id}` }
     if (profileManagementTools.has(definition.id) && agent.name !== 'master') return { deny: true, reason: 'Agent profile management requires the master agent' }
     if (toolManagementTools.has(definition.id) && agent.name !== 'master') return { deny: true, reason: 'Registered tool management requires the master agent' }
     if (cliManagementTools.has(definition.id) && agent.name !== 'master') return { deny: true, reason: 'CLI tool management requires the master agent' }
     if (definition.id.startsWith('memory/') && !memoryPolicyAllows(effective, definition.id)) return { deny: true, reason: 'Memory is disabled for this agent' }
     if (definition.id.startsWith('browser/') && (effective.policies.browser !== true || (browserMutationGroups.has(String(webTool.metadata.policyGroup)) && !browserProfileAllows(String(webTool.metadata.policyGroup), agent.template === 'plan' || agent.template === 'reviewer')))) return { deny: true, reason: 'Browser capability is not allowed for this agent' }
     if (memoryMutationTools.has(definition.id) && (agent.template === 'plan' || agent.template === 'reviewer')) return { deny: true, reason: 'This agent profile is query-only for memory' }
-    const explicitlyAllowed = matching.some((item) => item.effect === 'allow' || item.effect === 'approval')
+    const explicitlyAllowed = matching.some((item) => item.effect === 'allow' || item.effect === 'approval') || profileEffect === 'allow' || profileEffect === 'approval'
     if (override !== 'allow_all' && !explicitlyAllowed && agent.name !== 'master' && !matching.some((item) => item.tool_id === generatedSkillName(definition.id))) return { deny: true, reason: `Agent is not allowed to use ${definition.id}` }
     const masterWebSearch = agent.name === 'master' && definition.id === 'web.search'
-    const needsApproval = !masterWebSearch && (requiresManualApproval(definition.id, webTool.target) || effective.approval_mode === 'ask' || override === 'ask' || (override !== 'allow_all' && (webTool.requires_approval || matching.some((item) => item.effect === 'approval'))))
+    const needsApproval = !masterWebSearch && (requiresManualApproval(definition.id, webTool.target) || effective.approval_mode === 'ask' || override === 'ask' || (override !== 'allow_all' && (webTool.requires_approval || matching.some((item) => item.effect === 'approval') || profileEffect === 'approval')))
     return needsApproval ? { requiresApproval: true, allow: true, reason: `${definition.id} requires approval` } : { allow: true }
   }
   const execute: ToolExecutor = async (call, definition, context) => {
@@ -1087,7 +1113,21 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     return manageRegisteredTool(client, tool.operation, input, context.userId)
   }
   if (tool.target === 'cli' && tool.operation === 'run') return executeCliTool(tool, input, cwd)
-  if (tool.target === 'web' && tool.operation === 'search') return webSearch(input as WebSearchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
+  if (tool.target === 'web' && tool.operation === 'search') {
+    const preferences = context?.userId
+      ? await client.collection('user_preferences').getFirstListItem(`user_id = "${escapeFilter(context.userId)}"`).catch(() => null)
+      : null
+    const preferenceData = recordObject(preferences?.preferences)
+    const integrations = Array.isArray(preferenceData.integrations) ? preferenceData.integrations : []
+    const searchSettings = integrations.map(recordObject).find((item) => item.type === 'web-search')
+    const configuredProviders: Array<'exa' | 'firecrawl' | 'parallel'> = Array.isArray(searchSettings?.providers)
+      ? searchSettings.providers.filter((provider): provider is 'exa' | 'firecrawl' | 'parallel' => provider === 'exa' || provider === 'firecrawl' || provider === 'parallel')
+      : ['exa', 'firecrawl']
+    if (searchSettings?.enabled === false || configuredProviders.length === 0) throw new Error('Web Search is disabled in Integrations settings')
+    const networkPolicy = networkPolicyFromMetadata(tool.metadata)
+    networkPolicy.allowedHosts = [...new Set([...(networkPolicy.allowedHosts ?? []), 'mcp.exa.ai', 'mcp.firecrawl.dev', 'search.parallel.ai'])]
+    return webSearch(input as WebSearchInput, { networkPolicy, providers: configuredProviders })
+  }
   if (tool.target === 'web' && tool.operation === 'fetch') return webFetch(input as WebFetchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
   const definitions = {
     read: createReadToolDefinition(cwd),
@@ -1187,8 +1227,8 @@ function shortDescription(description: string): string {
 function toolUsage(tool: ToolDefinition): string {
   const properties = Object.keys(recordObject(tool.input_schema.properties))
   const args = properties.slice(0, 4).map((name) => `${name}: ...`).join(', ')
-  const directlyCallable = Object.hasOwn(piToolIds, tool.tool_id) || tool.tool_id === 'search-tool'
-  if (directlyCallable) return `${tool.tool_id}({${args}})`
+  const directName = piToolIds[tool.tool_id] ?? (tool.tool_id === 'search-tool' ? 'search-tool' : undefined)
+  if (directName) return `${directName}({${args}})`
   return `subpolar-tools({action: "call", toolId: "${tool.tool_id}", input: {${args}}})`
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CalendarDays, Loader2, Mail, Network, Pencil, Plus, Trash2 } from 'lucide-react'
+import { CalendarDays, Loader2, Mail, Network, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -59,6 +59,10 @@ type IntegrationConfig =
       password: string
       fromAddress: string
     })
+  | (IntegrationBase & {
+      type: 'web-search'
+      providers: Array<'exa' | 'firecrawl'>
+    })
 
 type IntegrationType = IntegrationConfig['type']
 
@@ -67,6 +71,7 @@ const integrationTypes: Record<IntegrationType, { label: string; description: st
   openapi: { label: 'OpenAPI', description: 'OpenAPI JSON operations exposed as agent tools' },
   caldav: { label: 'CalDAV', description: 'Calendar access for scheduling and availability workflows' },
   mail: { label: 'IMAP/SMTP', description: 'Email inbox and sending configuration for mail-aware agents' },
+  'web-search': { label: 'Web Search', description: 'Keyless Exa and Firecrawl MCP providers for the web.search agent tool' },
 }
 
 function createIntegration(type: IntegrationType): IntegrationConfig {
@@ -88,6 +93,10 @@ function createIntegration(type: IntegrationType): IntegrationConfig {
     return { ...base, type, serverUrl: '', username: '', password: '', calendarUrl: '' }
   }
 
+  if (type === 'web-search') {
+    return { ...base, id: 'web-search', name: 'Web Search', type, providers: ['exa', 'firecrawl'] }
+  }
+
   return {
     ...base,
     type,
@@ -105,6 +114,7 @@ function IntegrationIcon({ type }: { type: IntegrationType }) {
   if (type === 'mcp') return <Network className="h-4 w-4 text-muted-foreground" />
   if (type === 'openapi') return <Network className="h-4 w-4 text-muted-foreground" />
   if (type === 'caldav') return <CalendarDays className="h-4 w-4 text-muted-foreground" />
+  if (type === 'web-search') return <Search className="h-4 w-4 text-muted-foreground" />
   return <Mail className="h-4 w-4 text-muted-foreground" />
 }
 
@@ -286,8 +296,9 @@ function IntegrationDialog({ open, integration, isSaving, onOpenChange, onSave }
                   <SelectContent>
                     <SelectItem value="mcp">MCP</SelectItem>
                     <SelectItem value="openapi">OpenAPI</SelectItem>
-                  <SelectItem value="caldav">CalDAV</SelectItem>
+                    <SelectItem value="caldav">CalDAV</SelectItem>
                   <SelectItem value="mail">IMAP/SMTP</SelectItem>
+                  <SelectItem value="web-search" disabled>Web Search (built-in)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -301,6 +312,32 @@ function IntegrationDialog({ open, integration, isSaving, onOpenChange, onSave }
               <Label htmlFor="integration-enabled">Enabled</Label>
               <Switch id="integration-enabled" checked={formData.enabled} onCheckedChange={(checked) => updateField('enabled', checked)} disabled={isSaving} />
             </div>
+
+            {formData.type === 'web-search' && (
+              <div className="space-y-3 rounded-lg border border-border p-3">
+                <p className="text-sm text-muted-foreground">Keyless hosted MCP servers. Agents call providers in order and fall back when one is unavailable.</p>
+                {(['exa', 'firecrawl'] as const).map((provider) => {
+                  const enabled = formData.providers.includes(provider)
+                  const name = provider === 'exa' ? 'Exa' : 'Firecrawl'
+                  return (
+                    <div key={provider} className="flex items-center justify-between gap-3">
+                      <div>
+                        <Label htmlFor={`web-search-${provider}`}>{name} MCP</Label>
+                        <p className="text-xs text-muted-foreground">Free, rate-limited access</p>
+                      </div>
+                      <Switch
+                        id={`web-search-${provider}`}
+                        checked={enabled}
+                        onCheckedChange={(checked) => updateField('providers', checked
+                          ? [...formData.providers.filter((item) => item !== provider), provider]
+                          : formData.providers.filter((item) => item !== provider))}
+                        disabled={isSaving || !formData.enabled}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+            )}
 
             {formData.type === 'mcp' && (
               <>
@@ -629,9 +666,11 @@ export function IntegrationsSettings() {
                 <Button type="button" variant="ghost" size="icon" onClick={() => openEditDialog(integration.id)} disabled={isUpdating}>
                   <Pencil className="h-4 w-4" />
                 </Button>
-                <Button type="button" variant="ghost" size="icon" onClick={() => removeIntegration(integration.id)} disabled={isUpdating}>
-                  <Trash2 className="h-4 w-4 text-red-500" />
-                </Button>
+                {integration.type !== 'web-search' && (
+                  <Button type="button" variant="ghost" size="icon" onClick={() => removeIntegration(integration.id)} disabled={isUpdating}>
+                    <Trash2 className="h-4 w-4 text-red-500" />
+                  </Button>
+                )}
               </div>
             ))}
           </div>

@@ -19,6 +19,25 @@ import { API_BASE_URL } from '@/config'
 import { fetchWrapper, FetchError } from './fetchWrapper'
 
 const DEFAULT_USER_ID = 'default'
+const DEFAULT_WEB_SEARCH_INTEGRATION: IntegrationConfig = {
+  id: 'web-search',
+  name: 'Web Search',
+  type: 'web-search',
+  enabled: true,
+  providers: ['exa', 'firecrawl'],
+}
+
+async function readIntegrationSettings(): Promise<IntegrationConfig[]> {
+  const { preferences } = await settingsApi.getSettings()
+  const saved = Array.isArray(preferences.integrations) ? preferences.integrations as IntegrationConfig[] : []
+  return saved.some((integration) => integration.type === 'web-search')
+    ? saved
+    : [DEFAULT_WEB_SEARCH_INTEGRATION, ...saved]
+}
+
+async function writeIntegrationSettings(integrations: IntegrationConfig[]): Promise<void> {
+  await settingsApi.updateSettings({ preferences: { integrations: integrations as IntegrationSettings } })
+}
 
 export type TeachToolKind = 'cli' | 'mcp' | 'openapi'
 
@@ -115,30 +134,32 @@ export const settingsApi = {
     })
   },
 
-  listIntegrations: async (): Promise<{ integrations: IntegrationSettings }> => {
-    return fetchWrapper(`${API_BASE_URL}/api/settings/integrations`)
-  },
+  listIntegrations: async (): Promise<{ integrations: IntegrationSettings }> => ({ integrations: await readIntegrationSettings() as IntegrationSettings }),
 
   createIntegration: async (integration: IntegrationConfig): Promise<IntegrationConfig> => {
-    return fetchWrapper(`${API_BASE_URL}/api/settings/integrations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(integration),
-    })
+    const integrations = await readIntegrationSettings()
+    const next = [...integrations.filter((item) => item.id !== integration.id), integration]
+    await writeIntegrationSettings(next)
+    return integration
   },
 
   updateIntegration: async (integration: IntegrationConfig): Promise<IntegrationConfig> => {
-    return fetchWrapper(`${API_BASE_URL}/api/settings/integrations/${encodeURIComponent(integration.id)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(integration),
-    })
+    const integrations = await readIntegrationSettings()
+    const next = integrations.some((item) => item.id === integration.id)
+      ? integrations.map((item) => item.id === integration.id ? integration : item)
+      : [...integrations, integration]
+    await writeIntegrationSettings(next)
+    return integration
   },
 
   deleteIntegration: async (id: string): Promise<{ success: boolean }> => {
-    return fetchWrapper(`${API_BASE_URL}/api/settings/integrations/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    })
+    const integrations = await readIntegrationSettings()
+    if (id === 'web-search') {
+      await writeIntegrationSettings(integrations.map((integration) => integration.id === id ? { ...integration, enabled: false } : integration))
+    } else {
+      await writeIntegrationSettings(integrations.filter((integration) => integration.id !== id))
+    }
+    return { success: true }
   },
 
   getUpcomingCalendarEvents: async (): Promise<{
@@ -342,6 +363,18 @@ export const settingsApi = {
     return fetchWrapper(`${API_BASE_URL}/api/settings/subpolar-tools`)
   },
 
+  listAgentDebugTools: async (agentName: string, sessionId: string): Promise<{ tools: AgentDebugTool[] }> => fetchWrapper(`${API_BASE_URL}/api/subpolar-cli/tools/list`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentName, sessionId }),
+  }),
+
+  callAgentDebugTool: async (input: { toolId: string; sessionId: string; agentName: string; input: Record<string, unknown> }): Promise<unknown> => fetchWrapper(`${API_BASE_URL}/api/subpolar-cli/tools/call`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  }),
+
   discoverOpenApi: async (integration: IntegrationConfig & { type: 'openapi' }): Promise<{ providerName: string; tools: Array<{ toolId: string; method: string; path: string; description: string }> }> => {
     return fetchWrapper(`${API_BASE_URL}/api/settings/openapi/discover`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(integration) })
   },
@@ -432,6 +465,14 @@ export interface SubpolarTool {
   risk: 'read' | 'write' | 'delete' | 'external'
   requires_approval: boolean
   metadata?: Record<string, unknown>
+}
+
+export interface AgentDebugTool {
+  id: string
+  description: string
+  inputSchema: Record<string, unknown>
+  requiresApproval: boolean
+  contextMode: string
 }
 
 export interface AgentToolPolicy {

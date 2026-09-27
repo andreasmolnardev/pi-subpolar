@@ -31,7 +31,7 @@ type RoutingContext = {
   describeTool?: (toolId: string) => Promise<unknown>
 }
 
-export const centralToolNames = ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'search-tool', 'subpolar-tools'] as const
+export const centralToolNames = ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'search-tool', 'web_search', 'subpolar-tools'] as const
 const centralToolNameSet = new Set<string>(centralToolNames)
 const inputSchema = Type.Object({
   action: Type.String({ enum: ['list', 'describe', 'call'] }),
@@ -163,6 +163,15 @@ function registerBuiltinTools(pi: ExtensionApi, context: RoutingContext): void {
       description: 'List directory contents in the selected project.',
       parameters: Type.Object({ path: Type.Optional(Type.String()), limit: Type.Optional(Type.Number()) }),
     },
+    web_search: {
+      label: 'web.search',
+      description: 'Call Subpolar web.search to search the public web using enabled Exa and Firecrawl MCP providers. Automatically falls back when a provider is unavailable.',
+      parameters: Type.Object({
+        query: Type.String({ minLength: 1, maxLength: 1000, description: 'Search query' }),
+        resultCount: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
+        contextSize: Type.Optional(Type.Integer({ minimum: 1, maximum: 32000 })),
+      }),
+    },
   } as const
 
   for (const [name, definition] of Object.entries(definitions)) {
@@ -173,7 +182,7 @@ function registerBuiltinTools(pi: ExtensionApi, context: RoutingContext): void {
       promptSnippet: definition.description,
       parameters: definition.parameters,
       async execute(toolCallId: string, params: unknown) {
-        return gateway(context, '/subpolar-cli/tools/call', callBody(context, name, params, toolCallId))
+        return gateway(context, '/subpolar-cli/tools/call', callBody(context, name === 'web_search' ? 'web.search' : name, params, toolCallId))
       },
     })
   }
@@ -183,8 +192,8 @@ function registerDiscoveryTools(pi: ExtensionApi, context: RoutingContext): void
   pi.registerTool({
     name: 'search-tool',
     label: 'Search Tools',
-    description: 'Search the tools available to the active agent. Query is required.',
-    promptSnippet: 'Search available tools by name or description',
+    description: 'Search tools enabled for the active agent. Use a returned tool ID with subpolar-tools action "call" and pass its input parameters.',
+    promptSnippet: 'Discover available tools; invoke returned tool IDs through subpolar-tools.',
     parameters: Type.Object({
       query: Type.String({ minLength: 1, description: 'Non-empty search query for tool names or descriptions' }),
     }),
@@ -200,7 +209,7 @@ function registerDiscoveryTools(pi: ExtensionApi, context: RoutingContext): void
   pi.registerTool({
     name: 'subpolar-tools',
     label: 'Subpolar Tools',
-    description: 'Describe and call external tools governed by the PocketBase-backed Subpolar tool router.',
+    description: 'List, describe, and call tools enabled for the active agent through the Subpolar policy gateway. Discover tool IDs with search-tool, then call the returned tool ID with its required input.',
     parameters: inputSchema,
     async execute(_toolCallId: string, params: { action?: unknown; toolId?: unknown; input?: unknown }) {
       const value = params && typeof params === 'object' ? params : {}

@@ -22,6 +22,7 @@ import { getProject, listProjectMentions, listProjects, loadMentionContext, type
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { useSettings } from "@/hooks/useSettings";
 import { showToast } from "@/lib/toast";
+import { DebugToolsDialog } from "@/components/chat/DebugToolsDialog";
 
 import { MentionSuggestions, type MentionItem } from "@/components/message/MentionSuggestions";
 import { savePendingSessionPrompt } from "@/lib/pending-session-prompt";
@@ -132,6 +133,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const [commandQuery, setCommandQuery] = useState<string | null>(null);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const [debugToolsOpen, setDebugToolsOpen] = useState(false);
   const [selectedMentions, setSelectedMentions] = useState<MentionContextItem[]>([]);
   const [pastedText, setPastedText] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -271,9 +273,11 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const selectedAgentForRequest = selectedAgent === "__default__" || (!hideAgentSelect && !visibleAgents.some((agent) => agent.name === selectedAgent))
     ? undefined
     : selectedAgent;
-  const selectedPermissionForRequest = selectedPermission === "none" || selectedPermission === "allow_all"
-    ? selectedPermission
-    : "ask";
+  const selectedPermissionForRequest = selectedPermission === "default"
+    ? undefined
+    : selectedPermission === "none" || selectedPermission === "allow_all"
+      ? selectedPermission
+      : "ask";
   const commandHandler = useCommandHandler({
     apiUrl,
     sessionID: sessionID ?? activeSessionId ?? "",
@@ -541,6 +545,10 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       setHasPromptContent(Boolean(pastedText || attachmentParts.length));
       setCommandQuery(null);
       onPromptChange?.(Boolean(pastedText || attachmentParts.length));
+      if (command.name.toLowerCase() === 'debug') {
+        setDebugToolsOpen(true);
+        return;
+      }
       await commandHandler.executeCommand(command, commandMatch?.[2] ?? "");
       return;
     }
@@ -790,6 +798,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
 
 
   return (
+    <>
     <div className="w-full max-w-3xl mx-auto">
       <div className="relative backdrop-blur-md bg-muted/50 rounded-xl p-4 shadow-lg">
         {attachments.some((attachment) => attachment.kind !== "text") && (
@@ -992,5 +1001,14 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
         </div>
       </div>
     </div>
+    {sessionID && (
+      <DebugToolsDialog
+        open={debugToolsOpen}
+        onOpenChange={setDebugToolsOpen}
+        sessionID={sessionID}
+        agentName={selectedAgentForRequest ?? config?.default_agent ?? 'master'}
+      />
+    )}
+    </>
   );
 });

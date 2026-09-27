@@ -2,7 +2,7 @@
 
 ## Runtime model
 
-The model does not invoke arbitrary integrations directly. It sees a small set of Pi tools that route requests into Subpolar's central tool runtime. External capabilities are registered in Subpolar's tool registry and are exposed through `search-tool` and `subpolar-tools`, rather than being added to the model as one Pi function per remote operation.
+The model does not invoke arbitrary integrations directly. It sees a small set of Pi tools that route requests into Subpolar's central tool runtime. External capabilities are registered in Subpolar's tool registry and exposed through `search-tool` and `subpolar-tools`; provider-neutral `web.search` is also exposed as a direct routed tool.
 
 A registered definition is Subpolar's contract for a tool: its stable `namespace/operation` ID, description, input/output schemas, risk, approval requirement, enabled state, context visibility, and adapter-specific routing metadata. The registry entry selects which external operation can run and under what Subpolar policy; a provider's own description or annotations do not grant access or override that policy.
 
@@ -34,7 +34,7 @@ This path is stateless at the operation level: Subpolar makes an HTTP request fo
 
 ### Web search and fetch
 
-Subpolar exposes the provider-neutral `web.search` and `web.fetch` capabilities; search-provider-specific names and inputs are not exposed to the model. `web.search` uses the server-configured provider (`SUBPOLAR_WEB_SEARCH_PROVIDER`, currently Exa or Parallel), with credentials supplied through provider environment variables. `web.fetch` retrieves bounded text from an HTTP(S) page under the network policy. These are external operations and use the same central permission and approval path.
+Subpolar exposes provider-neutral `web.search` and `web.fetch` capabilities; search-provider-specific names and inputs are not exposed to the model. The direct Pi tool is named `web_search` for cross-provider tool-name compatibility and routes to canonical registry ID `web.search`. Web Search integration settings enable keyless Exa and Firecrawl MCPs by default; search falls back to next configured provider if earlier provider errors or returns no results. Optional provider credentials remain server-side. `web.fetch` retrieves bounded text from an HTTP(S) page under the network policy. These are external operations and use the same central permission and approval path.
 
 ### MCP servers
 

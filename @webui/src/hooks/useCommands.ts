@@ -18,6 +18,14 @@ function rankCommandMatch(command: CommandType, searchTerm: string): number {
 // Built-in OpenCode commands
 const BUILTIN_COMMANDS: CommandType[] = [
   {
+    name: 'debug',
+    description: 'Inspect and run tools available to the current agent',
+    template: '',
+    agent: '',
+    model: '',
+    hints: []
+  },
+  {
     name: 'help',
     description: 'Show the help dialog',
     template: '',

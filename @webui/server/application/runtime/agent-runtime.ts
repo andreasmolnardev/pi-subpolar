@@ -11,6 +11,7 @@ import {
   type AgentEffectiveSource,
   agentTemplateDefaults,
   agentToolContextMode,
+  agentProfileToolEffect,
   effectiveAgentConfiguration,
   resolveSkillRuntimeContext,
   renderSkillRuntimeContext,
@@ -29,6 +30,7 @@ export const PI_ROUTED_TOOL_NAMES = [
   'find',
   'ls',
   'search-tool',
+  'web_search',
   'subpolar-tools',
 ] as const
 
@@ -216,6 +218,8 @@ function toAgentDefinition(value: unknown): AgentDefinition {
     model: typeof record.model === 'string' ? record.model : defaults.model,
     thinking: validThinking,
     approval_mode: validApproval,
+    permission: object(record.permission),
+    toolAccess: Array.isArray(record.toolAccess) ? record.toolAccess as AgentDefinition['toolAccess'] : [],
     policies: {
       builtin: object(policies.builtin) as AgentPolicySet['builtin'],
       registered: object(policies.registered) as AgentPolicySet['registered'],
@@ -295,6 +299,7 @@ function nativePiToolName(tool: ToolDefinition): PiRoutedToolName {
   // The registry's canonical ID is the stable mapping. Namespace is metadata and
   // may be absent on older records, so it must not turn a native wrapper into a
   // gateway call.
+  if (tool.tool_id === 'web.search') return 'web_search'
   if ((PI_ROUTED_TOOL_NAMES as readonly string[]).includes(tool.tool_id)) {
     return tool.tool_id as PiRoutedToolName
   }
@@ -307,11 +312,13 @@ function isMaster(agent: AgentDefinition): boolean {
 
 function effectiveEffect(agent: AgentDefinition, toolId: string, policies: readonly AgentToolPolicy[]): ToolEffect {
   const matching = policies.filter((policy) => policy.tool_id === toolId || policy.tool_id === '*')
+  const profileEffect = agentProfileToolEffect(agent, toolId)
   // This mirrors the tool router's fail-closed precedence: deny wins, then approval,
   // then allow. Master has the existing default full registry access when no rule exists.
-  if (matching.some((policy) => policy.effect === 'deny')) return 'deny'
+  if (matching.some((policy) => policy.effect === 'deny') || profileEffect === 'deny') return 'deny'
   if (matching.some((policy) => policy.effect === 'approval')) return 'approval'
   if (matching.some((policy) => policy.effect === 'allow')) return 'allow'
+  if (profileEffect) return profileEffect
   return isMaster(agent) ? 'allow' : 'deny'
 }
 

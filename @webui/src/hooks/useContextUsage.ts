@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useConfig, useMessages, useSession } from './usePiHarness'
 import { useQuery } from '@tanstack/react-query'
-import { fetchWrapper } from '@/api/fetchWrapper'
+import { getProviders, type ProvidersResult } from '@/api/providers'
 
 interface ContextUsage {
   totalTokens: number
@@ -38,36 +38,6 @@ type AssistantMessage = {
   }>
 }
 
-interface ModelLimit {
-  context: number
-  output: number
-}
-
-interface ProviderModel {
-  id: string
-  name: string
-  limit?: ModelLimit
-  cost?: {
-    input: number
-    output: number
-    cache: { read: number; write: number }
-  }
-}
-
-interface Provider {
-  id: string
-  name: string
-  models: Record<string, ProviderModel>
-}
-
-interface ProvidersResponse {
-  providers: Provider[]
-}
-
-async function fetchProviders(apiUrl: string): Promise<ProvidersResponse> {
-  return fetchWrapper<ProvidersResponse>(`${apiUrl}/config/providers`)
-}
-
 function getMessageTokens(message: AssistantMessage | undefined): number {
   if (!message) return 0
   const completedPart = message.parts.find((part) => part.type === 'step-finish')
@@ -100,11 +70,11 @@ export const useContextUsage = (apiUrl: string | null | undefined, sessionID: st
   const { data: session, isLoading: sessionLoading } = useSession(apiUrl, sessionID, directory)
   const { data: config, isLoading: configLoading } = useConfig(apiUrl, directory)
 
-  const { data: providersData } = useQuery({
-    queryKey: ['providers', apiUrl],
+  const { data: providersData } = useQuery<ProvidersResult>({
+    queryKey: ['providers', apiUrl, directory],
     queryFn: () => {
       if (!apiUrl) throw new Error('apiUrl is required')
-      return fetchProviders(apiUrl)
+      return getProviders(directory)
     },
     enabled: !!apiUrl,
     staleTime: 5 * 60 * 1000,
@@ -137,8 +107,8 @@ export const useContextUsage = (apiUrl: string | null | undefined, sessionID: st
           pricing = model.cost ? {
             input: model.cost.input,
             output: model.cost.output,
-            cacheRead: model.cost.cache.read,
-            cacheWrite: model.cost.cache.write,
+            cacheRead: model.cost.cache_read ?? 0,
+            cacheWrite: model.cost.cache_write ?? 0,
           } : null
         }
       }

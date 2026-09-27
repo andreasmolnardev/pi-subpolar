@@ -1722,7 +1722,7 @@ const bridgeRequestDependencies = {
   PocketBaseProxyCredentialStore, hashProxySecret, proxyCredentialResponse, ownedProjectResponses,
   GitReadService, GitPathPolicy, GitServiceError, createProjectSessionRepository, ProjectPathConflictError, canonicalProjectPath,
   safeProjectPath, generalChatProject, mkdirSync, readdirSync, writeFileSync, statSync, projectsRoot,
-  generalChatRoot, resolve, isPathWithin, resolveNewSessionRoute, NewSessionRouteError, preferenceModel,
+  generalChatRoot, resolve, join, existsSync, isPathWithin, resolveNewSessionRoute, NewSessionRouteError, preferenceModel,
   validateModelSelection, modelSelection, normalizeSessionTags, InvalidSessionTagsError, sessionWorkspace,
   saveState, sessions, rpcSession, sendRpc, runStatelessPrompt, storedSessionResponse, parseModelSelection,
   parseRoutingModelSelection, routeFirstSessionRequest, generateFirstSessionTitle, localSessionRecord, sessionMessageText, entriesPayload,

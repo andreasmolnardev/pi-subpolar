@@ -17,7 +17,7 @@ function fakeFetch(calls: Request[]): typeof fetch {
   }) as typeof fetch
 }
 
-const policy = { allowedHosts: ['mcp.exa.ai', 'search.parallel.ai', 'example.test'] }
+const policy = { allowedHosts: ['mcp.exa.ai', 'mcp.firecrawl.dev', 'search.parallel.ai', 'example.test'] }
 
 describe('web search', () => {
   it('maps the provider-neutral search input and sends the optional key only as a request header', async () => {
@@ -39,6 +39,31 @@ describe('web search', () => {
     expect(toolCall.params.arguments).toEqual({ objective: 'topic', search_queries: ['topic'] })
     expect(calls).toHaveLength(3)
     expect(calls.at(-1)!.headers.get('authorization')).toBe('Bearer parallel-secret')
+  })
+
+  it('falls back from Exa to the keyless Firecrawl MCP', async () => {
+    const calls: Request[] = []
+    const firecrawlFetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const request = new Request(String(input), init)
+      calls.push(request)
+      const body = JSON.parse(await request.text()) as { id?: string | number; method?: string }
+      if (body.method === 'initialize') return rpcResponse({})
+      if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
+      const firecrawl = new URL(request.url).hostname === 'mcp.firecrawl.dev'
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id,
+        result: firecrawl
+          ? { content: [{ type: 'text', text: JSON.stringify({ data: { web: [{ title: 'Firecrawl result', url: 'https://example.com', description: 'Fallback result' }] } }) }] }
+          : { isError: true, content: [{ type: 'text', text: 'Exa temporarily unavailable' }] },
+      }), { headers: { 'content-type': 'application/json' } })
+    }) as typeof globalThis.fetch
+
+    const result = await webSearch({ query: 'Dashwise features' }, { fetch: firecrawlFetch, providers: ['exa', 'firecrawl'], networkPolicy: policy })
+
+    expect(result.results).toEqual([{ title: 'Firecrawl result', url: 'https://example.com', snippet: 'Fallback result' }])
+    expect(calls.map((request) => new URL(request.url).hostname)).toContain('mcp.exa.ai')
+    expect(calls.map((request) => new URL(request.url).hostname)).toContain('mcp.firecrawl.dev')
   })
 
   it('rejects unbounded input and bounds parsed context/results', async () => {
