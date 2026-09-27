@@ -677,8 +677,9 @@ export async function listToolsForAgent(client: PocketBase, userId: string, agen
     if (tool.tool_id.startsWith('browser/') && agent.policies.browser !== true) return []
     const contextMode = toolContextMode(agent, tool.tool_id)
     const effect = policyMap.get(tool.tool_id)
-    if (contextMode === 'disabled' || (!includeOnDemand && contextMode === 'on-demand') || effect === 'deny' || (!effect && !agent.name.startsWith('master'))) return []
-    return [{ id: tool.tool_id, description: tool.description, inputSchema: tool.input_schema, requiresApproval: tool.requires_approval || effect === 'approval', contextMode: tool.context_mode ?? contextMode }]
+    const profileEffect = agentProfileToolEffect(agent, tool.tool_id)
+    if (contextMode === 'disabled' || (!includeOnDemand && contextMode === 'on-demand') || effect === 'deny' || profileEffect === 'deny' || (!effect && !profileEffect && agent.name !== 'master')) return []
+    return [{ id: tool.tool_id, description: tool.description, inputSchema: tool.input_schema, requiresApproval: tool.requires_approval || effect === 'approval' || profileEffect === 'approval', contextMode: tool.context_mode ?? contextMode }]
   })
 }
 
@@ -714,6 +715,8 @@ function profileProjection(record: Record<string, unknown>): Record<string, unkn
     prompt: record.prompt ?? '',
     system_prompt: record.system_prompt ?? record.systemPrompt ?? '',
     enabled: record.enabled !== false,
+    ...(record.permission ? { permission: record.permission } : {}),
+    ...(record.toolAccess ? { toolAccess: record.toolAccess } : {}),
     ...(record.template ? { template: record.template } : {}),
     ...(record.model ? { model: record.model } : {}),
     ...(record.thinking ? { thinking: record.thinking } : {}),

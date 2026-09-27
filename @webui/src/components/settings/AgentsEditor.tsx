@@ -40,6 +40,8 @@ function subpolarPolicies(agent: Agent) {
     .map(tool => ({ toolId: tool.id, effect: policyEffect(tool.permission) }))
   const bashTool = (agent.toolAccess ?? []).find(tool => tool.type === 'builtin' && tool.id === 'other-bash')
   if (bashTool) policies.push({ toolId: 'bash', effect: policyEffect(bashTool.permission) })
+  const webSearchTool = (agent.toolAccess ?? []).find(tool => tool.type === 'builtin' && tool.id === 'web.search')
+  if (webSearchTool) policies.push({ toolId: 'web.search', effect: policyEffect(webSearchTool.permission) })
   if (policies.some(policy => policy.effect !== 'deny') && !policies.some(policy => policy.toolId === 'search-tool')) {
     return [{ toolId: 'search-tool', effect: 'allow' as const }, ...policies]
   }

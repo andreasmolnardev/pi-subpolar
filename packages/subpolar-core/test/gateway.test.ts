@@ -88,6 +88,7 @@ describe("subpolar-core policy gateway", () => {
       { id: "policy-agent", ownerId: "owner-1", toolId: "manual.deploy", agentId: "agent-1", rules: { requiresApproval: true }, version: 2, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
     ];
     let executions = 0;
+    const auditIds = new Set<string>();
     const gateway = createGateway({
       toolDefinitions: [tools[2]],
       policyRules: policyRecords,
@@ -95,6 +96,11 @@ describe("subpolar-core policy gateway", () => {
       continuation: continuationPort,
       createContinuation: () => ({ payload: "opaque", requestHash: "hash", expiresAt: "2026-01-02T00:00:00.000Z" }),
       executor: async () => { executions += 1; return { ok: true, value: "deployed" }; },
+      emitEvent: async (event) => {
+        const auditId = (event.data as { auditId: string }).auditId;
+        if (auditIds.has(auditId)) throw new Error("duplicate audit ID");
+        auditIds.add(auditId);
+      },
     });
     const directContext = { ...context, principal: { id: "owner-1", kind: "user" as const }, agentId: "agent-1" };
 
@@ -103,6 +109,7 @@ describe("subpolar-core policy gateway", () => {
     records.set("approval-call-direct", { ...records.get("approval-call-direct")!, status: "approved" });
     await expect(gateway.call({ callId: "call-direct", toolId: "manual.deploy", input: {} }, directContext)).resolves.toMatchObject({ status: "executed", value: "deployed" });
     expect(executions).toBe(1);
+    expect(auditIds.size).toBe(2);
   });
 
   test("redacts embedded and JSON-encoded secrets from audit values", () => {

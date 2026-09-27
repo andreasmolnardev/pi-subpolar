@@ -265,7 +265,7 @@ export function createPolicyGateway(options: GatewayOptions): ToolGateway {
       const occurredAt = now().toISOString();
       const safeCallId = redactedText(call.callId, "[REDACTED]");
       const record: AuditRecord = {
-        auditId: `audit-${safeCallId}`,
+        auditId: `audit-${safeCallId}-${crypto.randomUUID()}`,
         callId: safeCallId,
         toolId: redactedText(call.toolId, "[REDACTED]"),
         principalId: redactedText(context.principal.id, "[REDACTED]"),

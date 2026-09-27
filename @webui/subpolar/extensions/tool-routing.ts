@@ -1,6 +1,7 @@
 import { Type } from 'typebox'
 import type { ToolGateway } from '../../../packages/subpolar-core/src/index.ts'
 import type { ApprovalRecord, ExecutionContext } from '../../../packages/subpolar-contracts/src/index.ts'
+import { waitForApprovalResolution } from '../../server/application/tools/approval-execution.ts'
 
 type ToolCall = {
   id?: unknown
@@ -81,10 +82,13 @@ async function gateway(context: RoutingContext, path: string, requestBody: Recor
         ...(context.capabilities?.length ? { capabilities: context.capabilities.join(',') } : {}),
       },
     }
-    const result = await context.gateway.call(
-      { callId, toolId: requestBody.toolId, input: requestBody.input ?? {}, idempotencyKey: `tool-call:${callId}` },
-      executionContext,
-    )
+    const call = { callId, toolId: requestBody.toolId, input: requestBody.input ?? {}, idempotencyKey: `tool-call:${callId}` }
+    let result = await context.gateway.call(call, executionContext)
+    if (!result.ok && result.status === 'approval_required' && result.approvalId) {
+      const resolution = await waitForApprovalResolution(result.approvalId, Date.now() + 300_000)
+      if (resolution !== 'expired') result = await context.gateway.call(call, executionContext)
+      else return textResult({ ok: false, error: { code: 'APPROVAL_EXPIRED', message: 'Tool approval expired' } })
+    }
     const value = result.ok ? ('value' in result ? result.value : (result as unknown as { result?: unknown }).result) : undefined
     if (value && typeof value === 'object' && Array.isArray((value as Record<string, unknown>).content)) return value as ExtensionResult
     return textResult(result, { routedTo: 'core-tool-gateway' })

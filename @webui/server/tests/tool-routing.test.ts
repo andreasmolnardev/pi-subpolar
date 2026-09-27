@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createToolRoutingExtension } from '../../subpolar/extensions/tool-routing.ts'
+import { hasPendingApprovalWaiter, notifyApprovalResolution } from '../application/tools/approval-execution.ts'
 
 describe('WebUI tool routing boundary', () => {
   it('exposes web search directly and routes its call under canonical web.search ID', async () => {
@@ -62,5 +63,22 @@ describe('WebUI tool routing boundary', () => {
         metadata: { agentName: 'builder', permissionOverride: 'ask' },
       },
     }])
+  })
+
+  it('keeps the model tool call pending until approval and returns executed output', async () => {
+    const registered = new Map<string, { execute: (id: string, input: unknown) => Promise<unknown> }>()
+    const gateway = { call: vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 'approval_required', approvalId: 'approval-call-1' })
+      .mockResolvedValueOnce({ ok: true, value: { content: [{ type: 'text', text: 'done' }], details: {} } }) }
+    createToolRoutingExtension({ gateway: gateway as never, userId: 'owner', agentName: 'builder', sessionId: 'session', cwd: '/project' })({
+      registerTool: (definition: { name: string; execute: (id: string, input: unknown) => Promise<unknown> }) => registered.set(definition.name, definition),
+      hook: vi.fn(),
+    } as never)
+    const result = registered.get('ls')!.execute('call-1', {})
+    await vi.waitFor(() => expect(hasPendingApprovalWaiter('approval-call-1')).toBe(true))
+    expect(gateway.call).toHaveBeenCalledTimes(1)
+    notifyApprovalResolution('approval-call-1', 'approved')
+    expect(await result).toMatchObject({ content: [{ text: 'done' }] })
+    expect(gateway.call).toHaveBeenCalledTimes(2)
   })
 })

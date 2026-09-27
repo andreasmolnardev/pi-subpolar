@@ -3,6 +3,7 @@ import type PocketBase from 'pocketbase'
 import { InMemorySkillRepository } from '../../../packages/subpolar-contracts/src/index.ts'
 import { loadAgentRuntime } from '../application/runtime/agent-runtime.ts'
 import { agentTemplateDefaults, agentToolContextMode, effectiveAgentConfiguration } from '../application/tools/tools.ts'
+import { listToolsForAgent } from '../application/tools/tools.ts'
 
 type TestRecord = Record<string, unknown>
 
@@ -107,6 +108,17 @@ describe('PocketBase agent runtime adapter', () => {
 
     expect(runtime.toolPolicy.allowedToolIds).toEqual(['web.search'])
     expect(runtime.pi.initialActiveToolNames).toContain('web_search')
+  })
+
+  it('lists profile-granted web search in debug and enables its Pi wrapper', async () => {
+    const data = baseData({
+      agent: { ...baseData().agent, name: 'researcher', toolAccess: [{ type: 'builtin', id: 'web.search', permission: 'allow' }] },
+      tools: [{ id: 'web', tool_id: 'web.search', namespace: 'builtin', adapter: 'internal', description: 'Search', enabled: true, input_schema: {} }],
+    })
+    const runtime = await loadAgentRuntime(clientFor(data), 'user_1', 'researcher')
+    expect(runtime.pi.allowedToolNames).toContain('web_search')
+    const listed = await listToolsForAgent(clientFor(data), 'user_1', 'researcher')
+    expect(listed.map((tool) => tool.id)).toContain('web.search')
   })
 
   it('renders durable skill metadata and bodies using repository and project precedence', async () => {

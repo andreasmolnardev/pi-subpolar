@@ -71,6 +71,7 @@ export type DurableEventRecord = {
 }
 
 export class PocketBaseRuntimeStore {
+  private readonly eventWrites = new Map<string, Promise<void>>()
   constructor(private readonly client: PocketBase) {}
 
   private deliveryFilter(ownerId: string, sessionId: string, messageId: string): string {
@@ -214,6 +215,15 @@ export class PocketBaseRuntimeStore {
   }
 
   async appendEvent(ownerId: string, sessionId: string | null, value: unknown): Promise<DurableEventRecord> {
+    const previous = this.eventWrites.get(ownerId) ?? Promise.resolve()
+    const next = previous.catch(() => undefined).then(() => this.appendEventOnce(ownerId, sessionId, value))
+    const settled = next.then(() => undefined, () => undefined)
+    this.eventWrites.set(ownerId, settled)
+    void settled.then(() => { if (this.eventWrites.get(ownerId) === settled) this.eventWrites.delete(ownerId) })
+    return next
+  }
+
+  private async appendEventOnce(ownerId: string, sessionId: string | null, value: unknown): Promise<DurableEventRecord> {
     const safe = redactSensitive(value)
     let payload = JSON.stringify(safe)
     if (payload.length > 64 * 1024) payload = JSON.stringify({ type: 'event.redacted', properties: { reason: 'payload_too_large' } })

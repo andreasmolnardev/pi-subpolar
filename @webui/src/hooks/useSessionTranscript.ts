@@ -106,13 +106,16 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
     const callId = inner.toolCallId ?? event.toolCallId
     const owned = typeof callId === 'string' ? toolOwners.current.get(callId) : undefined
     const messageId = owned?.messageId ?? assistantGroupId
-    const partId = owned?.partId ?? `${eventMessageId}:content:${typeof contentIndex === 'number' ? contentIndex : 0}`
+    const executionEvent = type === 'tool_execution_start' || type === 'tool_execution_update' || type === 'tool_execution_end'
+    const partId = owned?.partId ?? (executionEvent && typeof callId === 'string'
+      ? `${eventMessageId}:tool:${callId}`
+      : `${eventMessageId}:content:${typeof contentIndex === 'number' ? contentIndex : 0}`)
     queryClient.setQueryData<MessageWithParts[]>(key, (old = []) => {
       let messages = [...old]; let message = messages.find((m) => m.info.id === messageId)
       if (!message) { message = { info: { id: messageId, sessionID: session, role: 'assistant', time: { created: Date.now() } } as any, parts: [] }; messages.push(message) }
       const parts = [...message.parts]; const at = parts.findIndex((p) => p.id === partId)
       const current = at >= 0 ? parts[at] as any : undefined
-      const kind = inner.type === 'thinking_start' || inner.type === 'thinking_delta' || inner.type === 'thinking_end' ? 'reasoning' : inner.type?.startsWith('toolcall') || inner.type === 'tool_execution_start' || inner.type === 'tool_execution_update' || inner.type === 'tool_execution_end' ? 'tool' : 'text'
+      const kind = inner.type === 'thinking_start' || inner.type === 'thinking_delta' || inner.type === 'thinking_end' ? 'reasoning' : inner.type?.startsWith('toolcall') || executionEvent ? 'tool' : 'text'
       let part: any = current ?? { id: partId, sessionID: session, messageID: messageId, type: kind, ...(kind === 'text' || kind === 'reasoning' ? { text: '' } : { callID: inner.toolCallId ?? inner.id ?? partId, tool: inner.toolName ?? inner.name ?? 'unknown', state: { status: 'pending', input: {}, raw: '' } }) }
       const accumulatedBlock = accumulated.content[typeof contentIndex === 'number' ? contentIndex : 0]
       if (kind === 'tool' && accumulatedBlock?.type === 'toolCall') {
@@ -121,8 +124,8 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
       }
       if (inner.type === 'text_delta' || inner.type === 'thinking_delta') part = { ...part, text: `${part.text ?? ''}${inner.delta ?? ''}` }
       if (inner.type === 'text_end' || inner.type === 'thinking_end') part = { ...part, text: inner.text ?? part.text }
-      if (kind === 'reasoning' && !part.time) part = { ...part, time: { start: message.info.time.created } }
-      if ((inner.type === 'text_end' || inner.type === 'thinking_end') && part.type === 'reasoning') part = { ...part, time: { start: message.info.time.created, end: Date.now() } }
+      if (kind === 'reasoning' && !part.time) part = { ...part, time: { start: Date.now() } }
+      if (inner.type === 'thinking_end' && part.type === 'reasoning') part = { ...part, time: { start: part.time?.start ?? Date.now(), end: Date.now() } }
       if (inner.type === 'toolcall_end') { const call = asObject(inner.toolCall ?? inner); const id = call.id ?? part.callID; part = { ...part, callID: id, tool: call.name ?? part.tool, state: { status: 'pending', input: asObject(call.arguments), raw: JSON.stringify(call.arguments ?? {}) } }; if (typeof id === 'string') toolOwners.current.set(id, { messageId, partId }) }
       if (type === 'tool_execution_start' || inner.type === 'tool_execution_start') part = { ...part, state: { status: 'running', input: asObject(part.state?.input), time: { start: Date.now() } } }
       // Tool output is intentionally not streamed. It can be very large and is
@@ -150,7 +153,7 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
           const value = block.type === 'text' ? block.text : block.type === 'thinking' ? block.thinking : ''
           const next: any = block.type === 'toolCall'
             ? { id, sessionID: session, messageID: messageId, type: 'tool', callID: block.id ?? id, tool: block.name ?? 'unknown', state: { status: 'pending', input: typeof block.arguments === 'string' ? (() => { try { return JSON.parse(block.arguments) } catch { return {} } })() : block.arguments, raw: typeof block.arguments === 'string' ? block.arguments : JSON.stringify(block.arguments) } }
-            : { ...(existingIndex >= 0 ? parts[existingIndex] : {}), id, sessionID: session, messageID: messageId, type: block.type === 'thinking' ? 'reasoning' : 'text', text: value, ...(block.type === 'thinking' ? { time: { start: message.info.time.created, end: Date.now() } } : {}) }
+             : { ...(existingIndex >= 0 ? parts[existingIndex] : {}), id, sessionID: session, messageID: messageId, type: block.type === 'thinking' ? 'reasoning' : 'text', text: value, ...(block.type === 'thinking' ? { time: { start: (existingIndex >= 0 && 'time' in parts[existingIndex] ? (parts[existingIndex] as any).time?.start : undefined) ?? Date.now(), end: Date.now() } } : {}) }
           if (existingIndex >= 0) parts[existingIndex] = next
           else parts.push(next)
         })

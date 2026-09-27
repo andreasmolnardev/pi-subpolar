@@ -702,7 +702,7 @@ describe('MessagePart', () => {
       const part = createReasoningPart()
       render(<MessagePart part={part} />)
       
-      expect(screen.getByText('This is the reasoning text')).toBeInTheDocument()
+      expect(screen.getAllByText('This is the reasoning text')).toHaveLength(2)
       expect(screen.getByText('Thought')).toBeInTheDocument()
       expect(screen.queryByText('Thinking...')).not.toBeInTheDocument()
     })
@@ -721,7 +721,7 @@ describe('MessagePart', () => {
       const part = { ...createReasoningPart(), text: '**Normal thinking** and __more thinking__' }
       render(<MessagePart part={part} />)
 
-      expect(screen.getByText('Normal thinking and more thinking')).toBeInTheDocument()
+      expect(screen.getAllByText('Normal thinking and more thinking')).toHaveLength(2)
       expect(screen.queryByText(/\*\*|__/)).not.toBeInTheDocument()
     })
 

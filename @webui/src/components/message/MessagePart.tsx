@@ -48,7 +48,7 @@ export function ThinkingBlock({ text, active = false, durationSeconds }: { text:
       <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md py-1 text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
         <Brain className="h-4 w-4 shrink-0 text-muted-foreground" />
         <span className="font-medium">{thoughtLabel}</span>
-        {active && plainText && <span className="min-w-0 truncate text-muted-foreground">{plainText}</span>}
+        {plainText && <span className="min-w-0 truncate text-muted-foreground">{plainText}</span>}
         {active && !plainText && <span className="reasoning-text-trail text-muted-foreground">Thinking...</span>}
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
       </summary>
@@ -167,7 +167,7 @@ export const MessagePart = memo(function MessagePart({ part, role, allParts, par
         const durationSeconds = 'time' in part && part.time.end !== undefined
           ? Math.max(0, part.time.end - part.time.start) / 1000
           : undefined
-        return <ThinkingBlock text={part.text || ''} active={isActiveGenerationStep} durationSeconds={durationSeconds} />
+        return <ThinkingBlock text={part.text || ''} active={isActiveGenerationStep && !('time' in part && part.time.end !== undefined)} durationSeconds={durationSeconds} />
       }
     case 'snapshot':
       if (simpleChatMode) return null

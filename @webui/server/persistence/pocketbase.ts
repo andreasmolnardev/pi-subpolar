@@ -19,10 +19,38 @@ const adminEmail = process.env.POCKETBASE_EMAIL ?? ''
 const adminPassword = process.env.POCKETBASE_PASSWORD ?? ''
 
 let adminPromise: Promise<PocketBase> | undefined
+let adminRefreshPromise: Promise<void> | undefined
+let adminClient: PocketBase | undefined
 
 function configure(client: PocketBase): PocketBase {
   client.autoCancellation(false)
+  const send = client.send.bind(client)
+  client.send = (async (path: string, options: Parameters<PocketBase['send']>[1]) => {
+    try {
+      return await send(path, options)
+    } catch (error) {
+      if (client !== adminClient || !isStaleAdminError(error) || path.includes('/auth-')) throw error
+      await refreshAdmin(client, true)
+      return send(path, options)
+    }
+  }) as PocketBase['send']
   return client
+}
+
+function isStaleAdminError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'status' in error && error.status === 403 &&
+    'message' in error && error.message === 'Only superusers can perform this action.')
+}
+
+async function refreshAdmin(client: PocketBase, force = false): Promise<void> {
+  if (!force && client.authStore.isValid && !tokenExpiresSoon(client.authStore.token)) return
+  if (!adminRefreshPromise) {
+    adminRefreshPromise = client.collection('_superusers').authRefresh()
+      .then(() => undefined)
+      .catch(() => authenticateAdmin(client))
+      .finally(() => { adminRefreshPromise = undefined })
+  }
+  await adminRefreshPromise
 }
 
 async function authenticateAdmin(client: PocketBase): Promise<void> {
@@ -50,12 +78,25 @@ async function authenticateAdmin(client: PocketBase): Promise<void> {
 export async function getPocketBaseAdmin(): Promise<PocketBase> {
   if (!adminPromise) {
     const client = configure(new PocketBase(pocketBaseUrl))
+    adminClient = client
     adminPromise = authenticateAdmin(client).then(() => client).catch((error) => {
       adminPromise = undefined
+      adminClient = undefined
       throw error
     })
   }
-  return adminPromise
+  const client = await adminPromise
+  await refreshAdmin(client)
+  return client
+}
+
+function tokenExpiresSoon(token: string): boolean {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()) as { exp?: number }
+    return typeof payload.exp !== 'number' || payload.exp * 1000 < Date.now() + 60_000
+  } catch {
+    return true
+  }
 }
 
 export function getPocketBaseUrl(): string {
@@ -217,6 +258,8 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('prompt', 'text'),
     field('systemPrompt', 'text'),
     field('enabled', 'bool'),
+    field('permission', 'json'),
+    field('toolAccess', 'json'),
     field('template', 'select', { values: ['general', 'coding', 'plan', 'reviewer'], maxSelect: 1 }),
     field('model', 'text'),
     field('thinking', 'select', { values: ['off', 'minimal', 'low', 'medium', 'high'], maxSelect: 1 }),

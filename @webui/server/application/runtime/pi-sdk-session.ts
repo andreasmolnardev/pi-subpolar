@@ -207,7 +207,8 @@ export class PiSdkSession<TClient = unknown> {
       // The routing extension replaces the SDK's same-named built-ins. Keeping
       // the allowlist explicit prevents unrelated SDK tools from appearing.
       tools: [...runtime.pi.allowedToolNames],
-      noTools: 'all',
+      // Disable SDK built-ins, but retain policy-allowed extension tools.
+      noTools: 'builtin',
     })
     this.session = result.session
     this.session.subscribe((event) => this.handle(event))

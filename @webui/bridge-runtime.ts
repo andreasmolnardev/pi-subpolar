@@ -257,6 +257,7 @@ async function applicationDatabase() {
     })
   }
   const client = await applicationDatabasePromise
+  await getPocketBaseAdmin()
   if (!applicationCollectionsReady) {
     applicationCollectionsReady = ensureApplicationCollections(client)
       .then(() => ensureProjectSessionCollections(client))
