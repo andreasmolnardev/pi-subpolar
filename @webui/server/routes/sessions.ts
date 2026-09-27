@@ -106,7 +106,7 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
         ? input.thinking
         : null
     if (thinking === null) return deps.json({ error: 'Invalid thinking level', code: 'NEW_SESSION_INVALID_THINKING' }, 400)
-    const requestedPermission = input.permission === undefined ? 'ask'
+    const requestedPermission = input.permission === undefined ? undefined
       : input.permission === 'ask' || input.permission === 'none' || input.permission === 'allow_all' ? input.permission : null
     if (requestedPermission === null) return deps.json({ error: 'Invalid permission override', code: 'NEW_SESSION_INVALID_PERMISSION' }, 400)
     const preferences = await deps.getUserPreferences(client, authenticatedUser!.id)
@@ -164,7 +164,7 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
     }
     deps.sessions.push(record)
     await deps.saveState(record)
-    deps.rpcSession(record.id, record.userId!, record, project, record.profile ?? 'master', record.permissionOverride ?? 'ask')
+    deps.rpcSession(record.id, record.userId!, record, project, record.profile ?? 'master', record.permissionOverride)
     return deps.json({ session: deps.storedSessionResponse(record, ownedProjects) }, 201)
   }
 

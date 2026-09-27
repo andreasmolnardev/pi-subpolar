@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { agentTemplateDefaults, canonicalToolId, executeCliTool, manageAgentProfile, manageRegisteredTool, requiresManualApproval, validateToolDefinition } from '../application/tools/tools.ts'
+import { agentTemplateDefaults, canonicalToolId, executeCliTool, manageAgentProfile, manageRegisteredTool, requiresManualApproval, shouldRequireAgentToolApproval, validateToolDefinition } from '../application/tools/tools.ts'
 
 const definition = (overrides: Record<string, unknown> = {}) => ({
   tool_id: 'acme/read', namespace: 'acme', description: 'Read data', adapter: 'openapi' as const,
@@ -18,6 +18,16 @@ describe('secure tool registry validation', () => {
     expect(canonicalToolId('read', 'openapi', 'acme')).toBe('acme/read')
     expect(() => validateToolDefinition(definition({ tool_id: 'acme/read-now', operation: 'Read now' }))).toThrow()
     expect(() => validateToolDefinition(definition({ namespace: 'Acme' }))).toThrow()
+  })
+
+  it('inherits agent ask defaults but honors explicit session permission modes', () => {
+    expect(shouldRequireAgentToolApproval({ manualApproval: false, toolRequiresApproval: false, explicitlyAllowed: true, explicitlyRequiresApproval: false, approvalMode: 'ask' })).toBe(false)
+    expect(shouldRequireAgentToolApproval({ manualApproval: false, toolRequiresApproval: false, explicitlyAllowed: true, explicitlyRequiresApproval: false, approvalMode: 'ask', permissionOverride: 'ask' })).toBe(true)
+    expect(shouldRequireAgentToolApproval({ manualApproval: false, toolRequiresApproval: false, explicitlyAllowed: false, explicitlyRequiresApproval: false, approvalMode: 'ask' })).toBe(true)
+    expect(shouldRequireAgentToolApproval({ manualApproval: false, toolRequiresApproval: false, explicitlyAllowed: true, explicitlyRequiresApproval: true, approvalMode: 'ask' })).toBe(true)
+    expect(shouldRequireAgentToolApproval({ manualApproval: false, toolRequiresApproval: false, explicitlyAllowed: true, explicitlyRequiresApproval: false, approvalMode: 'auto' })).toBe(false)
+    expect(shouldRequireAgentToolApproval({ manualApproval: false, toolRequiresApproval: true, explicitlyAllowed: true, explicitlyRequiresApproval: true, approvalMode: 'ask', permissionOverride: 'allow_all' })).toBe(false)
+    expect(shouldRequireAgentToolApproval({ manualApproval: true, toolRequiresApproval: false, explicitlyAllowed: true, explicitlyRequiresApproval: false, approvalMode: 'auto', permissionOverride: 'allow_all' })).toBe(true)
   })
 
   it('rejects unsupported risk and non-object schemas', () => {

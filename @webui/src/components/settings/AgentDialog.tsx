@@ -609,6 +609,7 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
                       <Select value={selectedTool.permission} onValueChange={(value) => updateSelectedTool({ permission: value as 'allow' | 'ask' | 'deny' | 'auto' })}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
+                          <SelectItem value="allow">Default Permissions</SelectItem>
                           <SelectItem value="auto">Auto approval</SelectItem>
                           <SelectItem value="ask">Manual approval</SelectItem>
                           <SelectItem value="deny">Deny</SelectItem>

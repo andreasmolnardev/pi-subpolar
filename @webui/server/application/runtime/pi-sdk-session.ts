@@ -48,7 +48,7 @@ export type SessionModelSelection = { providerID: string; modelID: string }
 
 export type PiSessionContext = {
   agentName: string
-  permissionOverride: PermissionOverride
+  permissionOverride?: PermissionOverride
   session?: {
     project?: string
     permissionOverride?: PermissionOverride
@@ -65,7 +65,7 @@ export type PiSdkSessionHost<TClient = unknown> = {
   loadRuntime: (client: TClient, userId: string, context: PiSessionContext) => Promise<PiSessionRuntime>
   getProviderRuntime: (userId: string) => Promise<ProviderRuntime>
   createRoutingExtension: (context: PiRoutingExtensionContext) => ExtensionFactory
-  createToolGateway: (client: TClient, context?: { userId: string; agentName: string; sessionId: string; cwd: string; permissionOverride: PermissionOverride; capabilities?: readonly string[] }) => Promise<ToolGateway>
+  createToolGateway: (client: TClient, context?: { userId: string; agentName: string; sessionId: string; cwd: string; permissionOverride?: PermissionOverride; capabilities?: readonly string[] }) => Promise<ToolGateway>
   listTools: (client: TClient, userId: string, agentName: string, project?: string) => Promise<unknown>
   searchTools: (client: TClient, userId: string, agentName: string, query: string) => Promise<unknown>
   describeTool: (client: TClient, userId: string, agentName: string, toolId: string) => Promise<unknown>
@@ -125,7 +125,7 @@ export class PiSdkSession<TClient = unknown> {
   private readonly ready: Promise<void>
   private transcriptWrite: Promise<void> = Promise.resolve()
   private runtimeAgentName: string
-  private runtimePermissionOverride: PermissionOverride
+  private runtimePermissionOverride?: PermissionOverride
   private generationStatus: 'busy' | 'idle' = 'idle'
   private session!: AgentSession
   private modelRuntime!: ProviderRuntime
@@ -139,7 +139,7 @@ export class PiSdkSession<TClient = unknown> {
     },
   ) {
     this.runtimeAgentName = record.profile ?? 'master'
-    this.runtimePermissionOverride = record.permissionOverride ?? 'ask'
+    this.runtimePermissionOverride = record.permissionOverride
     this.ready = this.initialize()
   }
 

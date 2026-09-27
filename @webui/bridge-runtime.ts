@@ -1029,7 +1029,7 @@ const piSdkSessionHost: PiSdkSessionHost<BridgeClient> = {
     const context = await resolveToolSessionContext(client, userId, sessionId)
     return {
       agentName: context.agentName,
-      permissionOverride: context.permissionOverride,
+      ...(context.permission.source === 'default' ? {} : { permissionOverride: context.permissionOverride }),
       session: context.session
         ? { project: context.session.project, permissionOverride: context.session.permissionOverride }
         : undefined,
@@ -1346,7 +1346,7 @@ async function sendRpc(id: string, command: RpcCommand, owner: SessionRecord): P
   owner.permissionOverride = context.session?.permissionOverride
   const project = await ownedSessionProject(client, userId, owner)
   if (!project) throw new Error('Session project is unavailable')
-  const session = rpcSession(id, userId, owner, project, context.agentName, context.permissionOverride)
+  const session = rpcSession(id, userId, owner, project, context.agentName, context.permission.source === 'default' ? undefined : context.permissionOverride)
   const result = await session.send(command) as RpcMessage
   const record = session.record
   record.updatedAt = Date.now()
@@ -1407,7 +1407,7 @@ async function runStatelessPrompt(input: StatelessWebUiRunInput, owner: SessionR
         cwd: context.session?.directory ?? sessionProject.path,
         metadata: {
           agentName: context.agent.name,
-          permissionOverride: context.permissionOverride,
+          ...(context.permission.source === 'default' ? {} : { permissionOverride: context.permissionOverride }),
           ...(input.metadata?.capabilities ? { capabilities: input.metadata.capabilities } : {}),
         },
       }
@@ -1415,7 +1415,7 @@ async function runStatelessPrompt(input: StatelessWebUiRunInput, owner: SessionR
     execute: async (execution: RuntimeExecution) => {
       const context = await resolveToolSessionContext(client, ownerId, input.sessionId)
       const sessionProject = context.project as Project
-      const session = rpcSession(input.sessionId, ownerId, owner, sessionProject ?? project, context.agentName, context.permissionOverride)
+      const session = rpcSession(input.sessionId, ownerId, owner, sessionProject ?? project, context.agentName, context.permission.source === 'default' ? undefined : context.permissionOverride)
       await session.readyPromise
       const piRunPort = createPiRunPort(async (_config, adapterRequest) => {
         const prompt = adapterRequest?.prompt ?? execution.request.prompt

@@ -381,6 +381,21 @@ export function requiresManualApproval(toolId: string, target: string): boolean 
   return manualApprovalToolTargets.has(target) || toolManagementTools.has(toolId) || cliManagementTools.has(toolId)
 }
 
+export function shouldRequireAgentToolApproval(input: {
+  manualApproval: boolean
+  toolRequiresApproval: boolean
+  explicitlyAllowed: boolean
+  explicitlyRequiresApproval: boolean
+  approvalMode: AgentApprovalMode
+  permissionOverride?: PermissionOverride
+}): boolean {
+  if (input.manualApproval) return true
+  if (input.permissionOverride === 'allow_all') return false
+  if (input.toolRequiresApproval || input.explicitlyRequiresApproval) return true
+  if (input.permissionOverride === 'ask') return true
+  return !input.explicitlyAllowed && input.approvalMode === 'ask'
+}
+
 const registryName = /^[a-z][a-z0-9._-]{0,63}$/
 const registryOperation = /^[a-z][a-z0-9._:-]{0,127}$/
 const registryAdapters = new Set<ToolAdapter>(['internal', 'http', 'openapi', 'mcp'])
@@ -1057,10 +1072,19 @@ export async function createCoreToolGateway(client: PocketBase, ownerId: string,
     if (definition.id.startsWith('memory/') && !memoryPolicyAllows(effective, definition.id)) return { deny: true, reason: 'Memory is disabled for this agent' }
     if (definition.id.startsWith('browser/') && (effective.policies.browser !== true || (browserMutationGroups.has(String(webTool.metadata.policyGroup)) && !browserProfileAllows(String(webTool.metadata.policyGroup), agent.template === 'plan' || agent.template === 'reviewer')))) return { deny: true, reason: 'Browser capability is not allowed for this agent' }
     if (memoryMutationTools.has(definition.id) && (agent.template === 'plan' || agent.template === 'reviewer')) return { deny: true, reason: 'This agent profile is query-only for memory' }
-    const explicitlyAllowed = matching.some((item) => item.effect === 'allow' || item.effect === 'approval') || profileEffect === 'allow' || profileEffect === 'approval'
-    if (override !== 'allow_all' && !explicitlyAllowed && agent.name !== 'master' && !matching.some((item) => item.tool_id === generatedSkillName(definition.id))) return { deny: true, reason: `Agent is not allowed to use ${definition.id}` }
+    const explicitlyPermitted = matching.some((item) => item.effect === 'allow' || item.effect === 'approval') || profileEffect === 'allow' || profileEffect === 'approval'
+    if (override !== 'allow_all' && !explicitlyPermitted && agent.name !== 'master' && !matching.some((item) => item.tool_id === generatedSkillName(definition.id))) return { deny: true, reason: `Agent is not allowed to use ${definition.id}` }
     const masterWebSearch = agent.name === 'master' && definition.id === 'web.search'
-    const needsApproval = !masterWebSearch && (requiresManualApproval(definition.id, webTool.target) || effective.approval_mode === 'ask' || override === 'ask' || (override !== 'allow_all' && (webTool.requires_approval || matching.some((item) => item.effect === 'approval') || profileEffect === 'approval')))
+    const explicitlyAllowed = matching.some((item) => item.effect === 'allow') || profileEffect === 'allow'
+    const explicitlyRequiresApproval = matching.some((item) => item.effect === 'approval') || profileEffect === 'approval'
+    const needsApproval = !masterWebSearch && shouldRequireAgentToolApproval({
+      manualApproval: requiresManualApproval(definition.id, webTool.target),
+      toolRequiresApproval: webTool.requires_approval,
+      explicitlyAllowed,
+      explicitlyRequiresApproval,
+      approvalMode: effective.approval_mode,
+      permissionOverride: override,
+    })
     return needsApproval ? { requiresApproval: true, allow: true, reason: `${definition.id} requires approval` } : { allow: true }
   }
   const execute: ToolExecutor = async (call, definition, context) => {
