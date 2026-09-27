@@ -68,7 +68,7 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
   }
   let assistantGroup: AssistantGroup | undefined
 
-  const projectAssistantParts = (message: Obj, messageId: string, created: number): Obj[] => {
+  const projectAssistantParts = (message: Obj, messageId: string, created: number, completed: number): Obj[] => {
     const parts: Obj[] = []
     const content = Array.isArray(message.content) ? message.content : []
     content.forEach((raw: unknown, index: number) => {
@@ -76,7 +76,10 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
       if (block.type === 'text' && typeof block.text === 'string') {
         parts.push({ id: partId, sessionID: sessionId, messageID: assistantGroup?.id ?? messageId, type: 'text', text: redactSensitiveText(block.text) })
       } else if ((block.type === 'thinking' || block.type === 'reasoning') && typeof (block.thinking ?? block.text) === 'string') {
-        parts.push({ id: partId, sessionID: sessionId, messageID: assistantGroup?.id ?? messageId, type: 'reasoning', text: redactSensitiveText(block.thinking ?? block.text), time: { start: created, end: created } })
+        const blockTime = obj(block.time)
+        const start = timestampOf(blockTime.start ?? block.startTime) ?? created
+        const end = timestampOf(blockTime.end ?? block.endTime) ?? completed
+        parts.push({ id: partId, sessionID: sessionId, messageID: assistantGroup?.id ?? messageId, type: 'reasoning', text: redactSensitiveText(block.thinking ?? block.text), time: { start, end } })
       } else if (block.type === 'toolCall') {
         const callID = typeof block.id === 'string' ? block.id : `${messageId}:tool:${index}`
         const input = argumentsOf(block.arguments)
@@ -117,6 +120,8 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
     if (role !== 'assistant') return
 
     const metadata = redactSensitive(obj(message.metadata)) as Obj
+    const metadataCompleted = timestampOf(metadata.completedAt)
+    const completed = timestampOf(message.completedAt) ?? metadataCompleted ?? entryTimestamp ?? created
     if (!assistantGroup) {
       assistantGroup = {
         id, created, completed: created, info: { id, sessionID: sessionId, role, time: { created } }, parts: [],
@@ -124,8 +129,6 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
       }
     }
     assistantGroup.info = { ...assistantGroup.info, ...metadata }
-    const metadataCompleted = timestampOf(metadata.completedAt)
-    const completed = timestampOf(message.completedAt) ?? metadataCompleted ?? entryTimestamp ?? created
     assistantGroup.completed = Math.max(assistantGroup.completed, completed)
     if (message.modelID) assistantGroup.info.modelID = message.modelID
     if (message.providerID) assistantGroup.info.providerID = message.providerID
@@ -137,7 +140,7 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
     assistantGroup.tokens.reasoning += typeof usage.reasoning === 'number' ? usage.reasoning : 0
     assistantGroup.tokens.cacheRead += typeof usage.cacheRead === 'number' ? usage.cacheRead : typeof cache.read === 'number' ? cache.read : 0
     assistantGroup.tokens.cacheWrite += typeof usage.cacheWrite === 'number' ? usage.cacheWrite : typeof cache.write === 'number' ? cache.write : 0
-    assistantGroup.parts.push(...projectAssistantParts(message, id, created))
+    assistantGroup.parts.push(...projectAssistantParts(message, id, created, completed))
     assistantGroup.info.time = { created: assistantGroup.created, completed: assistantGroup.completed }
   })
 

@@ -703,7 +703,7 @@ describe('MessagePart', () => {
       render(<MessagePart part={part} />)
       
       expect(screen.getByText('This is the reasoning text')).toBeInTheDocument()
-      expect(screen.getByText('Thinking')).toBeInTheDocument()
+      expect(screen.getByText('Thought')).toBeInTheDocument()
       expect(screen.queryByText('Thinking...')).not.toBeInTheDocument()
     })
 
@@ -760,6 +760,23 @@ describe('MessagePart', () => {
 
       expect(screen.getByText('Thought for 2.8s')).toBeInTheDocument()
       expect(screen.queryByText('Thinking')).not.toBeInTheDocument()
+    })
+
+    it('does not display a misleading zero duration when timing is unavailable', () => {
+      setupSettings({
+        simpleChatMode: false,
+        showReasoning: true,
+        expandToolCalls: false,
+        expandDiffs: true,
+        autoScroll: true,
+        theme: 'dark',
+        mode: 'build',
+      })
+
+      render(<MessagePart part={{ ...createReasoningPart(), time: { start: 1000, end: 1000 } }} />)
+
+      expect(screen.getByText('Thought')).toBeInTheDocument()
+      expect(screen.queryByText(/Thought for 0/)).not.toBeInTheDocument()
     })
   })
 

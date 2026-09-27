@@ -202,6 +202,10 @@ export function formatSentTimestamp(timestamp: number, now = new Date()): string
   return `${messageDate.toLocaleDateString(undefined, { dateStyle: 'medium' })} ${time}`
 }
 
+export function shouldShowSentTimestamp(messageTimestamp: number, previousMessageTimestamp?: number): boolean {
+  return previousMessageTimestamp === undefined || messageTimestamp - previousMessageTimestamp > 30 * 60 * 1000
+}
+
 const isWaitingForAssistant = (messages: MessageWithParts[], pendingAssistantId: string | undefined): boolean => {
   if (pendingAssistantId) return false
 
@@ -690,8 +694,11 @@ export const MessageThread = memo(function MessageThread({
             {new Date(sessionStartedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
           </div>
         )}
-        {msgWithParts.info.role === 'user' && msgWithParts.info.time && (
-          <div className="w-full pb-1 text-center text-xs text-muted-foreground">
+        {msgWithParts.info.role === 'user' && msgWithParts.info.time && shouldShowSentTimestamp(
+          msgWithParts.info.time.created,
+          messageIndex > 0 ? messages[messageIndex - 1].info.time?.created : undefined,
+        ) && (
+          <div className="w-full pb-2 text-center text-xs text-muted-foreground">
             {formatSentTimestamp(msgWithParts.info.time.created)}
           </div>
         )}

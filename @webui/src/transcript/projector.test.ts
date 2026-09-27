@@ -21,6 +21,21 @@ describe('Pi transcript projector', () => {
     expect(parts[1].type).toBe('text')
   })
 
+  it('preserves completed assistant timing for historical thinking parts', () => {
+    const entries = [
+      entry('u', undefined, { role: 'user', content: 'think' }),
+      entry('a', 'u', {
+        role: 'assistant',
+        timestamp: 1000,
+        completedAt: 3900,
+        content: [{ type: 'thinking', thinking: 'Checking the result' }],
+      }),
+    ]
+
+    const reasoning = projectEntries(entries, 'a', 's')[1].parts[0]
+    expect(reasoning).toMatchObject({ type: 'reasoning', time: { start: 1000, end: 3900 } })
+  })
+
   it('uses the persisted entry timestamp as assistant completion time', () => {
     const entries = [
       entry('u', undefined, { role: 'user', content: 'go' }),

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { formatSentTimestamp, MessageThread } from './MessageThread'
+import { formatSentTimestamp, MessageThread, shouldShowSentTimestamp } from './MessageThread'
 import { useUIState } from '@/stores/uiStateStore'
 
 const mocks = vi.hoisted(() => ({
@@ -496,6 +496,13 @@ describe('MessageThread', () => {
     expect(formatSentTimestamp(at(1), now)).toBe('Yesterday 11:08 AM')
     expect(formatSentTimestamp(at(3), now)).toBe('Wednesday 11:08 AM')
     expect(formatSentTimestamp(at(8), now)).toBe('Sep 18, 2026 11:08 AM')
+  })
+
+  it('shows sent-time labels only after gaps greater than 30 minutes', () => {
+    const sentAt = 1_000_000
+    expect(shouldShowSentTimestamp(sentAt)).toBe(true)
+    expect(shouldShowSentTimestamp(sentAt, sentAt - 30 * 60 * 1000)).toBe(false)
+    expect(shouldShowSentTimestamp(sentAt, sentAt - 30 * 60 * 1000 - 1)).toBe(true)
   })
 
   it('keeps global editing state active when edit textarea blurs', () => {

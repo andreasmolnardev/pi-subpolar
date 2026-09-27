@@ -38,13 +38,16 @@ interface AssistantMetadata {
 
 export function ThinkingBlock({ text, active = false, durationSeconds }: { text: string; active?: boolean; durationSeconds?: number }) {
   const plainText = normalizeThinkingText(text)
+  const thoughtLabel = active
+    ? 'Thinking'
+    : durationSeconds !== undefined && durationSeconds > 0
+      ? `Thought for ${durationSeconds < 0.05 ? '<0.1' : durationSeconds.toFixed(1)}s`
+      : 'Thought'
   return (
     <details open={false} className="group my-2 text-sm text-muted-foreground">
       <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md py-1 text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
         <Brain className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="font-medium">
-          {!active && durationSeconds !== undefined ? `Thought for ${durationSeconds.toFixed(1)}s` : 'Thinking'}
-        </span>
+        <span className="font-medium">{thoughtLabel}</span>
         {active && plainText && <span className="min-w-0 truncate text-muted-foreground">{plainText}</span>}
         {active && !plainText && <span className="reasoning-text-trail text-muted-foreground">Thinking...</span>}
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
