@@ -72,7 +72,7 @@ export function NewSession() {
   const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: listProjects })
   const providersQuery = useQuery({ queryKey: ['subpolar', 'providers', 'new-session'], queryFn: () => getProviders(), staleTime: 30000 })
   const [projectId, setProjectId] = useState<string>()
-  const [agentName, setAgentName] = useState<string>()
+  const [agentName, setAgentName] = useState<string | undefined>(route.agentName)
   const [permission, setPermission] = useState<string>()
   const [model, setModel] = useState('__auto__')
   const [variant, setVariant] = useState('')
@@ -87,11 +87,17 @@ export function NewSession() {
   }, [])
 
   useEffect(() => {
+    setAgentName(route.agentName)
+    setCustomized(Boolean(route.agentName))
+    setHoveringCustomize(Boolean(route.agentName))
+  }, [route.agentName])
+
+  useEffect(() => {
     const context = contextQuery.data
     if (!context || customized) return
     setProjectId(String(context.project.id))
     setAgentName(route.agentName ? context.agent.name : undefined)
-    setPermission(context.defaults.permission)
+    setPermission('default')
     setModel(context.defaults.model ?? preferences?.defaultModel ?? '__auto__')
   }, [contextQuery.data, customized, preferences?.defaultModel, route.agentName])
 
@@ -127,7 +133,7 @@ export function NewSession() {
   if (contextQuery.isError || !contextQuery.data) return <NewSessionError error={contextQuery.error} />
 
   const context = contextQuery.data
-  const selectedPermission = permission ?? context.defaults.permission
+  const selectedPermission = permission ?? 'default'
   const controlsVisible = customized || hoveringCustomize || controlsPinned
   const cancelCustomizationHide = () => {
     if (customizationHideTimerRef.current) {
@@ -280,7 +286,7 @@ export function NewSession() {
             defaultProjectId={String(context.project.id)}
             defaultAgent="__default__"
             defaultModel={model}
-            defaultPermission={context.defaults.permission}
+            defaultPermission="default"
             projectId={resolvedProjectId}
             agent={agentName}
             permission={selectedPermission}

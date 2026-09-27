@@ -8,7 +8,10 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
   if (path[1] === 'settings' && path[2] === 'agents' && path[3] && path[4] === 'tool-policies' && authenticatedUser) {
     try {
       const client = await deps.applicationDatabase()
-      const agent = await client.collection('agents').getOne(decodeURIComponent(path[3])).catch(() => null)
+      const identifier = decodeURIComponent(path[3])
+      const safeIdentifier = identifier.replaceAll('"', '\\"')
+      const safeUserId = authenticatedUser.id.replaceAll('"', '\\"')
+      const agent = await client.collection('agents').getFirstListItem(`user_id = "${safeUserId}" && (id = "${safeIdentifier}" || name = "${safeIdentifier}")`).catch(() => null)
       if (!agent || agent.user_id !== authenticatedUser.id) return deps.json({ message: 'Agent not found' }, 404)
       const filter = `user_id = "${authenticatedUser.id.replaceAll('"', '\\"')}" && agent_id = "${agent.id.replaceAll('"', '\\"')}"`
       if (request.method === 'GET') {
@@ -34,6 +37,30 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
     } catch (error) {
       console.warn(`Agent policy request failed: ${deps.redactedDiagnostic(error)}`)
       return deps.json({ message: 'Agent policy store unavailable' }, 503)
+    }
+  }
+
+  if (path[1] === 'settings' && path[2] === 'subpolar-tools' && request.method === 'GET') {
+    if (!authenticatedUser) return deps.json({ message: 'Unauthorized' }, 401)
+    try {
+      const client = await deps.applicationDatabase()
+      const userId = authenticatedUser.id.replaceAll('"', '\\"')
+      const tools = await client.collection('tool_registry').getFullList({ filter: `enabled = true && (owner_id = "" || owner_id = "${userId}")`, sort: 'namespace,tool_id' })
+      const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${userId}" && effect != "deny"` }).catch(() => [])
+      const policyToolIds = new Set(policies.map((policy) => String(policy.tool_id)))
+      return deps.json({ tools: tools.map((tool) => ({
+        tool_id: tool.tool_id,
+        namespace: tool.namespace,
+        adapter: tool.adapter,
+        description: tool.description ?? '',
+        input_schema: tool.input_schema ?? {},
+        risk: tool.risk ?? 'read',
+        requires_approval: tool.requires_approval === true,
+        metadata: tool.metadata ?? {},
+      })).filter((tool) => tool.namespace === 'builtin' || policyToolIds.has(tool.tool_id)) })
+    } catch (error) {
+      console.warn(`Subpolar tool listing failed: ${deps.redactedDiagnostic(error)}`)
+      return deps.json({ message: 'Tool registry unavailable' }, 503)
     }
   }
 

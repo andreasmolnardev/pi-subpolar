@@ -131,8 +131,8 @@ export async function handleProvidersRoute(context: BridgeRequestContext): Promi
         const forceRefresh = query.get('force') === 'true' || query.get('force') === '1'
         const accounts = await accountService.listAccounts(userId)
         // Use the global catalog here so unconfigured providers remain visible
-        // and users can start a login flow. The account records are still
-        // scoped to this user and are the only account instances returned.
+        // and users can start a login flow. Keep the runtime instance as well so
+        // providers configured through the runtime still expose their models.
         const runtime = await deps.modelRuntimePromise
 
         if (shouldRefresh) {
@@ -151,7 +151,7 @@ export async function handleProvidersRoute(context: BridgeRequestContext): Promi
 
         const catalog = await deps.createProviderCatalogAsync(runtime, {
           accounts: accounts.map(deps.providerCatalogAccount),
-          includeRuntimeInstance: false,
+          includeRuntimeInstance: true,
           signal: AbortSignal.timeout(15_000),
         })
         return deps.json({ catalog })

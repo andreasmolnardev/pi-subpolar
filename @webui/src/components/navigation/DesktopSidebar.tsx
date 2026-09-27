@@ -215,6 +215,7 @@ interface Agent {
   allowedCommands?: string[];
   toolAccess?: Array<{ type: "builtin" | "skill" | "cli" | "subpolar"; id: string; permission: "allow" | "ask" | "deny" | "auto"; command?: string }>;
   disable?: boolean;
+  skillAccess?: Array<{ id: string; discovery: "full" | "description" | "name" | "search"; source?: "manual" | "tool-default" | "project-auto" }>;
   [key: string]: unknown;
 }
 
@@ -318,6 +319,11 @@ export function DesktopSidebar() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const { data: agentRecords = [] } = useQuery({
+    queryKey: ["agents"],
+    queryFn: () => settingsApi.listAgents(),
+  });
+
   const defaultConfig = configs?.defaultConfig;
   const rawContent = defaultConfig?.rawContent;
   const parsedConfig = rawContent ? tryParseJson(rawContent) : null;
@@ -339,59 +345,69 @@ export function DesktopSidebar() {
     },
   });
 
-  const updateConfigMutation = useMutation({
-    mutationFn: async ({ agents, changedAgent }: { agents: Record<string, Agent>; changedAgent?: { name: string; agent: Agent } }) => {
-      if (!defaultConfig) throw new Error("No default config found");
-      const updatedContent = { ...parsedConfig, agent: agents };
-      await settingsApi.updatePiConfig("default", {
-        content: JSON.stringify(updatedContent, null, 2),
-      });
-      if (changedAgent) {
-        await settingsApi.replaceAgentToolPolicies(changedAgent.name, subpolarPolicies(changedAgent.agent));
-      }
-      return { success: true };
+  const saveAgentMutation = useMutation({
+    mutationFn: async ({ name, agent, existing }: { name: string; agent: Agent; existing?: Agent }) => {
+      const request = {
+        name,
+        description: agent.description || "",
+        mode: agent.mode === "subagent" ? "subagent" as const : "primary" as const,
+        prompt: agent.prompt || "",
+        systemPrompt: agent.systemPrompt || "",
+        enabled: !agent.disable,
+        icon: agent.icon,
+        skills: agent.skills || [],
+        skillAccess: agent.skillAccess || [],
+        allowedCommands: agent.allowedCommands || [],
+        toolAccess: agent.toolAccess || [],
+        permission: agent.permission || {},
+        template: agent.template,
+        model: agent.model || "",
+        thinking: agent.thinking || "medium",
+        approval_mode: agent.approval_mode || "ask",
+        tool_context_modes: agent.tool_context_modes || {},
+        skill_context_modes: agent.skill_context_modes || {},
+        project_overrides: agent.project_overrides || {},
+      };
+      const saved = existing?.id
+        ? await settingsApi.updateAgent(existing.id, request)
+        : await settingsApi.createAgent(request);
+      await settingsApi.replaceAgentToolPolicies(saved.id, subpolarPolicies(agent));
+      return saved;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["subpolar-configs"] });
-      queryClient.invalidateQueries({
-      queryKey: ["subpolar", "agents", SUBPOLAR_API_BASE_URL, generalChatDirectory],
-      });
-      queryClient.invalidateQueries({ queryKey: ["agent-tool-policies"] });
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agents"] }),
+        queryClient.invalidateQueries({ queryKey: ["subpolar", "agents", SUBPOLAR_API_BASE_URL, generalChatDirectory] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-tool-policies"] }),
+      ]);
     },
+    onError: (error) => showToast.error(error instanceof Error ? error.message : "Failed to save agent"),
   });
 
-  const handleCreateAgent = (name: string, agent: Agent) => {
-    const updatedAgents = { ...(parsedConfig?.agent as Record<string, Agent> || {}), [name]: agent };
-    updateConfigMutation.mutate({ agents: updatedAgents, changedAgent: { name, agent } }, {
-      onSuccess: () => {
-        setIsCreateAgentDialogOpen(false);
-      },
-    });
+  const handleCreateAgent = async (name: string, agent: Agent) => {
+    await saveAgentMutation.mutateAsync({ name, agent });
+    setIsCreateAgentDialogOpen(false);
   };
 
-  const handleSaveAgent = (name: string, agent: Agent) => {
-    if (!editingAgent) {
-      handleCreateAgent(name, agent);
-      return;
-    }
-
-    const currentAgents = { ...(parsedConfig?.agent as Record<string, Agent> || {}) };
-    if (editingAgent.name !== name) {
-      delete currentAgents[editingAgent.name];
-    }
-    const updatedAgents = { ...currentAgents, [name]: { ...currentAgents[name], ...agent } };
-    updateConfigMutation.mutate({ agents: updatedAgents, changedAgent: { name, agent } }, {
-      onSuccess: () => {
-        setEditingAgent(null);
-      },
-    });
+  const handleSaveAgent = async (name: string, agent: Agent) => {
+    const existing = agentRecords.find((record) => record.name === editingAgent?.name);
+    if (!existing) throw new Error("Agent no longer exists");
+    await saveAgentMutation.mutateAsync({ name, agent, existing: { ...agent, id: existing.id } });
+    setEditingAgent(null);
   };
 
-  const handleDeleteAgent = (name: string) => {
-    if (!defaultConfig) return;
-    const updatedAgents = { ...(parsedConfig?.agent as Record<string, Agent> || {}) };
-    delete updatedAgents[name];
-    updateConfigMutation.mutate({ agents: updatedAgents });
+  const handleDeleteAgent = async (name: string) => {
+    const existing = agentRecords.find((record) => record.name === name);
+    if (!existing) return;
+    try {
+      await settingsApi.deleteAgent(existing.id);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agents"] }),
+        queryClient.invalidateQueries({ queryKey: ["subpolar", "agents", SUBPOLAR_API_BASE_URL, generalChatDirectory] }),
+      ]);
+    } catch (error) {
+      showToast.error(error instanceof Error ? error.message : "Failed to delete agent");
+    }
   };
 
   if (isLoading || !isAuthenticated) {
@@ -512,7 +528,7 @@ export function DesktopSidebar() {
               </button>
             }
           >
-{visibleProjectAgents.map((agent) => {
+            {visibleProjectAgents.map((agent) => {
                const name = agent.name;
                const configuredAgent = (parsedConfig?.agent as Record<string, Agent> | undefined)?.[name];
                const editableAgent: Agent = {
@@ -521,6 +537,7 @@ export function DesktopSidebar() {
                  mode: agent.mode,
                  model: agent.model ? `${agent.model.providerID}/${agent.model.modelID}` : undefined,
                  ...configuredAgent,
+                 id: agentRecords.find((record) => record.name === name)?.id,
                };
                return (
                  <SidebarAgentItem

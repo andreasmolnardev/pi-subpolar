@@ -261,6 +261,13 @@ describe('provider selection and catalog sanitization', () => {
     expect(parseModelSelection('%ZZ/model')).toBeUndefined()
   })
 
+  it('includes the runtime instance and its models by default', () => {
+    const catalog = createProviderCatalog(catalogRuntime())
+
+    expect(catalog.providers[0]?.instances.map((item) => item.instanceId)).toEqual(['same-provider'])
+    expect(catalog.models.map((model) => model.id)).toEqual(['same-provider/models%2Fgpt-4o'])
+  })
+
   it('builds separate sanitized instances and models without provider secrets', () => {
     const secret = 'catalog-provider-secret'
     const catalog = createProviderCatalog(catalogRuntime(), {

@@ -107,6 +107,38 @@ describe('resolveNewSessionRoute', () => {
     await expect(response?.json()).resolves.toMatchObject({ preferences: { theme: 'dark' } })
   })
 
+  it('lists built-in and agent-authorized tools for agent configuration', async () => {
+    const url = new URL('http://localhost/api/settings/subpolar-tools')
+    const response = await handleSettingsRoute({
+      request: new Request(url.href),
+      url,
+      path: ['api', 'settings', 'subpolar-tools'],
+      correlationId: 'test-request',
+      authenticatedUser: { id: 'owner-a' },
+      gatewayCredential: null,
+      internalRequest: false,
+      deps: {
+        applicationDatabase: async () => ({
+          collection: (name: string) => ({
+            getFullList: async () => name === 'tool_registry'
+              ? [
+                  { tool_id: 'read', namespace: 'builtin', enabled: true },
+                  { tool_id: 'acme/search', namespace: 'acme', enabled: true },
+                  { tool_id: 'other/private', namespace: 'other', enabled: true },
+                ]
+              : [{ tool_id: 'acme/search', effect: 'allow' }],
+          }),
+        }),
+        json: (body: unknown, status = 200) => Response.json(body, { status }),
+        redactedDiagnostic: () => 'error',
+      },
+    } as never)
+
+    await expect(response?.json()).resolves.toMatchObject({
+      tools: [{ tool_id: 'read' }, { tool_id: 'acme/search' }],
+    })
+  })
+
   it('resolves General Chat to the default agent', () => {
     expect(resolveNewSessionRoute({ projects, agents })).toMatchObject({
       project: { name: 'General Chat' },
