@@ -7,7 +7,9 @@ import {
   constrainCapabilities,
   SubagentControlError,
 } from "../application/tools/subagent-control.ts";
-import { WorktreeController } from "../git/worktree-control.ts";
+import { PocketBaseWorktreeStore, WorktreeController } from "../git/worktree-control.ts";
+
+const baseSha = "a".repeat(40);
 
 describe("task control plane", () => {
   it("enforces roadmap transitions", () => {
@@ -33,7 +35,7 @@ describe("task control plane", () => {
       },
       async (args) => {
         (commands as string[][]).push([...args]);
-        return { stdout: "", stderr: "", code: 0 };
+        return { stdout: args[0] === "rev-parse" ? `${baseSha}\n` : "", stderr: "", code: 0 };
       },
       "/tmp/subpolar-test-worktrees",
       "/tmp/subpolar-test-worktrees",
@@ -48,8 +50,11 @@ describe("task control plane", () => {
     expect(record.ownerId).toBe("user-a");
     expect(record.baseRef).toBe("refs/heads/main");
     expect(record.path).not.toBe("/repo");
-    expect(commands[0]).toEqual([
-      "worktree", "add", "-b", record.branch, record.path, "refs/heads/main",
+    expect(record.baseSha).toBe(baseSha);
+    expect(commands[0]).toEqual(["check-ref-format", "--branch", record.branch]);
+    expect(commands[1]).toEqual(["rev-parse", "--verify", "refs/heads/main^{commit}"]);
+    expect(commands[2]).toEqual([
+      "-c", "core.hooksPath=/dev/null", "worktree", "add", "--no-track", "-b", record.branch, record.path, baseSha,
     ]);
     expect(records).toHaveLength(1);
     expect(record.path).toContain("/user-a/task-a/");
@@ -63,7 +68,7 @@ describe("task control plane", () => {
       let recordPath = "";
       const controller = new WorktreeController(
         { create: async (record) => { recordPath = record.path; }, update: async () => undefined },
-        async () => ({ stdout: "", stderr: "", code: 0 }),
+        async (args) => ({ stdout: args[0] === "rev-parse" ? `${baseSha}\n` : "", stderr: "", code: 0 }),
       );
       await controller.create({ ownerId: "user-a", projectId: "project-a", repository: projectsRoot, baseRef: "HEAD", taskId: "task-a" });
       expect(recordPath).toMatch(new RegExp(`^${projectsRoot}/worktrees/user-a/task-a/`));
@@ -110,6 +115,13 @@ describe("task control plane", () => {
     ]));
   });
 
+  it("clears stale removal errors when a persisted checkout is removed successfully", async () => {
+    const updates: unknown[] = [];
+    const store = new PocketBaseWorktreeStore({ collection: () => ({ update: async (_id: string, update: unknown) => { updates.push(update); } }) } as never);
+    await store.update("worktree-a", { state: "removed", errorCode: undefined, errorMessage: undefined });
+    expect(updates).toContainEqual(expect.objectContaining({ state: "removed", error_code: "", error_message: "" }));
+  });
+
   it("cleans up and audits a worktree when persistence fails", async () => {
     const activities: unknown[] = [];
     const commands: string[][] = [];
@@ -117,9 +129,10 @@ describe("task control plane", () => {
       create: async () => { throw new Error("database unavailable"); },
       update: async () => undefined,
       addActivity: async (...args) => { activities.push(args); },
-    }, async (args) => { commands.push([...args]); return { stdout: "", stderr: "", code: 0 }; }, "/tmp/subpolar-test-worktrees", "/tmp/subpolar-test-worktrees");
+    }, async (args) => { commands.push([...args]); return { stdout: args[0] === "rev-parse" ? `${baseSha}\n` : "", stderr: "", code: 0 }; }, "/tmp/subpolar-test-worktrees", "/tmp/subpolar-test-worktrees");
     await expect(controller.create({ ownerId: "user-a", projectId: "project-a", repository: "/tmp/subpolar-test-worktrees/repo", baseRef: "HEAD", taskId: "task-a" })).rejects.toThrow("database unavailable");
-    expect(commands[1]?.slice(0, 3)).toEqual(["worktree", "remove", "--force"]);
+    expect(commands[3]?.slice(0, 2)).toEqual(["worktree", "remove"]);
+    expect(commands.flat()).not.toContain("--force");
     expect(activities).toEqual(expect.arrayContaining([expect.arrayContaining(["user-a", "task-a", expect.stringContaining("cleaned up")]) ]));
   });
 });

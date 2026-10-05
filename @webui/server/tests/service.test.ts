@@ -30,7 +30,8 @@ describe('Git read service', () => {
        if (args[0] === 'rev-parse' && args[1] === '--git-dir') return { stdout: '../common.git\nfalse\n', stderr: '', code: 0 }
       if (args[0] === 'rev-parse') return { stdout: 'abc123\n', stderr: '', code: 0 }
        if (args[0] === 'status') return { stdout: '## main...origin/main [ahead 1, behind 2]\0 M file.ts\0?? new.txt\0R  renamed.ts\0old.ts\0C  copied.ts\0source.ts\0', stderr: '', code: 0 }
-      if (args[0] === 'for-each-ref') return { stdout: '*\0main\0refs/heads/main\0\n \0origin/main\0refs/remotes/origin/main\0\n', stderr: '', code: 0 }
+      if (args[0] === 'for-each-ref') return { stdout: '*\0main\0refs/heads/main\0origin/main\0abc123\0\n \0origin/main\0refs/remotes/origin/main\0\0abc123\0\n', stderr: '', code: 0 }
+            if (args[0] === 'remote') return { stdout: 'origin\n', stderr: '', code: 0 }
       if (args[0] === 'diff') return { stdout: 'diff --git a/file.ts b/file.ts\n+hello\n', stderr: '', code: 0 }
       if (args[0] === 'worktree') return { stdout: `worktree ${root}\nHEAD abc123\nbranch refs/heads/main\n\n`, stderr: '', code: 0 }
       throw new Error('unexpected command')
@@ -44,7 +45,9 @@ describe('Git read service', () => {
      ]))
      expect(status.status.entries).toHaveLength(4)
      expect(status.status.omitted).toEqual([])
-    expect((await service.branches('user-a', 'project-a')).branches[0]?.current).toBe(true)
+    const sources = await service.branches('user-a', 'project-a')
+        expect(sources.branches[0]).toMatchObject({ current: true, ref: 'refs/heads/main', target: 'origin/main', sha: 'abc123' })
+        expect(sources.remotes).toEqual(['origin'])
     expect((await service.diff('user-a', 'project-a', { path: 'file.ts' })).diff.binary).toBe(false)
     expect((await service.worktrees('user-a', 'project-a')).worktrees[0]?.path).toBe('.')
     expect(calls.some((args) => args.includes('file.ts') && args.every((arg) => !arg.includes('&&')))).toBe(true)
@@ -150,7 +153,7 @@ describe('Git read service', () => {
     const policy = new GitPathPolicy(async () => project(root), workspace, { allowMutations: true, approvalToken: 'ok' })
     const service = new GitMutationService(policy, run)
     await expect(service.restoreCheckpoint('user-a', 'project-a', { version: 1, id: 'x', head: 'abc123', branch: 'main', stash: null, untracked: ['local.txt'] }, { token: 'ok' }, { deleteUntracked: true })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
-    await expect(access(join(root, 'local.txt'))).resolves.toBeNull()
+    await expect(access(join(root, 'local.txt'))).resolves.toBeUndefined()
   })
 
   it('rejects checkpoint entries whose parent is replaced by a symlink', async () => {
@@ -192,6 +195,6 @@ describe('Git read service', () => {
     const policy = new GitPathPolicy(async () => project(root), workspace, { allowMutations: true, approvalToken: 'ok' })
     const service = new GitMutationService(policy, run)
     await expect(service.restoreCheckpoint('user-a', 'project-a', { version: 1, id: 'x', head: 'abc123', branch: 'main', stash: null, untracked: [] }, { token: 'ok' }, { deleteUntracked: true })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
-    await expect(access(join(root, 'local.txt'))).resolves.toBeNull()
+    await expect(access(join(root, 'local.txt'))).resolves.toBeUndefined()
   })
 })
