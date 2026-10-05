@@ -182,6 +182,21 @@ describe('PocketBase agent runtime adapter', () => {
     expect(noHintsForSession.pi.allowedToolNames).toEqual(runtime.pi.allowedToolNames)
   })
 
+  it('adds the built-in Development Workflow to project sessions unless the profile overrides it', async () => {
+    const repository = new InMemorySkillRepository()
+    const runtime = await loadAgentRuntime(clientFor(baseData()), 'user_1', 'builder', 'project_1', { skillRepository: repository })
+
+    expect(runtime.systemPrompt).toContain('## Development workflow')
+    expect(runtime.skillContext).toContainEqual(expect.objectContaining({ id: 'development-workflow', mode: 'always-loaded' }))
+    expect(runtime.toolPolicy.allowedToolIds).toEqual([])
+    expect(runtime.pi.allowedToolNames).toEqual([])
+
+    const disabled = await loadAgentRuntime(clientFor(baseData({
+      agent: { ...baseData().agent, skill_context_modes: { 'development-workflow': 'disabled' } },
+    })), 'user_1', 'builder', 'project_1', { skillRepository: repository })
+    expect(disabled.systemPrompt).not.toContain('## Development workflow')
+  })
+
   it('explicit profile selection loads the Development Workflow skill instructions only', async () => {
     const repository = new InMemorySkillRepository()
     const { DEVELOPMENT_WORKFLOW_SKILL } = await import('../../../packages/subpolar-contracts/src/index.ts')

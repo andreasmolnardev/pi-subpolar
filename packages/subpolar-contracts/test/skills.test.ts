@@ -19,10 +19,13 @@ describe("skill contracts", () => {
     expect((await repository.get("alice", "tool-guide")).toolIds).toEqual(["write"]);
   });
 
-  test("provides an opt-in development workflow template without tool grants", () => {
-    expect(DEVELOPMENT_WORKFLOW_SKILL).toMatchObject({ id: "development-workflow", mode: "explicit-only", toolIds: [] });
-    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("tool router");
-    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("tests");
+  test("provides the default development workflow without tool grants", () => {
+    expect(DEVELOPMENT_WORKFLOW_SKILL).toMatchObject({ id: "development-workflow", scope: "global", mode: "always-loaded", toolIds: [] });
+    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("selected worktree");
+    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("user-configured project validation-command metadata");
+    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("normal tool gateway");
+    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("linked tools");
+    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("Do not commit or push unless explicitly requested");
   });
 
   test("requires deterministic monotonic versions", () => {

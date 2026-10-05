@@ -20,7 +20,7 @@ import {
   type SkillContextAudit,
   type SkillRuntimeContext,
 } from '../tools/tools.ts'
-import type { SkillRepository } from '../../../../packages/subpolar-contracts/src/index.ts'
+import { DEVELOPMENT_WORKFLOW_SKILL, type SkillRepository } from '../../../../packages/subpolar-contracts/src/index.ts'
 
 /** The only Pi tool names that can be activated by this adapter. */
 export const PI_ROUTED_TOOL_NAMES = [
@@ -507,6 +507,21 @@ export async function loadAgentRuntime(
     const selected = candidates.find((candidate) => candidate.projectId === projectId) ?? candidates.find((candidate) => candidate.projectId === undefined)
     return { ...skill, toolIds: selected?.toolIds ?? [] }
   })
+  if (projectId && options.skillRepository &&
+    !skillContext.some((skill) => skill.id === DEVELOPMENT_WORKFLOW_SKILL.id) &&
+    agent.skill_context_modes[DEVELOPMENT_WORKFLOW_SKILL.id] === undefined) {
+    skillContext.push({
+      id: DEVELOPMENT_WORKFLOW_SKILL.id,
+      name: DEVELOPMENT_WORKFLOW_SKILL.name,
+      description: DEVELOPMENT_WORKFLOW_SKILL.metadata.description,
+      metadata: DEVELOPMENT_WORKFLOW_SKILL.metadata,
+      mode: 'always-loaded',
+      body: DEVELOPMENT_WORKFLOW_SKILL.body,
+      scope: 'global',
+      version: 1,
+      toolIds: [],
+    })
+  }
   const hintableSkills = skillContext.filter((skill) => skill.body.trim().length > 0)
   const linkedToolIds = new Set(hintableSkills.flatMap((skill) => skill.toolIds))
   const accessibleToolHints = linkedToolIds.size
