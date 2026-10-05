@@ -11,6 +11,7 @@ import { eventStream, type EventStreamHealthState } from '@/lib/runtime-event-st
 import { SUBPOLAR_API_BASE_URL } from '@/config'
 import { addToSessionKeyedState, removeFromSessionKeyedState } from '@/lib/sessionKeyedState'
 import { useSessionStatus } from '@/stores/sessionStatusStore'
+import { getAuthGeneration, onIdentityCleanup } from '@/stores/authIdentityStore'
 
 type PermissionsBySession = Record<string, PermissionRequest[]>
 type QuestionsBySession = Record<string, QuestionRequest[]>
@@ -162,6 +163,7 @@ const EventContext = createContext<EventContextValue | null>(null)
 
 export function EventProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient()
+  const generation = useRef(getAuthGeneration()).current
   const navigate = useNavigate()
 
   const [sshHostKeyRequest, setSSHHostKeyRequest] = useState<SSHHostKeyRequest | null>(null)
@@ -470,6 +472,7 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const handleSSEMessage = (data: unknown) => {
+      if (generation !== getAuthGeneration()) return
       if (!data || typeof data !== 'object' || !('type' in data)) return
       
       const rawEvent = data as { type: string; properties?: Record<string, unknown> }
@@ -567,6 +570,7 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
     }
 
     const handleStatusChange = (connected: boolean) => {
+      if (generation !== getAuthGeneration()) return
       if (connected) {
         initialFetchDoneRef.current = false
         fetchInitialPendingData()
@@ -581,12 +585,14 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
       onHealthChange: setSseHealth,
     })
     subscriptionRef.current = subscription
+    const stopCleanup = onIdentityCleanup(() => subscription.dispose())
     
     return () => {
+      stopCleanup()
       subscription.dispose()
       subscriptionRef.current = null
     }
-  }, [addPermission, removePermission, addQuestion, removeQuestion, rememberSessionDirectory, fetchInitialPendingData, queryClient, setSseHealth])
+  }, [addPermission, removePermission, addQuestion, removeQuestion, rememberSessionDirectory, fetchInitialPendingData, queryClient, setSseHealth, generation])
 
   useEffect(() => {
     reposRef.current = repos

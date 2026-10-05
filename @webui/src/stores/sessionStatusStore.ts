@@ -72,6 +72,8 @@ export const useSessionStatus = create<SessionStatusStore>((set, get) => ({
   },
 
   setOptimisticActive: (sessionID: string, timeoutMs = OPTIMISTIC_ACTIVE_TIMEOUT_MS) => {
+    // Optimism must not replace an authoritative busy/retry/compact status.
+    if (get().getStatus(sessionID).type !== 'idle' && !optimisticActiveTimers.has(sessionID)) return
     clearOptimisticActiveTimer(sessionID)
 
     const timer = setTimeout(() => {
@@ -169,6 +171,11 @@ export const useSessionStatus = create<SessionStatusStore>((set, get) => ({
     })
   },
 }))
+
+export function resetSessionStatus() {
+  for (const sessionID of optimisticActiveTimers.keys()) clearOptimisticActiveTimer(sessionID)
+  useSessionStatus.setState({ statuses: new Map(), statusCache: new Map(), unreadCompleted: new Set() })
+}
 
 export const useSessionStatusForSession = (sessionID: string | undefined): SessionStatusType => {
   return useSessionStatus((state) =>

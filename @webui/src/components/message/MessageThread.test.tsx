@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { formatSentTimestamp, MessageThread, shouldShowSentTimestamp } from './MessageThread'
 import { useUIState } from '@/stores/uiStateStore'
 
@@ -622,6 +622,43 @@ describe('MessageThread', () => {
     )
 
     expect(screen.queryByText('QUEUED')).not.toBeInTheDocument()
+  })
+
+  it('retries the latest user request using the following assistant ID', async () => {
+    setupSettings({ simpleChatMode: false, showReasoning: false })
+    const mutateAsync = vi.fn().mockResolvedValue(undefined)
+    mocks.useRefreshMessage.mockReturnValue({ mutateAsync })
+    render(<MessageThread apiUrl="http://localhost:5551" sessionID="test-session" messages={[
+      createUserMessage('1', 'Original prompt'),
+      createAssistantMessage('2', [createTextPart('Original answer', '2')]),
+    ] as any} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry request' }))
+    expect(mutateAsync).toHaveBeenCalledWith({ assistantMessageID: '2', userMessageContent: 'Original prompt', model: undefined })
+    expect(await screen.findByRole('tab', { name: 'Attempt 2' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('rolls back the attempt tab when an explicit retry fails', async () => {
+    setupSettings({ simpleChatMode: false, showReasoning: false })
+    const mutateAsync = vi.fn().mockRejectedValue(new Error('offline'))
+    mocks.useRefreshMessage.mockReturnValue({ mutateAsync })
+    render(<MessageThread apiUrl="http://localhost:5551" sessionID="test-session" messages={[
+      createUserMessage('1', 'Original prompt'),
+      createAssistantMessage('2', [createTextPart('Original answer', '2')]),
+    ] as any} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry request' }))
+    await waitFor(() => expect(screen.queryByRole('tablist')).not.toBeInTheDocument())
+    expect(screen.getByText('Original prompt')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry request' })).not.toBeDisabled()
+  })
+
+  it('does not offer retry or edit when there is no following assistant message', () => {
+    setupSettings({ simpleChatMode: false, showReasoning: false })
+    render(<MessageThread apiUrl="http://localhost:5551" sessionID="test-session" messages={[
+      createUserMessage('1', 'Unanswered prompt'),
+    ] as any} />)
+    expect(screen.queryByRole('button', { name: 'Retry request' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit message' })).not.toBeInTheDocument()
   })
 
   it('resends an edited prompt after the edit textarea blurs', () => {

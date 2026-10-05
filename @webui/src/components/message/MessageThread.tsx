@@ -272,7 +272,6 @@ interface MessageRowProps {
   attempts: Array<{ id: string; content: string }>
   activeAttemptID: string
   setActiveAttemptID: (id: string) => void
-  sessionStartedAt?: number
   onRetryRequest: (messageID: string, content: string, assistantMessageID: string, model?: string) => Promise<void>
   retryingMessageID: string | null
 }
@@ -299,7 +298,6 @@ const MessageRow = memo(function MessageRow({
   attempts,
   activeAttemptID,
   setActiveAttemptID,
-  sessionStartedAt,
   onRetryRequest,
   retryingMessageID,
 }: MessageRowProps) {
@@ -381,15 +379,6 @@ const MessageRow = memo(function MessageRow({
               <span className="text-xs text-muted-foreground">
                 {new Date(msg.time.created).toLocaleTimeString()}
               </span>
-            )}
-            {msg.role !== 'user' && canEditUserMessage && nextAssistantMsg && (
-              <button
-                onClick={() => handleStartEditUserMessage(msg.id, nextAssistantMsg.id)}
-                className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-                title="Edit message"
-              >
-                <Pencil className="w-3.5 h-3.5" />
-              </button>
             )}
             {isQueued && (
               <span className="text-xs font-semibold bg-amber-500 text-amber-950 px-1.5 py-0.5 rounded">
@@ -506,10 +495,10 @@ const MessageRow = memo(function MessageRow({
                   <Pencil className="h-4 w-4" />
                 </button>
               )}
-              {canRetryUserMessage && (
+              {canRetryUserMessage && nextAssistantMsg && (
                 <button
                   type="button"
-                  onClick={() => void onRetryRequest(msg.id, messageTextContent, nextAssistantMsg.info.id, model)}
+                  onClick={() => void onRetryRequest(msg.id, messageTextContent, nextAssistantMsg.id, model)}
                   disabled={retryingMessageID === msg.id}
                   className="rounded p-1 hover:bg-accent hover:text-foreground disabled:opacity-50"
                   title="Retry request"
@@ -711,7 +700,6 @@ export const MessageThread = memo(function MessageThread({
           attempts={attemptsByMessageID[msgWithParts.info.id] ?? [{ id: msgWithParts.info.id, content: getMessageTextContent(msgWithParts.parts) }]}
           activeAttemptID={activeAttemptByMessageID[msgWithParts.info.id] ?? msgWithParts.info.id}
           setActiveAttemptID={(attemptID) => setActiveAttemptByMessageID((current) => ({ ...current, [msgWithParts.info.id]: attemptID }))}
-          sessionStartedAt={sessionStartedAt}
           onRetryRequest={handleRetryRequest}
           retryingMessageID={retryingMessageID}
           editingUserMessageId={editingUserMessageId}

@@ -81,19 +81,30 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
     userBashCommands.has(part.state.input.command)
   const isTodoTool = part.tool === 'todowrite' || part.tool === 'todoread'
   const [expanded, setExpanded] = useState(isUserBashCommand || isTodoTool || (preferences?.expandToolCalls ?? false))
-  const [lazyDetails, setLazyDetails] = useState<{ output?: string; error?: string } | null>(null)
+  const [detailsResult, setDetailsResult] = useState<{ url: string; output?: string; error?: string; failed?: boolean } | null>(null)
+  const [detailsAttempt, setDetailsAttempt] = useState(0)
   const detailsUrl = part.state.status !== 'pending' ? (part.state.metadata as { detailsUrl?: string } | undefined)?.detailsUrl : undefined
+
+  const lazyDetails = detailsResult?.url === detailsUrl ? detailsResult : null
 
   useEffect(() => {
     if (!expanded || !detailsUrl || lazyDetails) return
     let cancelled = false
     fetch(detailsUrl).then(async (response) => {
-      if (!response.ok) return
-      const value = await response.json() as { output?: string; error?: string }
-      if (!cancelled) setLazyDetails(value)
-    }).catch(() => undefined)
+      if (!response.ok) throw new Error('Tool details unavailable')
+      const value: unknown = await response.json()
+      if (!value || typeof value !== 'object') throw new Error('Invalid tool details')
+      const details = value as { output?: unknown; error?: unknown }
+      if (!cancelled) setDetailsResult({
+        url: detailsUrl,
+        output: typeof details.output === 'string' ? details.output : undefined,
+        error: typeof details.error === 'string' ? details.error : undefined,
+      })
+    }).catch(() => {
+      if (!cancelled) setDetailsResult({ url: detailsUrl, failed: true })
+    })
     return () => { cancelled = true }
-  }, [detailsUrl, expanded, lazyDetails])
+  }, [detailsUrl, expanded, lazyDetails, detailsAttempt])
 
   const permissionToolID = part.tool === 'subpolar-tools' && typeof part.state.input?.toolId === 'string'
     ? part.state.input.toolId
@@ -328,7 +339,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
       ? part.state.status === 'running' ? 'Editing file...' : part.state.status === 'completed' ? `Edited file${previewText ? ` ${previewText}` : ''}` : part.state.status === 'error' ? 'Edit failed' : 'Preparing edit...'
       : getCompactToolLabel()
     return (
-      <details className="group my-1 text-sm" open={part.state.status === 'running'}>
+      <details className="group my-1 text-sm" open={part.state.status === 'running'} onToggle={(event) => setExpanded(event.currentTarget.open)}>
         <summary className="list-none cursor-pointer [&::-webkit-details-marker]:hidden">
           <Marker><MarkerIcon>{icon}</MarkerIcon><MarkerContent>{label}</MarkerContent>{previewText && part.tool !== 'bash' && <MarkerContent className="text-xs">{previewText}</MarkerContent>}<ChevronDown className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180" /></Marker>
         </summary>
@@ -337,7 +348,13 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
           {part.state.status === 'running' && <span className="reasoning-text-trail">Running...</span>}
           {part.state.status === 'completed' && (lazyDetails?.output || ('output' in part.state && part.state.output)) && <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-words">{lazyDetails?.output || ('output' in part.state ? part.state.output : '')}</pre>}
           {part.state.status === 'error' && <pre className="text-red-600 text-xs whitespace-pre-wrap">{lazyDetails?.error || part.state.error}</pre>}
-          {detailsUrl && !lazyDetails && <span className="text-xs text-muted-foreground">Loading details...</span>}
+          {expanded && detailsUrl && !lazyDetails && <span className="text-xs text-muted-foreground">Loading details...</span>}
+          {lazyDetails?.failed && (
+            <div className="text-xs text-muted-foreground">
+              Tool details unavailable.{' '}
+              <button type="button" className="underline" onClick={() => { setDetailsResult(null); setDetailsAttempt(attempt => attempt + 1) }}>Retry loading details</button>
+            </div>
+          )}
         </div>
       </details>
     )

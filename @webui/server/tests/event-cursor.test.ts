@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'bun:test'
 import { createEventCursor, type EventCursorOptions } from '../core/event-cursor.ts'
 
 function log(limits?: EventCursorOptions) {

@@ -725,7 +725,7 @@ describe('MessagePart', () => {
       expect(screen.queryByText(/\*\*|__/)).not.toBeInTheDocument()
     })
 
-    it('opens reasoning while it is the active generation step', () => {
+    it('keeps active reasoning collapsed with a Thinking label', () => {
       setupSettings({
         simpleChatMode: false,
         showReasoning: true,
@@ -736,13 +736,20 @@ describe('MessagePart', () => {
         mode: 'build',
       })
 
-      const part = { ...createReasoningPart(), time: { start: 1000, end: 3750 } }
+      const part = { ...createReasoningPart(), time: { start: 1000 } }
       const { container } = render(<MessagePart part={part} isActiveGenerationStep />)
 
       expect(container.querySelector('details')).not.toHaveAttribute('open')
       expect(screen.getByText('Thinking')).toBeInTheDocument()
       expect(screen.getAllByText('This is the reasoning text')).toHaveLength(2)
       expect(screen.queryByText('Thought for 2.8s')).not.toBeInTheDocument()
+    })
+
+    it('keeps completed reasoning historical even when it is flagged as the active step', () => {
+      render(<MessagePart part={{ ...createReasoningPart(), time: { start: 1000, end: 3750 } }} isActiveGenerationStep />)
+
+      expect(screen.getByText('Thought for 2.8s')).toBeInTheDocument()
+      expect(screen.queryByText('Thinking')).not.toBeInTheDocument()
     })
 
     it('shows completed thinking duration in the summary', () => {

@@ -6,6 +6,8 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PermissionRequest, QuestionRequest } from '@/api/types'
 import { EventProvider, useEventContext, usePermissions, useQuestions, useSSEHealth } from './EventContext'
+import { changeAuthOwner, useAuthOwner } from '@/stores/authIdentityStore'
+import { useSessionStatus } from '@/stores/sessionStatusStore'
 
 const mocks = vi.hoisted(() => ({
   listRepos: vi.fn(),
@@ -128,13 +130,14 @@ function createWrapper() {
     },
   })
 
-  return ({ children }: { children: ReactNode }) => (
-    <MemoryRouter>
+  return function Wrapper({ children }: { children: ReactNode }) {
+    const owner = useAuthOwner()
+    return <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <EventProvider>{children}</EventProvider>
+        <EventProvider key={owner}>{children}</EventProvider>
       </QueryClientProvider>
     </MemoryRouter>
-  )
+  }
 }
 
 describe('EventProvider questions', () => {
@@ -153,6 +156,23 @@ describe('EventProvider questions', () => {
       reconnect: vi.fn(),
       reportVisibility: vi.fn(),
     })
+  })
+
+  it('disposes account A events and clears pending actions before account B can see them', async () => {
+    act(() => changeAuthOwner('account-a'))
+    const view = render(<Harness />, { wrapper: createWrapper() })
+    await waitFor(() => expect(mocks.subscribeGlobalMonitor).toHaveBeenCalled())
+    const oldHandlers = mocks.subscribeGlobalMonitor.mock.calls.at(-1)![0]
+    const oldSubscription = mocks.subscribeGlobalMonitor.mock.results.at(-1)!.value
+    act(() => oldHandlers.onEvent({ type: 'permission.asked', directory: '/repo', properties: pendingPermission }))
+    expect(screen.getByTestId('permission-count')).toHaveTextContent('1')
+    act(() => changeAuthOwner('account-b'))
+    expect(oldSubscription.dispose).toHaveBeenCalled()
+    expect(screen.getByTestId('permission-count')).toHaveTextContent('0')
+    act(() => oldHandlers.onEvent({ type: 'session.status', properties: { sessionID: 'session-1', status: { type: 'busy' } } }))
+    expect(useSessionStatus.getState().getStatus('session-1').type).toBe('idle')
+    view.unmount()
+    act(() => changeAuthOwner(null))
   })
 
   it('syncs missed pending questions for a session', async () => {
