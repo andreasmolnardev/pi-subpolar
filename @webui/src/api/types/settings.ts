@@ -32,17 +32,6 @@ export interface CustomCommand {
   promptTemplate: string
 }
 
-export interface GitCredential {
-  name: string
-  host: string
-  type: 'pat' | 'ssh'
-  token?: string
-  sshPrivateKey?: string
-  sshPrivateKeyEncrypted?: string
-  hasPassphrase?: boolean
-  username?: string
-  passphrase?: string
-}
 
 export interface GitIdentity {
   name: string
@@ -66,7 +55,7 @@ export interface UserPreferences {
   directShortcuts?: string[]
   keyboardShortcuts: Record<string, string>
   customCommands: CustomCommand[]
-  gitCredentials?: GitCredential[]
+
   gitIdentity?: GitIdentity
   tts?: TTSConfig
   stt?: STTConfig

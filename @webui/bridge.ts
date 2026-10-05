@@ -70,6 +70,8 @@ app.all('*', async (context) => {
   }
 })
 
+await bridgeRuntime.startupReady
+
 const _server = Bun.serve<SocketData>({
   port,
   hostname: '127.0.0.1',

@@ -8,6 +8,8 @@ import { handleAgentsRoute } from './routes/agents.ts'
 import { handleTasksRoute } from './routes/tasks.ts'
 import { handleBrowserRoute } from './routes/browser.ts'
 import { handleProvidersRoute } from './routes/providers.ts'
+import { handleGitProviderAccountsRoute } from './routes/git-provider-accounts.ts'
+import { handleGitProviderDataRoute } from './routes/git-provider-data.ts'
 import { handleRuntimeRoute } from './routes/runtime.ts'
 import { handleProjectsRoute } from './routes/projects.ts'
 import { handleLegacyRoute } from './routes/legacy.ts'
@@ -31,6 +33,8 @@ const routeHandlers: RouteHandler[] = [
   handleTasksRoute,
   handleBrowserRoute,
   handleProvidersRoute,
+  handleGitProviderDataRoute,
+  handleGitProviderAccountsRoute,
   handleRuntimeRoute,
   handleProjectsRoute,
   handleLegacyRoute,

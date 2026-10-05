@@ -8,6 +8,7 @@ import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent'
 import { createProviderLoginRuntime, createSharedProviderCatalogRuntime } from './server/application/runtime/provider-runtime.ts'
 import { assertTenantSession, tenantSessionKey } from './server/application/runtime/tenant-runtime.ts'
 import { authenticateProxyRuntime, proxyModel } from './server/application/runtime/owner-bound-proxy.ts'
+import { migrateLegacyGitCredentials } from './server/git/legacy-credentials-migration.ts'
 
 
 import { entriesPayload, projectEntries, redactTranscriptPayload, type TranscriptMessage } from './transcript/projector'
@@ -459,11 +460,13 @@ async function providerLoginFlowController(): Promise<ProviderLoginFlowControlle
   return providerLoginFlowControllerPromise
 }
 
-void providerAccountService().then(async () => {
+const startupReady = providerAccountService().then(async (accounts) => {
+  await migrateLegacyGitCredentials(await applicationDatabase(), accounts)
   await syncAdminFromEnv()
   await (await runtimeStore()).reconcileStartup()
   console.log('PocketBase application collections ready')
-}).catch((error) => {
+})
+void startupReady.catch((error) => {
   console.warn(`PocketBase is not ready: ${redactedDiagnostic(error)}`)
 })
 
@@ -496,7 +499,7 @@ const DEFAULT_SETTINGS = {
     submit: 'Cmd+Enter', abort: 'Escape', toggleMode: 'T', undo: 'Z', redo: 'Shift+Z',
     compact: 'K', fork: 'F', settings: ',', sessions: 'S', newSession: 'N', closeSession: 'W',
     toggleSidebar: 'B', selectModel: 'M', variantCycle: 'Cmd+T',
-  }, customCommands: [], gitCredentials: [], gitIdentity: { name: 'Pi Agent', email: '' },
+  }, customCommands: [], gitIdentity: { name: 'Pi Agent', email: '' },
   tts: { enabled: false }, stt: { enabled: false }, notifications: { enabled: false },
   integrations: [], repoSortMode: 'recent', serverEnvVars: [], disabledDefaultServerEnvVars: [],
 }
@@ -757,9 +760,10 @@ function localSessionRecord(stored: DurableSession): SessionRecord {
 }
 
 
-function projectResponse(project: Project, id: number, isGeneralChat = false) {
+function projectResponse(project: Project, id: number, isGeneralChat = false, repositoryId?: string) {
   return {
     id,
+    ...(repositoryId ? { repositoryId } : {}),
     name: project.name,
     directory: project.path,
     fullPath: project.path,
@@ -776,7 +780,7 @@ async function ownedProjectResponses(userId: string, client: Awaited<ReturnType<
   const owned = await createProjectSessionRepository(client).listProjects(userId)
   return [
     projectResponse(generalChatProject(), 0, true),
-    ...owned.map((project, index) => projectResponse({ name: project.name, path: project.path, agentNames: project.agentNames, hasAgentOverride: project.hasAgentOverride }, index + 1)),
+    ...owned.map((project, index) => projectResponse({ name: project.name, path: project.path, agentNames: project.agentNames, hasAgentOverride: project.hasAgentOverride }, index + 1, false, project.id)),
   ]
 }
 
@@ -1033,6 +1037,7 @@ const piSdkSessionHost: PiSdkSessionHost<BridgeClient> = {
   loadRuntime: (client, userId, context) => loadAgentRuntime(client, userId, context.agentName, context.session?.project, {
     skillRepository: createOwnerBoundSkillStore(client, userId),
     skillAudit: createSkillContextAudit(client),
+    permissionOverride: context.session?.permissionOverride ?? context.permissionOverride,
   }),
   getProviderRuntime: userProviderRuntime,
   createRoutingExtension: (context) => createToolRoutingExtension(context),
@@ -1751,7 +1756,7 @@ const handle = createBridgeRequestHandler(bridgeRequestDependencies)
 export type BridgeRuntime = Record<string, any>
 
 export const bridgeRuntime: BridgeRuntime = {
-  port, handle, handleProxy, startAutomationScheduler,
+  port, handle, handleProxy, startAutomationScheduler, startupReady,
   requestId, isAllowedOrigin, errorEnvelope, assertSafeBrowserMutation, REQUEST_LIMITS,
   authenticateRequest, rateLimitKey, requestRateLimiter, json, redactedDiagnostic, RequestSecurityError,
   applicationDatabase, ownedSessionRecord, ownedSessionProject, resolveToolSessionContext, rpcSession,

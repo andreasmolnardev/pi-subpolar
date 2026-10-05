@@ -11,6 +11,7 @@ import { Switch } from '@/components/ui/switch'
 import { settingsApi } from '@/api/settings'
 import { formatMcpCommand, parseMcpCommand } from '@/api/mcp'
 import { showToast } from '@/lib/toast'
+import { GitProviderAccountsSettings } from './GitProviderAccountsSettings'
 
 type IntegrationBase = {
   id: string
@@ -642,7 +643,7 @@ export function IntegrationsSettings() {
       <div className="flex items-center justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold text-foreground">Integrations</h2>
-          <p className="text-sm text-muted-foreground">Configure external services agents can use.</p>
+          <p className="text-sm text-muted-foreground">Configure external services agents can use, including Git provider accounts.</p>
         </div>
         <Button type="button" size="sm" onClick={openAddDialog}>
           <Plus className="h-4 w-4 mr-2" />
@@ -651,6 +652,7 @@ export function IntegrationsSettings() {
       </div>
 
       <div className="mt-6">
+        <GitProviderAccountsSettings />
         {integrations.length === 0 ? (
           <div className="rounded-lg border  text-center">
             <Network className="h-8 w-8 text-muted-foreground mx-auto mb-3" />

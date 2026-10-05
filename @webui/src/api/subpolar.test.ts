@@ -76,12 +76,16 @@ describe('SubpolarClient', () => {
       agent: 'assistant',
       model: 'openai/gpt-4.1',
       permission: 'ask',
+      repositoryId: 'linked-repository',
+      worktreeId: 'owned-worktree',
     })
 
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
       agent: 'assistant',
       model: 'openai/gpt-4.1',
       permission: 'ask',
+      repositoryId: 'linked-repository',
+      worktreeId: 'owned-worktree',
       runtime: 'pi',
       directory: '/repo',
     })

@@ -137,8 +137,12 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
   if (path[1] === 'settings' && path.length === 2 && request.method === 'GET') {
     if (!authenticatedUser) return deps.json({ message: 'Unauthorized' }, 401)
     try {
-      const record = await deps.getUserPreferences(await deps.applicationDatabase(), authenticatedUser.id)
+      const client = await deps.applicationDatabase()
+      const record = await deps.getUserPreferences(client, authenticatedUser.id)
       const preferences = { ...deps.DEFAULT_SETTINGS, ...(record?.preferences ?? {}) }
+      // Legacy credentials are migration input, never settings API output. Do not
+      // erase them here: another bridge process may not have migrated them yet.
+      delete preferences.gitCredentials
       if (preferences.tts) preferences.tts = { enabled: Boolean((preferences.tts as Record<string, unknown>).enabled), ...deps.redactVoiceSettings(preferences.tts) }
       if (preferences.stt) preferences.stt = { enabled: Boolean((preferences.stt as Record<string, unknown>).enabled), ...deps.redactVoiceSettings(preferences.stt) }
       return deps.json({ preferences, updatedAt: record?.updated_at ?? Date.now() })
@@ -148,6 +152,7 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
     if (!authenticatedUser) return deps.json({ message: 'Unauthorized' }, 401)
     const input = await deps.body(request)
        const preferences = deps.object(input.preferences)
+       delete preferences.gitCredentials
        if (preferences.tts && typeof preferences.tts === 'object') preferences.tts = { ...deps.redactVoiceSettings(preferences.tts), apiKeyRef: typeof (preferences.tts as Record<string, unknown>).apiKeyRef === 'string' ? (preferences.tts as Record<string, unknown>).apiKeyRef : undefined }
        if (preferences.stt && typeof preferences.stt === 'object') preferences.stt = { ...deps.redactVoiceSettings(preferences.stt), apiKeyRef: typeof (preferences.stt as Record<string, unknown>).apiKeyRef === 'string' ? (preferences.stt as Record<string, unknown>).apiKeyRef : undefined }
        try {
@@ -158,6 +163,7 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
          if (existingPreferences.stt) existingPreferences.stt = deps.redactVoiceSettings(existingPreferences.stt)
          const saved = await deps.saveUserPreferences(client, authenticatedUser.id, { ...deps.DEFAULT_SETTINGS, ...existingPreferences, ...preferences })
        const safePreferences = { ...(saved.preferences ?? {}) }
+       delete safePreferences.gitCredentials
        if (safePreferences.tts) safePreferences.tts = { enabled: Boolean((safePreferences.tts as Record<string, unknown>).enabled), ...deps.redactVoiceSettings(safePreferences.tts) }
        if (safePreferences.stt) safePreferences.stt = { enabled: Boolean((safePreferences.stt as Record<string, unknown>).enabled), ...deps.redactVoiceSettings(safePreferences.stt) }
        return deps.json({ preferences: safePreferences, updatedAt: saved.updated_at ?? Date.now() })
@@ -274,7 +280,7 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
           metadata: { ...(input.metadata && typeof input.metadata === 'object' && !Array.isArray(input.metadata) ? input.metadata as Record<string, string> : {}), ...(typeof input.description === 'string' ? { description: input.description } : {}) },
           body: typeof input.body === 'string' ? input.body : '',
           reference: typeof input.reference === 'string' ? input.reference : undefined,
-
+          ...(input.toolIds !== undefined ? { toolIds: input.toolIds } : {}),
         })
         return deps.json(skillResponse(skill), 201)
       }
@@ -307,6 +313,7 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
           ...(input.metadata !== undefined || input.description !== undefined ? { metadata: { ...(input.metadata as Record<string, string> ?? {}), ...(typeof input.description === 'string' ? { description: input.description } : {}) } } : {}),
           ...(typeof input.body === 'string' ? { body: input.body } : {}),
           ...(typeof input.reference === 'string' ? { reference: input.reference } : {}),
+          ...(input.toolIds !== undefined ? { toolIds: input.toolIds } : {}),
         })
         return deps.json(skillResponse(skill))
       }

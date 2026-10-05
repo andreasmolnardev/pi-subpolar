@@ -8,6 +8,8 @@ type SessionListParams = NonNullable<paths['/session']['get']['parameters']['que
 }
 type CreateSessionRequest = NonNullable<paths['/session']['post']['requestBody']>['content']['application/json']
 type NewSessionCreateRequest = Omit<CreateSessionRequest, 'permission' | 'project'> & {
+  repositoryId?: string
+  worktreeId?: string
   project?: number | string
   agent?: string
   model?: string
