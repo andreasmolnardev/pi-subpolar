@@ -6,4 +6,13 @@ Artifact paths are classified as `configuration`, `metadata`, or `transcript`. S
 
 `restoreBackupArtifacts` verifies every payload before writing beneath the caller-provided target root. Non-dry-run restores stage all payloads in a temporary sibling directory, then commit with temporary backups for overwritten files; any staging or commit failure rolls back installed files and removes temporary state. Destination path components are revalidated immediately before writes, and no-follow exclusive file creation is used for staging. It supports dry runs, refuses existing destinations unless `overwrite` is enabled, and requires `approved: true` for overwrite or non-merge restores. Reports are stable and contain no payload contents.
 
+## Workspace setup
+
+From the repository root, use Bun 1.3.14 and `bun install --frozen-lockfile`.
+The hoisted workspace shares compatible dependencies, but incompatible versions
+may still require nested copies. Do not install separately in this package.
+See [Bun and multi-user operations](../../docs/bun-and-multi-user.md).
+
+## Operational limits
+
 This is a local artifact workflow, not a live database backup or migration system. It does not access PocketBase, coordinate with running processes, quiesce a database, encrypt payloads, or guarantee consistency while another process changes a source. The manifest's encrypted flag is compatibility metadata; callers requiring confidentiality must provide already-protected input through an approved mechanism. PocketBase/live restore remains out of scope.

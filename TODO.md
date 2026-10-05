@@ -4,11 +4,11 @@
 
 Current phase: Phase 0-16 implementation checkpoint
 Current milestone: Milestone E - Tool Gateway Clients and Operations
-Current branch: main
-Last completed commit: 8046550 — voice checkpoint
-Last verified commit: working tree — roadmap implementation checkpoint independently verified
-Current blockers: authenticated live PocketBase/WebUI/Pi E2E is not configured in this environment; WebUI still has legacy process-global runtime ownership; skill context migration and durable restart recovery remain follow-up work
-Next recommended action: wire the extracted run and skill adapter seams into the legacy WebUI composition and run authenticated disposable E2E
+Current branch: feature/session-worktree-review
+Last completed commit: feature-scoped integration commits on `feature/session-worktree-review`
+Last verified commit: committed feature work plus current documentation follow-up; see docs/feature-progress.md for validation and remaining gates
+Current blockers: authenticated live E2E is unavailable; legacy bridge execution ownership and durable active-run recovery remain; atomic skill/automation persistence, policy-aware remote Git fetch, MCP lifecycle endpoints, notification delivery/navigation, and actual SSH/Jev execution remain follow-up work
+Next recommended action: finish the request-scoped bridge runtime/approval binding and atomic persistence gates, then run authenticated disposable E2E; see docs/feature-progress.md for per-feature handoffs
 
 ## Architecture Decisions
 

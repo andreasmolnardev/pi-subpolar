@@ -19,6 +19,15 @@ are defined by `@subpolar/contracts`. `src/durable.ts` implements those shared
 interfaces with owner-scoped PocketBase persistence and re-exports the shared
 types for compatibility with existing adapter imports.
 
+## Workspace setup
+
+From the repository root, use Bun 1.3.14 and `bun install --frozen-lockfile`.
+The hoisted workspace shares compatible dependencies, but incompatible versions
+may still require nested copies. Do not install separately in this package.
+Owner-scoped persistence does not create an OS sandbox or certify live multi-user
+execution. Live two-user verification remains outstanding; see
+[Bun and multi-user operations](../../docs/bun-and-multi-user.md).
+
 ## Core gateway composition
 
 The shared policy/approval authority lives in `@subpolar/core`. Bind one

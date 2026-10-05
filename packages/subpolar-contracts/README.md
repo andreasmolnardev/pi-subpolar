@@ -13,6 +13,13 @@ Shared contracts for the Subpolar runtime, adapters, tools, and applications.
 
 This package is intentionally implementation-neutral. It defines the interfaces that `@subpolar/runtime`, storage adapters, Pi integration, and applications compose together. It does not import Pi, PocketBase, WebUI, or HTTP implementations.
 
+## Workspace setup
+
+From the repository root, use Bun 1.3.14 and `bun install --frozen-lockfile`.
+The hoisted workspace shares compatible dependencies, but incompatible versions
+may still require nested copies. Do not install separately in this package.
+See [Bun and multi-user operations](../../docs/bun-and-multi-user.md).
+
 ## Testing
 
 ```sh

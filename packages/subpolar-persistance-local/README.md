@@ -14,6 +14,14 @@ Without file paths, state is process-local and ephemeral. JSON-file persistence 
 
 The adapter implements shared contracts and does not depend on Pi, PocketBase, WebUI, or network services.
 
+## Workspace setup
+
+From the repository root, use Bun 1.3.14 and `bun install --frozen-lockfile`.
+The hoisted workspace shares compatible dependencies, but incompatible versions
+may still require nested copies. Do not install separately in this package.
+Owner-scoped records do not provide OS or hostile-tenant isolation.
+See [Bun and multi-user operations](../../docs/bun-and-multi-user.md).
+
 ## Testing
 
 ```sh
