@@ -15,6 +15,8 @@ import {
   effectiveAgentConfiguration,
   resolveSkillRuntimeContext,
   renderSkillRuntimeContext,
+  listToolsForAgent,
+  type PermissionOverride,
   type SkillContextAudit,
   type SkillRuntimeContext,
 } from '../tools/tools.ts'
@@ -469,7 +471,7 @@ export async function loadAgentRuntime(
   userId: string,
   agentSelector = 'master',
   projectId?: string,
-  options: { skillRepository?: SkillRepository; skillAudit?: SkillContextAudit } = {},
+  options: { skillRepository?: SkillRepository; skillAudit?: SkillContextAudit; permissionOverride?: PermissionOverride } = {},
 ): Promise<AgentRuntime> {
   const normalizedUserId = nonBlank(userId)
   if (!normalizedUserId) throw new AgentRuntimeError('INVALID_USER', 'A user ID is required')
@@ -489,11 +491,40 @@ export async function loadAgentRuntime(
     getPolicies(client, normalizedUserId, agent.id),
     getEnabledTools(client),
   ])
-  const skillContext = options.skillRepository
-    ? await resolveSkillRuntimeContext(options.skillRepository, normalizedUserId, agent, { projectId, audit: options.skillAudit })
+  const explicitSkillIds = Object.entries(agent.skill_context_modes)
+    .filter(([, mode]) => mode === 'explicit-only')
+    .map(([skillId]) => skillId)
+  const resolvedSkills = options.skillRepository
+    ? await resolveSkillRuntimeContext(options.skillRepository, normalizedUserId, agent, { projectId, explicitSkillIds, audit: options.skillAudit })
     : []
+  const skillRecords = options.skillRepository && resolvedSkills.length
+    ? await options.skillRepository.list(normalizedUserId, { includeDisabled: true })
+    : []
+  const skillContext = resolvedSkills.map((skill) => {
+    const candidates = skillRecords.filter((candidate) => candidate.id === skill.id && candidate.scope === skill.scope &&
+      (candidate.scope === 'global' || (candidate.scope === 'project' && candidate.projectId === projectId) ||
+        (candidate.scope === 'agent' && candidate.agentId === agent.id && (candidate.projectId === undefined || candidate.projectId === projectId))))
+    const selected = candidates.find((candidate) => candidate.projectId === projectId) ?? candidates.find((candidate) => candidate.projectId === undefined)
+    return { ...skill, toolIds: selected?.toolIds ?? [] }
+  })
+  const hintableSkills = skillContext.filter((skill) => skill.body.trim().length > 0)
+  const linkedToolIds = new Set(hintableSkills.flatMap((skill) => skill.toolIds))
+  const accessibleToolHints = linkedToolIds.size
+    ? await listToolsForAgent(client, normalizedUserId, agent.name, projectId, true, options.permissionOverride)
+    : []
+  const accessibleToolsById = new Map(accessibleToolHints.map((tool) => [tool.id, tool]))
+  const skillToolContext = hintableSkills.flatMap((skill) => {
+    const linked = (skill.toolIds ?? []).flatMap((id) => {
+      const tool = accessibleToolsById.get(id)
+      return tool ? [`- ${tool.id}: ${tool.description}`] : []
+    })
+    return linked.length ? [`### ${skill.name} tool references\n${linked.join('\n')}`] : []
+  })
+  const renderedToolHints = skillToolContext.length
+    ? `## Linked tool context hints (not grants; tool router policy remains authoritative)\n${skillToolContext.join('\n\n')}`
+    : ''
   const toolPolicy = buildToolPolicyRuntime(agent, policies, registry.definitions)
-  const systemPrompt = [effectiveSystemPrompt(agent), renderSkillRuntimeContext(skillContext)].filter(Boolean).join('\n\n') || undefined
+  const systemPrompt = [effectiveSystemPrompt(agent), renderSkillRuntimeContext(skillContext), renderedToolHints].filter(Boolean).join('\n\n') || undefined
   const pi = buildPiRuntimeConfiguration(agent, toolPolicy, skillContext, systemPrompt)
   return {
     source: 'pocketbase',

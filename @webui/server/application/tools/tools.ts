@@ -5,6 +5,8 @@ import { constants } from 'node:fs'
 import { access, lstat, mkdir, open, readdir } from 'node:fs/promises'
 import { relative } from 'node:path'
 import { ProjectSessionRepository } from '../../persistence/project-store.ts'
+import { GitPathPolicy } from '../../git/policy.ts'
+import { GitReadService } from '../../git/service.ts'
 import { assertToolWorkspacePath, canonicalProjectPath } from '../../core/project-filesystem.ts'
 import {
 
@@ -75,7 +77,7 @@ const toolManagementTools = new Set(['list_registered_tools', 'create_registered
 const cliManagementTools = new Set(['create_cli_tool'])
 const manualApprovalToolTargets = new Set(['cli'])
 const execFileAsync = promisify(execFile)
-const allowedCliExecutables = new Set(['bun', 'cargo', 'git', 'go', 'node', 'npm', 'pnpm', 'pytest', 'python', 'python3', 'rustc'])
+const allowedCliExecutables = new Set(['bun', 'cargo', 'go', 'node', 'npm', 'pnpm', 'pytest', 'python', 'python3', 'rustc'])
 const browserMutationGroups = new Set(['form-interaction', 'upload', 'download', 'submit', 'destructive'])
 export function memoryPolicyAllows(agent: { policies: Pick<AgentPolicySet, 'memory'>; template?: AgentDefinition['template'] }, toolId: string): boolean {
   return agent.policies.memory === true && !(memoryMutationTools.has(toolId) && (agent.template === 'plan' || agent.template === 'reviewer'))
@@ -207,6 +209,10 @@ export function configureSubagentToolRunner(runner: SubagentToolRunner | undefin
 }
 
 const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>> = [
+  { tool_id: 'git.status', namespace: 'builtin', description: 'Read status for the active owned project repository', adapter: 'internal', target: 'git', operation: 'status', input_schema: { type: 'object', properties: {}, additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: { capability: 'git/read' } },
+  { tool_id: 'git.diff', namespace: 'builtin', description: 'Read a bounded diff from the active owned project repository', adapter: 'internal', target: 'git', operation: 'diff', input_schema: { type: 'object', properties: { path: { type: 'string', maxLength: 1024 }, ref: { type: 'string', maxLength: 256 }, staged: { type: 'boolean' } }, additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: { capability: 'git/read' } },
+  { tool_id: 'git.log', namespace: 'builtin', description: 'Read bounded commit history from the active owned project repository', adapter: 'internal', target: 'git', operation: 'log', input_schema: { type: 'object', properties: { ref: { type: 'string', maxLength: 256 }, path: { type: 'string', maxLength: 1024 }, limit: { type: 'integer', minimum: 1, maximum: 100 } }, additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: { capability: 'git/read' } },
+  { tool_id: 'git.branch', namespace: 'builtin', description: 'Read branches from the active owned project repository', adapter: 'internal', target: 'git', operation: 'branch', input_schema: { type: 'object', properties: {}, additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: { capability: 'git/read' } },
   { tool_id: 'subagent/run', namespace: 'builtin', description: 'Run an authorized isolated subagent task', adapter: 'internal', target: 'subagent', operation: 'run', input_schema: { type: 'object', properties: { targetAgent: { type: 'string', minLength: 1 }, prompt: { type: 'string', minLength: 1 }, capabilities: { type: 'array', items: { type: 'string' } }, coding: { type: 'boolean' } }, required: ['targetAgent', 'prompt'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'subagent/run' } },
   { tool_id: 'list_agent_profiles', namespace: 'builtin', description: 'List agent profiles owned by the current user', adapter: 'internal', target: 'agent-profiles', operation: 'list', input_schema: { type: 'object', properties: {}, additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: { capability: 'agent-profiles' } },
   { tool_id: 'create_agent_profile', namespace: 'builtin', description: 'Create an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'create', input_schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 80 }, description: { type: 'string', maxLength: 1000 }, mode: { type: 'string', enum: ['primary', 'subagent'] }, prompt: { type: 'string', maxLength: 100000 }, systemPrompt: { type: 'string', maxLength: 100000 }, enabled: { type: 'boolean' }, template: { type: 'string', enum: ['general', 'coding', 'plan', 'reviewer'] }, model: { type: 'string', maxLength: 200 }, thinking: { type: 'string', enum: ['off', 'minimal', 'low', 'medium', 'high'] }, approval_mode: { type: 'string', enum: ['auto', 'ask', 'deny'] }, policies: { type: 'object' }, project_overrides: { type: 'object' }, tool_context_modes: { type: 'object' }, skill_context_modes: { type: 'object' } }, required: ['name'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
@@ -892,7 +898,7 @@ function cliMetadata(value: unknown): { executable: string; fixedArgs: string[];
   const maxArgs = typeof input.maxArgs === 'number' && Number.isInteger(input.maxArgs) ? input.maxArgs : 0
   const timeoutMs = typeof input.timeoutMs === 'number' && Number.isInteger(input.timeoutMs) ? input.timeoutMs : 30_000
   const maxOutputBytes = typeof input.maxOutputBytes === 'number' && Number.isInteger(input.maxOutputBytes) ? input.maxOutputBytes : 256 * 1024
-  if (!allowedCliExecutables.has(executable)) throw new Error('CLI executable is not in the approved executable set')
+  if (!allowedCliExecutables.has(executable) || executable === 'git') throw new Error('CLI executable is not in the approved executable set')
   if (fixedArgs.length > 32 || fixedArgs.some((arg) => !safeCliArgument(arg))) throw new Error('CLI fixed arguments are invalid or exceed the limit')
   if (maxArgs < 0 || maxArgs > 32 || timeoutMs < 100 || timeoutMs > 120_000 || maxOutputBytes < 1024 || maxOutputBytes > 1_048_576) throw new Error('CLI limits are outside the allowed range')
   return { executable, fixedArgs: [...fixedArgs] as string[], maxArgs, timeoutMs, maxOutputBytes }
@@ -1224,6 +1230,15 @@ export async function createCoreToolGateway(client: PocketBase, ownerId: string,
   return createCoreGateway({ tools: definitions, validateInput: validateToolInput, resolvePolicy, approvalStore, idempotency, auditPort, execute })
 }
 
+async function ownedGitContext(client: PocketBase, cwd: string, context?: ToolExecutionContext): Promise<{ userId: string; projectId: string }> {
+  if (!context?.userId || !context.sessionId || !context.cwd || context.cwd !== cwd) throw new Error('Git tools require an owned session and explicit project workspace')
+  const owned = await new ProjectSessionRepository(client).getSessionContext(context.userId, context.sessionId)
+  if (!owned?.project || !owned.session.projectId || (context.projectId && context.projectId !== owned.project.id)) throw new Error('Git project ownership could not be verified')
+  const directory = owned.session.directory || owned.project.path
+  if (canonicalProjectPath(cwd) !== canonicalProjectPath(directory)) throw new Error('Git cwd must exactly match the owned session workspace')
+  return { userId: context.userId, projectId: owned.project.id }
+}
+
 async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolExecutionContext): Promise<unknown> {
   if (tool.target === 'subagent' && tool.operation === 'run') {
     if (!subagentToolRunner) throw new Error('Subagent execution host is unavailable')
@@ -1238,6 +1253,18 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     if (tool.operation === 'write') return service.write(scoped, { scope: args.scope as MemoryScope, content: String(args.content ?? ''), metadata: recordObject(args.metadata), idempotencyKey: typeof args.idempotencyKey === 'string' ? args.idempotencyKey : undefined })
     if (tool.operation === 'update') return service.update(scoped, String(args.id), { content: typeof args.content === 'string' ? args.content : undefined, metadata: args.metadata === undefined ? undefined : recordObject(args.metadata), version: Number(args.version) })
     if (tool.operation === 'delete') return service.tombstone(scoped, String(args.id), Number(args.version))
+  }
+  if (tool.target === 'git') {
+    if (!['status', 'diff', 'log', 'branch'].includes(tool.operation)) throw new Error('Unsupported Git tool operation')
+    const trusted = await ownedGitContext(client, cwd, context)
+    const repository = new ProjectSessionRepository(client)
+    const policy = new GitPathPolicy((owner, id) => repository.getProject(owner, id))
+    const service = new GitReadService(policy)
+    const args = recordObject(input)
+    if (tool.operation === 'status') return service.status(trusted.userId, trusted.projectId)
+    if (tool.operation === 'diff') return service.diff(trusted.userId, trusted.projectId, { path: typeof args.path === 'string' ? args.path : undefined, ref: typeof args.ref === 'string' ? args.ref : undefined, staged: args.staged === true })
+    if (tool.operation === 'log') return service.log(trusted.userId, trusted.projectId, { path: typeof args.path === 'string' ? args.path : undefined, ref: typeof args.ref === 'string' ? args.ref : undefined, limit: typeof args.limit === 'number' ? args.limit : undefined })
+    return service.branches(trusted.userId, trusted.projectId)
   }
   if (tool.target === 'browser') {
     if (!context?.userId || !context.sessionId) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Browser tools require an owned tool session')
@@ -1292,7 +1319,7 @@ export async function invokeExternalTool(client: PocketBase, tool: ToolDefinitio
   const unavailable = executionUnavailable(tool)
   if (unavailable) throw new Error(unavailable)
   if (tool.adapter === 'internal') {
-    if (['pi', 'memory', 'browser', 'web', 'web-search', 'subagent', 'agent-profiles', 'tool-registry', 'cli'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
+    if (['pi', 'memory', 'browser', 'web', 'web-search', 'subagent', 'agent-profiles', 'tool-registry', 'cli', 'git'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
     return { routed: true, toolId: tool.tool_id, operation: tool.operation, input }
   }
   if (tool.adapter === 'mcp') {

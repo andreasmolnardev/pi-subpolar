@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import type { SkillFileInfo, CreateSkillRequest, UpdateSkillRequest, SkillScope } from '@subpolar/shared'
 import { listProjects, type Project } from '@/api/projects'
 import { useQuery } from '@tanstack/react-query'
+import { DEVELOPMENT_WORKFLOW_SKILL } from '../../../../packages/subpolar-contracts/src/skills.ts'
 
 const skillFormSchema = z.object({
   name: z.string()
@@ -19,6 +20,7 @@ const skillFormSchema = z.object({
     .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'Must be lowercase letters, numbers, and hyphens only'),
   description: z.string().min(1, 'Description is required').max(1024, 'Description must be 1024 characters or less'),
   body: z.string().min(1, 'Skill body is required'),
+  toolIds: z.string().refine((value) => value.split(/[\n,]/).map((id) => id.trim()).filter(Boolean).every((id) => /^[A-Za-z0-9][A-Za-z0-9._:-]*(?:\/[A-Za-z0-9][A-Za-z0-9._:-]*)?$/.test(id)), 'Use canonical tool IDs, one per line'),
   scope: z.enum(['global', 'project']),
 })
 
@@ -46,6 +48,7 @@ export function SkillDialog({ open, onOpenChange, onSubmit, editingSkill }: Skil
       name: skill?.name || '',
       description: skill?.description || '',
       body: skill?.body || '',
+      toolIds: skill?.toolIds?.join('\n') || '',
       scope: skill?.scope || 'global',
     }
   }
@@ -65,6 +68,7 @@ export function SkillDialog({ open, onOpenChange, onSubmit, editingSkill }: Skil
   }, [open, editingSkill, form])
 
   const handleSubmit = (values: SkillFormValues) => {
+    const toolIds = values.toolIds.split(/[\n,]/).map((id) => id.trim()).filter(Boolean)
     if (!editingSkill && values.scope === 'project' && !selectedRepoId) {
       form.setError('scope', { message: 'Please select a repository for project-scoped skills' })
       return
@@ -79,6 +83,7 @@ export function SkillDialog({ open, onOpenChange, onSubmit, editingSkill }: Skil
         metadata: editingSkill.metadata ?? {},
         description: values.description,
         body: values.body,
+        toolIds,
       })
     } else {
       onSubmit({
@@ -86,8 +91,9 @@ export function SkillDialog({ open, onOpenChange, onSubmit, editingSkill }: Skil
         id: values.name,
         description: values.description,
         body: values.body,
+        toolIds,
         scope: values.scope,
-        mode: 'discoverable',
+        mode: values.name === DEVELOPMENT_WORKFLOW_SKILL.id ? DEVELOPMENT_WORKFLOW_SKILL.mode : 'discoverable',
         metadata: {},
         repoId: values.scope === 'project' ? selectedRepoId : undefined,
       })
@@ -113,6 +119,11 @@ export function SkillDialog({ open, onOpenChange, onSubmit, editingSkill }: Skil
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto p-2 sm:p-4">
+          {!editingSkill && (
+            <Button type="button" variant="outline" className="mb-4" onClick={() => {
+              form.reset({ name: DEVELOPMENT_WORKFLOW_SKILL.name, description: DEVELOPMENT_WORKFLOW_SKILL.metadata.description, body: DEVELOPMENT_WORKFLOW_SKILL.body, toolIds: '', scope: 'global' })
+            }}>Use Development Workflow template</Button>
+          )}
           <Form {...form}>
             <div className="space-y-4">
               <FormField
@@ -168,6 +179,21 @@ export function SkillDialog({ open, onOpenChange, onSubmit, editingSkill }: Skil
                         className="font-mono md:text-sm"
                       />
                     </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="toolIds"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Linked tool IDs (context hints only)</FormLabel>
+                    <FormControl>
+                      <Textarea {...field} placeholder={'read\nsearch-tool'} rows={3} className="font-mono md:text-sm" />
+                    </FormControl>
+                    <FormDescription>Canonical tool IDs, one per line. Only tools already accessible to the active agent may appear in runtime context; links never grant access or change approvals.</FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}

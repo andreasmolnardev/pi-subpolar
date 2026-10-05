@@ -144,6 +144,58 @@ describe('PocketBase agent runtime adapter', () => {
     expect(runtime.systemPrompt).toContain('Project metadata')
   })
 
+  it('renders only policy-accessible linked tool descriptions without changing runtime authority', async () => {
+    const repository = new InMemorySkillRepository()
+    await repository.create('user_1', {
+      id: 'guide', name: 'guide', scope: 'global', mode: 'always-loaded', body: 'Use relevant tools carefully.',
+      toolIds: ['acme/search', 'acme/secret', 'missing/tool'],
+    })
+    await repository.create('user_1', {
+      id: 'discoverable-guide', name: 'discoverable-guide', scope: 'global', mode: 'discoverable', body: 'Not loaded yet.',
+      toolIds: ['acme/search'],
+    })
+    const tools = [
+      { id: 'tool_search', tool_id: 'acme/search', namespace: 'acme', adapter: 'http', target: 'https://example.test', operation: 'search', description: 'Search the authorized index', input_schema: { type: 'object' }, output_schema: {}, risk: 'external', requires_approval: true, enabled: true, owner_id: 'user_1' },
+      { id: 'tool_secret', tool_id: 'acme/secret', namespace: 'acme', adapter: 'http', target: 'https://example.test', operation: 'secret', description: 'Must not be disclosed', input_schema: { type: 'object' }, output_schema: {}, risk: 'external', requires_approval: false, enabled: true, owner_id: 'user_1' },
+    ]
+    const data = baseData({
+      agent: { ...baseData().agent, tool_context_modes: { 'acme/search': 'always', 'acme/secret': 'always' }, skill_context_modes: { guide: 'always-loaded' } },
+      policies: [
+        { id: 'allow-search', user_id: 'user_1', agent_id: 'agent_1', tool_id: 'acme/search', effect: 'approval' },
+        { id: 'deny-secret', user_id: 'user_1', agent_id: 'agent_1', tool_id: 'acme/secret', effect: 'deny' },
+      ],
+      tools,
+    })
+    const runtime = await loadAgentRuntime(clientFor(data), 'user_1', 'builder', undefined, { skillRepository: repository })
+
+    expect(runtime.systemPrompt).toContain('acme/search: Search the authorized index')
+    expect(runtime.systemPrompt).not.toContain('Must not be disclosed')
+    expect(runtime.systemPrompt).not.toContain('missing/tool')
+    expect(runtime.systemPrompt).not.toContain('discoverable-guide tool references')
+    expect(runtime.toolPolicy.allowedToolIds).toEqual(['acme/search'])
+    expect(runtime.toolPolicy.deniedToolIds).toEqual(['acme/secret'])
+    expect(runtime.toolPolicy.approvalToolIds).toEqual(['acme/search'])
+    expect(runtime.pi.allowedToolNames).toEqual(['subpolar-tools'])
+
+    const noHintsForSession = await loadAgentRuntime(clientFor(data), 'user_1', 'builder', undefined, { skillRepository: repository, permissionOverride: 'none' })
+    expect(noHintsForSession.systemPrompt).not.toContain('acme/search: Search the authorized index')
+    expect(noHintsForSession.pi.allowedToolNames).toEqual(runtime.pi.allowedToolNames)
+  })
+
+  it('explicit profile selection loads the Development Workflow skill instructions only', async () => {
+    const repository = new InMemorySkillRepository()
+    const { DEVELOPMENT_WORKFLOW_SKILL } = await import('../../../packages/subpolar-contracts/src/index.ts')
+    await repository.create('user_1', DEVELOPMENT_WORKFLOW_SKILL)
+    const runtime = await loadAgentRuntime(clientFor(baseData({
+      agent: { ...baseData().agent, skill_context_modes: { 'development-workflow': 'explicit-only' } },
+    })), 'user_1', 'builder', undefined, { skillRepository: repository })
+
+    expect(runtime.systemPrompt).toContain('## Development workflow')
+    expect(runtime.skillContext[0]).toMatchObject({ id: 'development-workflow', body: DEVELOPMENT_WORKFLOW_SKILL.body })
+    expect(runtime.toolPolicy.allowedToolIds).toEqual([])
+    expect(runtime.pi.allowedToolNames).toEqual([])
+  })
+
   it('fails closed for an agent returned with another owner', async () => {
     const promise = loadAgentRuntime(clientFor(baseData({
       agent: { ...baseData().agent, user_id: 'other_user' },

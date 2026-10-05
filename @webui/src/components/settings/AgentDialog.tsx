@@ -43,6 +43,7 @@ const agentFormSchema = z.object({
   model: z.string().optional(),
   thinking: z.enum(['off', 'minimal', 'low', 'medium', 'high']),
   approval_mode: z.enum(['auto', 'ask', 'deny']),
+  developmentWorkflow: z.boolean(),
 })
 
 type AgentFormValues = z.infer<typeof agentFormSchema>
@@ -74,6 +75,7 @@ interface Agent {
   model?: string
   thinking?: 'off' | 'minimal' | 'low' | 'medium' | 'high'
   approval_mode?: 'auto' | 'ask' | 'deny'
+  skill_context_modes?: Record<string, 'always-loaded' | 'discoverable' | 'explicit-only' | 'disabled'>
   [key: string]: unknown
 }
 
@@ -197,6 +199,7 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
       model: agent?.agent.model || '',
       thinking: agent?.agent.thinking || 'medium',
       approval_mode: agent?.agent.approval_mode || 'ask',
+      developmentWorkflow: agent?.agent.skill_context_modes?.['development-workflow'] === 'explicit-only',
     }
   }, [policies])
 
@@ -297,23 +300,7 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
   }, [form, skillAccess, toolAccess])
 
   const handleSubmit = async (values: AgentFormValues) => {
-    const selectedGeneratedToolIds = new Set((values.skillAccess ?? []).flatMap((skill) => {
-      const tool = subpolarTools.find((item) => generatedToolSkillName(item.tool_id) === skill.id)
-      return tool ? [tool.tool_id] : []
-    }))
-    const configuredToolIds = new Set((values.toolAccess ?? [])
-      .filter((tool) => tool.type === 'subpolar')
-      .map((tool) => tool.id))
-    const effectiveToolAccess = [
-      ...(values.toolAccess ?? []).map((tool) =>
-        tool.type === 'subpolar' && selectedGeneratedToolIds.has(tool.id)
-          ? { ...tool, permission: 'allow' as const }
-          : tool,
-      ),
-      ...[...selectedGeneratedToolIds]
-        .filter((toolId) => !configuredToolIds.has(toolId))
-        .map((toolId) => ({ type: 'subpolar' as const, id: toolId, permission: 'allow' as const })),
-    ]
+    const effectiveToolAccess = values.toolAccess ?? []
     const agent: Agent = {
       prompt: values.prompt,
       systemPrompt: values.systemPrompt.trim() || promptPreview,
@@ -325,6 +312,10 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
       ,model: values.model || ''
       ,thinking: values.thinking
       ,approval_mode: values.approval_mode
+      ,skill_context_modes: {
+        ...(editingAgent?.agent.skill_context_modes ?? {}),
+        'development-workflow': values.developmentWorkflow ? 'explicit-only' : 'disabled',
+      }
     }
 
     if (editingAgent?.agent.mode) {
@@ -487,6 +478,12 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
                   <FormItem><FormLabel>Approval</FormLabel><Select value={field.value} onValueChange={field.onChange}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent><SelectItem value="auto">Automatic</SelectItem><SelectItem value="ask">Ask</SelectItem><SelectItem value="deny">Deny mutations</SelectItem></SelectContent></Select></FormItem>
                 )} />
               </div>
+              <FormField control={form.control} name="developmentWorkflow" render={({ field }) => (
+                <FormItem className="flex items-start justify-between gap-4 rounded-md border p-3">
+                  <div><FormLabel>Enable Development Workflow skill</FormLabel><FormDescription>Explicit profile opt-in. Create the Development Workflow skill from the Skills settings template first. This adds instructions only and never grants tools or changes approvals.</FormDescription></div>
+                  <FormControl><Switch checked={field.value} onCheckedChange={field.onChange} /></FormControl>
+                </FormItem>
+              )} />
               <FormField control={form.control} name="model" render={({ field }) => (
                 <FormItem><FormLabel>Model default</FormLabel><FormControl><Input {...field} placeholder="Provider/model (optional)" /></FormControl></FormItem>
               )} />

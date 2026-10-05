@@ -174,6 +174,8 @@ export const useCreateSession = (
         agent?: string;
         model?: string;
         permission?: 'ask' | 'none' | 'allow_all';
+        worktreeId?: string;
+        repositoryId?: string;
       }) => {
       if (!client) throw new Error("No client available");
       return client.createSession(data);

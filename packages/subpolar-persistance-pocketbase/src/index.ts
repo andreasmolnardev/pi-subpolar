@@ -428,6 +428,7 @@ function mapSkill(record: PocketBaseStoredRecord, trustedOwner?: string): Skill 
     metadata: asJson(record, "metadata", {}) as Record<string, string>,
     body: asString(record, "body"),
     reference: asOptionalString(record, "reference"),
+    ...(Array.isArray(record.toolIds) ? { toolIds: record.toolIds } : {}),
     ...(record.agentId === undefined ? {} : { agentId: asString(record, "agentId") }),
     ...(record.projectId === undefined ? {} : { projectId: asString(record, "projectId") }),
   } as Skill;
@@ -445,6 +446,7 @@ function skillData(skill: Skill, ownerId: string): Record<string, unknown> {
     metadata: clone(skill.metadata),
     body: skill.body,
     ...(skill.reference === undefined ? {} : { reference: skill.reference }),
+    ...(skill.toolIds === undefined ? {} : { toolIds: [...skill.toolIds] }),
     ...(skill.agentId === undefined ? {} : { agentId: skill.agentId }),
     ...(skill.projectId === undefined ? {} : { projectId: skill.projectId }),
   };

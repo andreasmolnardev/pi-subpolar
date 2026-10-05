@@ -67,7 +67,7 @@ export const DEFAULT_USER_PREFERENCES = {
   directShortcuts: ['submit', 'abort', 'commandPalette'],
   keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
   customCommands: [],
-  gitCredentials: [],
+
   gitIdentity: { name: 'Pi Agent', email: '' },
   tts: DEFAULT_TTS_CONFIG,
   stt: DEFAULT_STT_CONFIG,
@@ -127,6 +127,7 @@ export interface SkillFileInfo {
   metadata?: Record<string, string>
   body: string
   reference?: string
+  toolIds?: string[]
   agentId?: string
   projectId?: string
   description: string
@@ -147,8 +148,8 @@ export type IntegrationSettings = any
 export type DefaultModels = any
 export type AgentDefinition = any
 export type SkillDiscoveryMode = any
-export type CreateSkillRequest = { id: string; name: string; scope: SkillScope; mode?: SkillContextMode; metadata?: Record<string, string>; body: string; reference?: string; agentId?: string; projectId?: string; description?: string; repoId?: number | string; version?: 1 }
-export type UpdateSkillRequest = { version: number; name?: string; mode?: SkillContextMode; metadata?: Record<string, string>; body?: string; reference?: string; description?: string; repoId?: number | string }
+export type CreateSkillRequest = { id: string; name: string; scope: SkillScope; mode?: SkillContextMode; metadata?: Record<string, string>; body: string; reference?: string; toolIds?: string[]; agentId?: string; projectId?: string; description?: string; repoId?: number | string; version?: 1 }
+export type UpdateSkillRequest = { version: number; name?: string; mode?: SkillContextMode; metadata?: Record<string, string>; body?: string; reference?: string; toolIds?: string[]; description?: string; repoId?: number | string }
 export type GeneralChatStatus = any
 export type GeneralChatInitRequest = any
 export type NotificationPreferences = any

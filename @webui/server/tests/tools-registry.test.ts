@@ -95,7 +95,8 @@ describe('secure tool registry validation', () => {
       delete: async () => undefined,
     })
     const client = { collection } as never
-    const created = await manageRegisteredTool(client, 'create-cli', { tool_id: 'local/bun-version', namespace: 'local', description: 'Bun version', executable: 'bun', fixed_args: ['--version'], max_args: 0 }, 'u1') as Record<string, unknown>
+    await expect(manageRegisteredTool(client, 'create-cli', { tool_id: 'local/git', namespace: 'local', description: 'Git', executable: 'git', max_args: 32 }, 'u1')).rejects.toThrow('approved executable set')
+        const created = await manageRegisteredTool(client, 'create-cli', { tool_id: 'local/bun-version', namespace: 'local', description: 'Bun version', executable: 'bun', fixed_args: ['--version'], max_args: 0 }, 'u1') as Record<string, unknown>
     expect(created.requires_approval).toBe(true)
     expect((created.metadata as Record<string, unknown>).cli).toMatchObject({ executable: 'bun', maxArgs: 0 })
     const previousTrusted = process.env.SUBPOLAR_TRUSTED_HOST_EXECUTION

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type PocketBase from 'pocketbase'
-import { agentTemplateDefaults, evaluateAgentToolPolicy, listToolsForAgent, describeToolForAgent, searchToolsForAgent, createCoreToolGateway, type AgentDefinition, type ToolDefinition } from '../application/tools/tools.ts'
+import { agentTemplateDefaults, evaluateAgentToolPolicy, listToolsForAgent, describeToolForAgent, searchToolsForAgent, createCoreToolGateway, invokeExternalTool, type AgentDefinition, type ToolDefinition } from '../application/tools/tools.ts'
 import { createMcpAdapter, type McpTransport } from '../application/tools/mcp-adapter.ts'
 import { compareRegistrySnapshots } from '../application/tools/registry-comparison.ts'
 import { proposeTools } from '../application/tools/tools-teach.ts'
@@ -31,6 +31,16 @@ function database(profile: AgentDefinition, tools: ToolDefinition[], policies: A
 }
 
 describe('registry discovery policy parity', () => {
+  it('publishes only read-only Git gateway definitions with no caller-selected project context', async () => {
+    const ids = ['git.status', 'git.diff', 'git.log', 'git.branch']
+    const definitions = ids.map((id) => tool(id, { adapter: 'internal', target: 'git', operation: id.slice(4), input_schema: { type: 'object', properties: id === 'git.diff' ? { path: { type: 'string' }, ref: { type: 'string' }, staged: { type: 'boolean' } } : id === 'git.log' ? { path: { type: 'string' }, ref: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 100 } } : {}, additionalProperties: false }, risk: 'read', requires_approval: false }))
+    const gateway = await createCoreToolGateway(database(agent(), definitions, []), 'owner')
+    expect(gateway.tools.map((item) => item.id)).toEqual(ids)
+    expect(gateway.tools.map((item) => item.risk)).toEqual(['low', 'low', 'low', 'low'])
+    expect(gateway.lookup('git.diff')?.inputSchema).not.toHaveProperty('properties.projectId')
+    expect(gateway.lookup('git.diff')?.inputSchema).not.toHaveProperty('properties.repository')
+    await expect(invokeExternalTool({} as never, definitions[0]!, {}, '/workspace', 'call')).rejects.toThrow('owned session')
+  })
   it('keeps owner-private tools out of discovery and gateway definitions', async () => {
     const own = { ...tool('acme/own'), owner_id: 'owner' }
     const shared = tool('acme/shared')
