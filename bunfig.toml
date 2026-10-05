@@ -1,0 +1,3 @@
+[install]
+# A single root workspace tree shares compatible package versions across hosts.
+linker = "hoisted"

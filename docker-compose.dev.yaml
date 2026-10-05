@@ -38,7 +38,7 @@ services:
       - "4173:4173"
     volumes:
       - .:/app
-      - webui_node_modules:/app/@webui/node_modules
+      - workspace_node_modules:/app/node_modules
 
 volumes:
-  webui_node_modules:
+  workspace_node_modules:

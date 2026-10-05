@@ -44,6 +44,31 @@ browser presentation layer. Application integrations live under
 [`@webui/subpolar`](./@webui/subpolar) and are loaded through the Pi SDK. See
 [`WEBUI_FEATURES.md`](./WEBUI_FEATURES.md) for the WebUI feature scope.
 
+## Install and validate
+
+Use **Bun 1.3.14** from the repository root. `@webui` and `packages/*` are one
+workspace; `bunfig.toml` selects the hoisted linker and `bun.lock` is the lockfile.
+
+```sh
+bun --version
+bun install --frozen-lockfile
+bun run typecheck
+bun run build
+bun run test:core
+bun run test:ui
+bun run test:server
+bun run test:voice
+```
+
+Install once at the root, not separately in `@webui` or individual packages.
+Hoisting shares compatible dependencies; incompatible versions may still need
+nested copies. It is not a universal deduplication guarantee.
+Vitest suites require a supported Node runtime on `PATH` (Node 22.12+ on the
+22.x line, or a supported newer LTS). Their scripts use `bun x --no-install`
+without forcing Vitest onto Bun. Bun remains the package manager and application
+runtime; npm is not required.
+See [Bun and multi-user operations](docs/bun-and-multi-user.md) for details.
+
 ## WebUI
 
 `@webui` is a local browser UI backed by an in-process Pi SDK session manager. Read
@@ -61,6 +86,36 @@ cp /path/to/pi-subpolar/.env.example /path/to/pi-subpolar/.env
 Open `http://localhost:5173`. The first unauthenticated visit opens the PocketBase-backed
 setup flow; subsequent application routes require a valid `pb_auth` session cookie.
 
+### Current multi-user limits
+
+WebUI inference requires the authenticated user's **owned provider accounts**;
+server environment keys and local Pi auth/model files are not a tenant fallback.
+Custom-provider CRUD/discovery exists, but custom-provider inference is not wired
+up and fails closed. Proxy clients need an owner token and an account-qualified
+model from that owner's model list.
+
+Owner-scoped records and workspace checks are application boundaries, **not an
+OS sandbox**. The shared-host tool gateway disables arbitrary shell, subprocess
+search, registered CLI by default, and MCP stdio. Other subprocess/management
+paths still require review. Do not expose this host to hostile tenants; no
+per-tenant worker dispatch is implemented. Live two-user verification remains
+outstanding; focused/stubbed tests are not deployment certification.
+See [operational limits and verification](docs/bun-and-multi-user.md#multi-user-boundaries).
+
+### ChatGPT sign-in
+
+In **Settings → Providers → Providers**, choose **Sign in with ChatGPT** to connect
+an eligible ChatGPT account through Pi 1.0.2's native normal `openai` provider.
+The new flow uses browser authorization, with a full redirect-URL fallback for
+remote servers. Device-code login belongs to the separate `openai-codex` provider.
+OpenAI API-key authentication remains available, and account/model limits apply.
+See [ChatGPT sign-in](docs/chatgpt-sign-in.md) for callback, storage, and account details.
+
+### Integration progress
+
+See [parallel feature progress](docs/feature-progress.md) for the current implementation,
+validation results, and remaining deployment/design gates across the feature workstreams.
+
 ### Docker development
 
 Docker Compose runs PocketBase and the WebUI in separate containers. Create the local
@@ -74,5 +129,8 @@ docker compose -f docker-compose.dev.yaml up --build
 ```
 
 Then open `http://localhost:5173`. PocketBase is available at `http://localhost:8090`.
+The image uses Bun 1.3.14 and a Node 22 runtime (without npm) for Vitest. It
+installs the root workspace with the frozen Bun lockfile. Compose is a shared
+application container, not a per-tenant sandbox.
 The PocketBase data is persisted in `pocketbase/pb_data`. Stop the stack with
 `Ctrl-C`, or run `docker compose -f docker-compose.dev.yaml down` from another terminal.

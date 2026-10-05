@@ -4,17 +4,27 @@ Local browser UI for the Pi SDK embedded in this repository. The bridge creates 
 
 ## Start
 
-From any directory:
+Install the whole workspace once from the repository root using Bun 1.3.14:
 
 ```sh
-./start-webui.sh
+bun install --frozen-lockfile
+```
+
+The root `bunfig.toml` selects hoisted dependencies. Compatible versions can be
+shared, but incompatible versions may retain nested copies; do not install a
+separate dependency tree here. Start PocketBase and configure `.env` as below,
+then start from any directory:
+
+```sh
+/path/to/pi-subpolar/start-webui.sh
 ```
 
 Equivalent manual startup (using the repository's absolute path):
 
 ```sh
-bun /path/to/pi-subpolar/@webui/bridge.ts
-cd /path/to/pi-subpolar/@webui && npm run dev
+bun --env-file=/path/to/pi-subpolar/.env /path/to/pi-subpolar/@webui/bridge.ts
+# In a second terminal:
+bun run --cwd /path/to/pi-subpolar/@webui dev
 ```
 
 Open `http://localhost:5173`.
@@ -43,8 +53,10 @@ Core routes live under `/api/sessions/:id` for prompt, state, messages, stats, a
 Extension routes live under `/api/extensions`: `projects`, `profiles`, `tools`, `commands`, `usage`, `session-title`, `session-search`, and `openapi-tools`. The old file-backed Pi CLI extension commands are not loaded by the WebUI; use these application routes instead.
 
 Tool routing is centralized under `/api/subpolar-cli/tools/*`.
-Pi built-in tools are centrally exposed as `read`, `write`, `edit`, `bash`, `grep`,
-`find`, and `ls`. External tools use canonical `provider/tool` IDs and are called
+Pi built-in file tools `read`, `write`, `edit`, and `ls` require a validated,
+owned session workspace and relative, unlinked paths. Arbitrary `bash`, subprocess
+`grep`/`find`, and MCP stdio are disabled at the shared-host tool gateway;
+registered CLI is disabled by default. External tools use canonical `provider/tool` IDs and are called
 through `subpolar-tools`; `search-tool` discovers them with a required query. The PocketBase router applies agent policies and run overrides,
 creates approval records for writes and commands, waits for approval, and writes an audit
 record for every decision. The `search-tool` Pi tool requires a non-empty query and
@@ -59,3 +71,37 @@ an in-memory SDK session. The process-local active-session map is only a
 reconstructable streaming/cancellation fast path; PocketBase remains authoritative
 across bridge restarts. Existing Pi JSONL transcripts are a legacy CLI format and
 are not imported automatically.
+
+## Validation
+
+From the repository root:
+
+```sh
+bun run typecheck
+bun run build
+bun run test:ui
+bun run test:server
+bun run test:voice
+```
+
+Vitest is launched with `bun x --no-install` using a supported Node runtime on
+`PATH`, not `bun run --bun vitest`. Use Node 22.12+ on the 22.x line or a supported
+newer LTS. Bun-native server tests remain on Bun. The Docker image includes Node
+without npm for the Vitest suites.
+
+## Multi-user operating limits
+
+Provider credentials must belong to the authenticated user. WebUI/proxy inference
+does not fall back to server environment keys or local Pi auth/model files.
+Custom-provider CRUD/discovery is not inference support: unknown/custom inference
+fails closed until an owner-bound secret-loading implementation exists. Proxy
+clients use an owner token and that owner's account-qualified model IDs.
+
+There is **no OS sandbox** or implemented per-tenant worker dispatch. Workspace
+fences and owner-scoped persistence do not make a shared host safe for hostile
+tenants. The tool gateway restrictions do not certify every direct MCP management,
+git, browser, voice, or other subprocess path. Local MCP command examples in the
+UI describe argv syntax, not permission to execute stdio on a shared host.
+Live two-user verification remains outstanding. See
+[Bun and multi-user operations](../docs/bun-and-multi-user.md) for deployment
+constraints, focused checks, and the remaining live verification checklist.

@@ -1,17 +1,23 @@
 {
   "name": "pi-subpolar",
   "private": true,
+  "packageManager": "bun@1.3.14",
+  "engines": { "bun": ">=1.3.14" },
   "workspaces": [
+    "@webui",
     "packages/*"
   ],
   "scripts": {
     "dev": "./start-webui.sh",
     "start": "./start-webui.sh",
-    "webui": "npm --prefix @webui run dev",
+    "webui": "bun run --cwd @webui dev",
     "bridge": "bun @webui/bridge.ts",
     "tools:cli": "bun packages/subpolar-tools/src/cli.ts",
-    "typecheck": "npm --prefix @webui run typecheck",
-    "build": "npm --prefix @webui run build",
+    "typecheck": "bun run --cwd @webui typecheck && bun run --cwd @webui bridge:typecheck",
+    "build": "bun run --cwd @webui build",
+        "test:ui": "bun run --cwd @webui test:ui",
+        "test:server": "bun run --cwd @webui test:server",
+        "test:voice": "bun run --cwd @webui test:voice",
     "test:core": "bun test packages/subpolar-contracts packages/subpolar-core packages/subpolar-persistance-local packages/subpolar-persistance-pocketbase packages/subpolar-core-pi packages/subpolar-tools packages/subpolar-cli",
     "test:e2e:contract": "bun test e2e/contract-smoke.test.ts",
     "test:e2e:live": "E2E_LIVE=true bun test e2e/live-smoke.test.ts"

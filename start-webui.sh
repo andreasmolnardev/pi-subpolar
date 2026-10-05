@@ -19,8 +19,13 @@ cleanup() {
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT TERM
 
-if [[ ! -x "$root_dir/@webui/node_modules/.bin/vite" ]]; then
-  npm --prefix "$root_dir/@webui" install
+if ! command -v bun >/dev/null 2>&1; then
+  echo "Bun 1.3.14 or newer is required" >&2
+  exit 1
+fi
+
+if [[ ! -x "$root_dir/node_modules/.bin/vite" ]]; then
+  (cd "$root_dir" && bun install --frozen-lockfile)
 fi
 
 bridge_env_args=()
@@ -50,6 +55,6 @@ if [[ "$bridge_ready" != true ]]; then
   exit 1
 fi
 
-npm --prefix "$root_dir/@webui" run dev &
+bun run --cwd "$root_dir/@webui" dev &
 frontend_pid=$!
 wait "$frontend_pid"
