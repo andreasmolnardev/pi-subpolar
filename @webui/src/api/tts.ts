@@ -1,6 +1,6 @@
 import { API_BASE_URL } from '@/config'
-import { fetchWrapper, fetchWrapperBlob } from './fetchWrapper'
-import type { VoiceProvider } from './voice'
+import { fetchWrapper, FetchError } from './fetchWrapper'
+import { requestVoiceBytes, VOICE_CLIENT_LIMITS, type VoiceProvider } from './voice'
 import { getVoiceRequestHeaders } from './stt'
 
 export interface TTSModelsResponse {
@@ -62,12 +62,15 @@ export const ttsApi = {
   },
 
   synthesize: async (text: string, userId = 'default', signal?: AbortSignal): Promise<Blob> => {
-    return fetchWrapperBlob(`${API_BASE_URL}/api/tts/synthesize`, {
+    if (!text.trim() || text.trim().length > VOICE_CLIENT_LIMITS.textChars) throw new FetchError('Text exceeds size limit', 413, 'SIZE_LIMIT')
+    const url = new URL(`${API_BASE_URL}/api/tts/synthesize`, window.location.origin)
+    url.searchParams.set('userId', userId)
+    const { bytes, mimeType } = await requestVoiceBytes(url.toString(), {
       method: 'POST',
-      params: { userId },
       headers: getVoiceRequestHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text: text.trim() }),
       signal,
-    })
+    }, VOICE_CLIENT_LIMITS.ttsOutputBytes, VOICE_CLIENT_LIMITS.ttsTimeoutMs)
+    return new Blob([new Uint8Array(bytes)], { type: mimeType })
   },
 }

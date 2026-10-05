@@ -44,7 +44,7 @@ describe('voice backend seam', () => {
         controller.close()
       },
     })
-    const response = await handleVoiceRoute(new Request('http://localhost/api/stt/transcribe', { method: 'POST', body }), backends(), authorization)
+    const response = await handleVoiceRoute(new Request('http://localhost/api/stt/transcribe', { method: 'POST', body, duplex: 'half' } as RequestInit & { duplex: 'half' }), backends(), authorization)
     expect(response?.status).toBe(413)
   })
 

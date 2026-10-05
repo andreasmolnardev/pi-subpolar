@@ -1,12 +1,13 @@
 import { API_BASE_URL } from '@/config'
 import { fetchWrapper, FetchError } from './fetchWrapper'
-import type { VoiceProvider } from './voice'
+import { requestVoiceBytes, VOICE_CLIENT_LIMITS, type VoiceProvider } from './voice'
 
 export function getActiveSessionId(): string | undefined {
   if (typeof window === 'undefined') return undefined
 
   const match = window.location.pathname.match(/\/sessions\/([^/]+)/)
-  return match?.[1] ? decodeURIComponent(match[1]) : undefined
+  try { return match?.[1] ? decodeURIComponent(match[1]) : undefined }
+  catch { return undefined }
 }
 
 export function getVoiceRequestHeaders(headers: HeadersInit = {}): Headers {
@@ -67,6 +68,7 @@ export const sttApi = {
     userId = 'default',
     signal?: AbortSignal
   ): Promise<STTTranscribeResponse> => {
+    if (audioBlob.size > VOICE_CLIENT_LIMITS.audioBytes) throw new FetchError('Audio exceeds size limit', 413, 'SIZE_LIMIT')
     const formData = new FormData()
 
     const type = audioBlob.type
@@ -80,47 +82,13 @@ export const sttApi = {
     const urlObj = new URL(`${API_BASE_URL}/api/stt/transcribe`, window.location.origin)
     urlObj.searchParams.set('userId', userId)
 
-    const controller = new AbortController()
-    let timeoutFired = false
-    const timeoutId = setTimeout(() => {
-      timeoutFired = true
-      controller.abort()
-    }, 60000)
-
-    if (signal?.aborted) {
-      controller.abort()
-    }
-    const onAbort = () => controller.abort()
-    signal?.addEventListener('abort', onAbort, { once: true })
-
+    const { bytes } = await requestVoiceBytes(urlObj.toString(), {
+      method: 'POST', body: formData, headers: getVoiceRequestHeaders(), signal,
+    }, VOICE_CLIENT_LIMITS.sttOutputBytes, VOICE_CLIENT_LIMITS.sttTimeoutMs)
     try {
-      const response = await fetch(urlObj.toString(), {
-        method: 'POST',
-        body: formData,
-        headers: getVoiceRequestHeaders(),
-        signal: controller.signal,
-      })
-
-      clearTimeout(timeoutId)
-      signal?.removeEventListener('abort', onAbort)
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({ error: 'Transcription failed' }))
-        throw new FetchError(data.error || 'Transcription failed', response.status)
-      }
-
-      return response.json()
-    } catch (error) {
-      clearTimeout(timeoutId)
-      signal?.removeEventListener('abort', onAbort)
-
-      if (error instanceof Error && error.name === 'AbortError') {
-        if (signal?.aborted && !timeoutFired) {
-          throw new FetchError('Transcription canceled', 499, 'CANCELED')
-        }
-        throw new FetchError('Transcription timeout', 408, 'TIMEOUT')
-      }
-      throw error
-    }
+      const result: unknown = JSON.parse(new TextDecoder().decode(bytes))
+      if (!result || typeof result !== 'object' || !('text' in result) || typeof result.text !== 'string' || ('partial' in result && result.partial !== undefined && typeof result.partial !== 'string')) throw new Error('Invalid transcript')
+      return result as STTTranscribeResponse
+    } catch { throw new FetchError('Invalid transcription response', 200, 'INVALID_JSON') }
   },
 }
