@@ -37,8 +37,8 @@ export function McpManager({ config, onUpdate, onConfigUpdate }: McpManagerProps
     status: mcpStatus, 
     isLoading: isLoadingStatus,
     refetch: refetchStatus,
-    connect,
-    disconnect,
+    connectAsync: connect,
+    disconnectAsync: disconnect,
     removeAuthAsync,
     isRemovingAuth
   } = useMcpServers()
@@ -101,9 +101,11 @@ export function McpManager({ config, onUpdate, onConfigUpdate }: McpManagerProps
       } else if (currentStatus.status === 'failed') {
         await connect(serverId)
       }
+    } catch {
+      // The mutation hook reports the error; keep the card ready for a retry.
     } finally {
       setTogglingServerId(null)
-      refetchStatus()
+      await refetchStatus()
     }
   }
 
@@ -224,7 +226,8 @@ export function McpManager({ config, onUpdate, onConfigUpdate }: McpManagerProps
             <AddMcpServerDialog 
               open={isAddDialogOpen} 
               onOpenChange={setIsAddDialogOpen}
-              onUpdate={onConfigUpdate}
+              configName={config.name}
+              onUpdate={onConfigUpdate ?? (async (_name, content) => onUpdate(content))}
             />
           </Dialog>
         </div>

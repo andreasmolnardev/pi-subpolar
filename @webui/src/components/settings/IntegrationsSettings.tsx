@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { settingsApi } from '@/api/settings'
+import { formatMcpCommand, parseMcpCommand } from '@/api/mcp'
 import { showToast } from '@/lib/toast'
 
 type IntegrationBase = {
@@ -165,6 +166,7 @@ function McpKeyValueFields({ label, description, values, disabled, onChange }: M
 
 function IntegrationDialog({ open, integration, isSaving, onOpenChange, onSave }: IntegrationDialogProps) {
   const [formData, setFormData] = useState<IntegrationConfig>(createIntegration('mcp'))
+  const [commandText, setCommandText] = useState('[]')
   const [calDavCalendars, setCalDavCalendars] = useState<Array<{ name: string; url: string; description?: string }>>([])
   const [isDiscoveringCalendars, setIsDiscoveringCalendars] = useState(false)
   const [isTestingCalDav, setIsTestingCalDav] = useState(false)
@@ -174,6 +176,7 @@ function IntegrationDialog({ open, integration, isSaving, onOpenChange, onSave }
   useEffect(() => {
     if (!open) return
     setFormData(integration ?? createIntegration('mcp'))
+    setCommandText(formatMcpCommand(integration?.type === 'mcp' ? integration.command : []))
     setCalDavCalendars([])
     setIsTestingCalDav(false)
     setDiscoveredTools([])
@@ -193,11 +196,17 @@ function IntegrationDialog({ open, integration, isSaving, onOpenChange, onSave }
       return
     }
 
+    let integrationToSave = formData
     if (formData.type === 'mcp') {
-      if (formData.transport === 'stdio' && !(formData.command?.length)) {
-        showToast.error('A command is required for a local MCP server')
-        return
+      if (formData.transport === 'stdio') {
+        try {
+          integrationToSave = { ...formData, command: parseMcpCommand(commandText) }
+        } catch (error) {
+          showToast.error(error instanceof Error ? error.message : 'Invalid MCP command')
+          return
+        }
       }
+
       if (formData.transport === 'streamable-http' && !formData.serverUrl?.trim()) {
         showToast.error('A server URL is required for a remote MCP server')
         return
@@ -209,7 +218,7 @@ function IntegrationDialog({ open, integration, isSaving, onOpenChange, onSave }
       return
     }
 
-    await onSave(formData)
+    await onSave(integrationToSave)
     onOpenChange(false)
   }
 
@@ -354,8 +363,18 @@ function IntegrationDialog({ open, integration, isSaving, onOpenChange, onSave }
                 {formData.transport === 'stdio' ? <>
                   <div className="space-y-2">
                     <Label htmlFor="mcp-command">Command and arguments</Label>
-                    <Input id="mcp-command" className="font-mono" placeholder="npx -y @modelcontextprotocol/server-filesystem /tmp" value={(formData.command ?? []).join(' ')} onChange={(event) => updateField('command', event.target.value.split(' ').filter(Boolean))} disabled={isSaving} />
-                    <p className="text-xs text-muted-foreground">Runs directly as argv; shell syntax is not interpreted.</p>
+                    <Input
+                      id="mcp-command"
+                      className="font-mono"
+                      placeholder='["bun", "x", "@modelcontextprotocol/server-filesystem", "/tmp"]'
+                      value={commandText}
+                      onChange={(event) => {
+                        setCommandText(event.target.value)
+                        try { updateField('command', parseMcpCommand(event.target.value)) } catch { /* Keep the draft while it is incomplete. */ }
+                      }}
+                      disabled={isSaving}
+                    />
+                    <p className="text-xs text-muted-foreground">Enter a JSON argv array to preserve spaces; shell syntax is not interpreted.</p>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="mcp-cwd">Working directory</Label>

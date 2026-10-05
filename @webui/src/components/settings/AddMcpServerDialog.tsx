@@ -8,6 +8,8 @@ import { Loader2 } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { useMcpServers } from '@/hooks/useMcpServers'
 import { settingsApi } from '@/api/settings'
+import { parseMcpCommand, validateMcpServerInput, type McpServerConfig } from '@/api/mcp'
+import { invalidateConfigCaches } from '@/lib/queryInvalidation'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 interface AddMcpServerDialogProps {
@@ -22,7 +24,7 @@ interface EnvironmentVariable {
   value: string
 }
 
-export function AddMcpServerDialog({ open, onOpenChange, onUpdate }: AddMcpServerDialogProps) {
+export function AddMcpServerDialog({ open, onOpenChange, configName, onUpdate }: AddMcpServerDialogProps) {
   const [serverId, setServerId] = useState('')
   const [serverType, setServerType] = useState<'local' | 'remote'>('local')
   const [command, setCommand] = useState('')
@@ -40,18 +42,22 @@ export function AddMcpServerDialog({ open, onOpenChange, onUpdate }: AddMcpServe
 
   const addMcpServerMutation = useMutation({
     mutationFn: async () => {
-      const config = await settingsApi.getDefaultPiConfig()
-      if (!config) throw new Error('No default config found')
+      const config = configName
+        ? (await settingsApi.getPiConfigs()).configs.find((item) => item.name === configName)
+        : await settingsApi.getDefaultPiConfig()
+      if (!config) throw new Error('Selected configuration not found')
+      const name = serverId.trim()
       
       const currentMcp = (config.content?.mcp as Record<string, unknown>) || {}
       
-      const mcpConfig: Record<string, unknown> = {
+      if (Object.hasOwn(currentMcp, name)) throw new Error('A server with this ID already exists in this configuration')
+      const mcpConfig: McpServerConfig = {
         type: serverType,
         enabled,
       }
 
       if (serverType === 'local') {
-        const commandArray = command.split(' ').filter(arg => arg.trim())
+        const commandArray = parseMcpCommand(command)
         if (commandArray.length === 0) {
           throw new Error('Command is required for local MCP servers')
         }
@@ -59,8 +65,8 @@ export function AddMcpServerDialog({ open, onOpenChange, onUpdate }: AddMcpServe
         
         const envVars: Record<string, string> = {}
         environment.forEach(env => {
-          if (env.key.trim() && env.value.trim()) {
-            envVars[env.key.trim()] = env.value.trim()
+          if (env.key.trim()) {
+            envVars[env.key.trim()] = env.value
           }
         })
         if (Object.keys(envVars).length > 0) {
@@ -81,60 +87,30 @@ export function AddMcpServerDialog({ open, onOpenChange, onUpdate }: AddMcpServe
         }
       }
 
-      if (timeout && parseInt(timeout)) {
-        mcpConfig.timeout = parseInt(timeout)
-      }
+      if (timeout.trim()) mcpConfig.timeout = Number(timeout)
+      validateMcpServerInput(name, mcpConfig)
 
       const updatedConfig = {
         ...config.content,
         mcp: {
           ...currentMcp,
-          [serverId]: mcpConfig,
+          [name]: mcpConfig,
         },
       }
 
-      await settingsApi.updatePiConfig(config.name, { content: updatedConfig })
-      
-      if (enabled) {
-        const buildOauthField = () => {
-          if (serverType !== 'remote' || !oauthEnabled) return undefined
-          const cfg: Record<string, string> = {}
-          if (oauthClientId.trim()) cfg.clientId = oauthClientId.trim()
-          if (oauthClientSecret.trim()) cfg.clientSecret = oauthClientSecret.trim()
-          if (oauthScope.trim()) cfg.scope = oauthScope.trim()
-          return Object.keys(cfg).length > 0 ? cfg : true
-        }
+      if (onUpdate) await onUpdate(config.name, updatedConfig)
+      else await settingsApi.updatePiConfig(config.name, { content: updatedConfig })
 
-        await addServerAsync({ 
-          name: serverId, 
-          config: {
-            type: serverType,
-            enabled,
-            command: serverType === 'local' ? command.split(' ').filter(arg => arg.trim()) : undefined,
-            url: serverType === 'remote' ? url.trim() : undefined,
-            environment: serverType === 'local' && Object.keys(environment).length > 0 
-              ? environment.reduce((acc, env) => {
-                  if (env.key.trim() && env.value.trim()) {
-                    acc[env.key.trim()] = env.value.trim()
-                  }
-                  return acc
-                }, {} as Record<string, string>)
-              : undefined,
-            timeout: timeout && parseInt(timeout) ? parseInt(timeout) : undefined,
-            oauth: buildOauthField(),
-          }
-        })
+      // Persistence succeeded even if connection fails. Do not silently overwrite
+      // that entry on retry: refresh the config and let the card retry connection.
+      invalidateConfigCaches(queryClient)
+      if (enabled) {
+        try { await addServerAsync({ name, config: mcpConfig }) }
+        catch { throw new Error('Server saved, but connection failed. Close this dialog and retry from the server card.') }
       }
     },
     onSuccess: async () => {
-      if (onUpdate) {
-        const config = await settingsApi.getDefaultPiConfig()
-        if (config) {
-          await onUpdate(config.name, config.content)
-        }
-      } else {
-        queryClient.invalidateQueries({ queryKey: ['opencode-config'] })
-      }
+      invalidateConfigCaches(queryClient)
       queryClient.invalidateQueries({ queryKey: ['mcp-status'] })
       handleClose()
     },
@@ -161,6 +137,8 @@ export function AddMcpServerDialog({ open, onOpenChange, onUpdate }: AddMcpServe
   }
 
   const handleClose = () => {
+    if (addMcpServerMutation.isPending) return
+    addMcpServerMutation.reset()
     setServerId('')
     setServerType('local')
     setCommand('')
@@ -186,6 +164,7 @@ export function AddMcpServerDialog({ open, onOpenChange, onUpdate }: AddMcpServe
 
         <div className="flex-1 overflow-y-auto p-2 sm:p-4">
           <div className="space-y-4">
+            {addMcpServerMutation.error && <p role="alert" className="text-sm text-destructive">{addMcpServerMutation.error.message}</p>}
             <div className="space-y-1.5">
               <Label htmlFor="serverId">Server ID</Label>
               <Input
@@ -220,11 +199,11 @@ export function AddMcpServerDialog({ open, onOpenChange, onUpdate }: AddMcpServe
                   id="command"
                   value={command}
                   onChange={(e) => setCommand(e.target.value)}
-                  placeholder="npx @modelcontextprotocol/server-filesystem /tmp"
+                  placeholder="bun x @modelcontextprotocol/server-filesystem /tmp"
                   className="bg-background border-border font-mono"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Command and arguments to run the MCP server
+                  Executable and arguments (no shell). For spaces, use a JSON array such as ["bun", "x", "@modelcontextprotocol/server-filesystem", "/path with spaces"].
                 </p>
               </div>
             ) : (
