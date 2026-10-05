@@ -1,6 +1,12 @@
 /* Domain route extracted from bridge-request-handler.ts. */
 // @ts-nocheck
 import type { BridgeRequestContext } from '../bridge-route-context.ts'
+import { assertPathWithinWorkspace } from '../core/project-filesystem.ts'
+
+function toolMetadataProjection(metadata: Record<string, unknown> = {}) {
+  // Execution configuration can contain secrets under arbitrary env/header names.
+  return Object.fromEntries(['contextMode', 'transport', 'toolName'].filter(key => typeof metadata[key] === 'string').map(key => [key, metadata[key]]))
+}
 
 export async function handleSettingsRoute(context: BridgeRequestContext): Promise<Response | undefined> {
   const { request, url, path, correlationId, deps, gatewayCredential, internalRequest } = context
@@ -16,13 +22,13 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
       const filter = `user_id = "${authenticatedUser.id.replaceAll('"', '\\"')}" && agent_id = "${agent.id.replaceAll('"', '\\"')}"`
       if (request.method === 'GET') {
         const policies = await client.collection('agent_tool_policies').getFullList({ filter })
-        return deps.json({ policies: policies.map((policy) => ({ ...policy, toolId: policy.tool_id })) })
+        return deps.json({ policies: policies.filter(policy => policy.user_id === authenticatedUser.id && policy.agent_id === agent.id).map((policy) => ({ ...policy, toolId: policy.tool_id })) })
       }
       if (request.method === 'PUT') {
         const input = await deps.body(request)
         const policies = Array.isArray(input.policies) ? input.policies : []
         const existing = await client.collection('agent_tool_policies').getFullList({ filter })
-        for (const policy of existing) await client.collection('agent_tool_policies').delete(policy.id)
+        for (const policy of existing.filter(policy => policy.user_id === authenticatedUser.id && policy.agent_id === agent.id)) await client.collection('agent_tool_policies').delete(policy.id)
         const now = Date.now()
         const saved = []
         for (const value of policies) {
@@ -47,8 +53,8 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
       const userId = authenticatedUser.id.replaceAll('"', '\\"')
       const tools = await client.collection('tool_registry').getFullList({ filter: `enabled = true && (owner_id = "" || owner_id = "${userId}")`, sort: 'namespace,tool_id' })
       const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${userId}" && effect != "deny"` }).catch(() => [])
-      const policyToolIds = new Set(policies.map((policy) => String(policy.tool_id)))
-      return deps.json({ tools: tools.map((tool) => ({
+      const policyToolIds = new Set(policies.filter(policy => policy.user_id === authenticatedUser.id && policy.effect !== 'deny').map((policy) => String(policy.tool_id)))
+      return deps.json({ tools: tools.filter(tool => tool.enabled === true && (tool.owner_id === '' || tool.owner_id === authenticatedUser.id)).map((tool) => ({
         tool_id: tool.tool_id,
         namespace: tool.namespace,
         adapter: tool.adapter,
@@ -56,7 +62,7 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
         input_schema: tool.input_schema ?? {},
         risk: tool.risk ?? 'read',
         requires_approval: tool.requires_approval === true,
-        metadata: tool.metadata ?? {},
+        metadata: toolMetadataProjection(tool.metadata ?? {}),
       })).filter((tool) => tool.namespace === 'builtin' || policyToolIds.has(tool.tool_id)) })
     } catch (error) {
       console.warn(`Subpolar tool listing failed: ${deps.redactedDiagnostic(error)}`)
@@ -172,15 +178,19 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
     return deps.json({ configs: [], defaultConfig: null })
   }
   if (path[1] === 'settings' && path[2] === 'extensions' && request.method === 'GET') {
+    if (!authenticatedUser) return deps.json({ message: 'Unauthorized' }, 401)
     const extensions: Array<{ name: string; path: string; source: 'builtin' | 'global' | 'project' }> = deps.applicationExtensionPaths.filter(deps.existsSync).map((file) => ({ name: file.split('/').pop()?.replace(/\.[^.]+$/, '') ?? file, path: file, source: 'builtin' }))
-    const directories = [
-      { directory: deps.join(deps.homedir(), '.pi', 'agent', 'extensions'), source: 'global' as const },
-      { directory: deps.join(deps.root, '.pi', 'extensions'), source: 'project' as const },
-    ]
+    // Host-global and server checkout extensions are not tenant configuration.
+    const repository = deps.createProjectSessionRepository(await deps.applicationDatabase())
+    const directories = []
+    for (const project of await repository.listProjects(authenticatedUser.id)) {
+      try { await repository.assertProjectPathAvailable(authenticatedUser.id, project.path); directories.push({ directory: assertPathWithinWorkspace(deps.join(project.path, '.pi', 'extensions'), project.path), source: 'project' as const }) } catch { /* Stale ownership must not expose host paths. */ }
+    }
     for (const source of directories) {
       if (!deps.existsSync(source.directory)) continue
       try {
         for (const entry of deps.readdirSync(source.directory, { withFileTypes: true })) {
+          if (entry.isSymbolicLink()) continue
           extensions.push({ name: entry.name.replace(/\.[^.]+$/, ''), path: deps.join(source.directory, entry.name), source: source.source })
         }
       } catch { /* ignore unreadable extension directories */ }
@@ -189,8 +199,45 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
   }
   if (path[1] === 'settings' && path[2] === 'skills' && authenticatedUser) {
     const skillStore = async () => deps.createOwnerBoundSkillStore(await deps.applicationDatabase(), authenticatedUser!.id)
-    const scope = (value: string | null): 'global' | 'agent' | 'project' | undefined => value === 'global' || value === 'agent' || value === 'project' ? value : undefined
-    const projectId = (value: unknown): string | undefined => typeof value === 'string' || typeof value === 'number' ? String(value) : undefined
+    const invalid = (message: string): never => { throw new deps.SkillValidationError([message]) }
+    const scope = (value: unknown): 'global' | 'agent' | 'project' | undefined => {
+      if (value === undefined) return undefined
+      if (value === 'global' || value === 'agent' || value === 'project') return value
+      return invalid('invalid scope')
+    }
+    const identifier = (value: unknown): string | undefined => {
+      if (value === undefined || value === null) return undefined
+      if ((typeof value === 'string' && value.trim()) || (typeof value === 'number' && Number.isSafeInteger(value) && value > 0)) return String(value)
+      return invalid('invalid scope reference')
+    }
+    const mode = (value: unknown) => {
+      if (value === undefined) return undefined
+      if (['always-loaded', 'discoverable', 'explicit-only', 'disabled'].includes(value)) return value
+      return invalid('invalid mode')
+    }
+    const validateReferences = async (input) => {
+      const selected = { scope: scope(input.scope), agentId: identifier(input.agentId), projectId: identifier(input.projectId ?? input.repoId) }
+      const client = await deps.applicationDatabase()
+      if (selected.agentId) {
+        const agent = await client.collection('agents').getOne(selected.agentId).catch((error) => {
+          if (error?.status === 404) return null
+          throw error
+        })
+        if (!agent || agent.id !== selected.agentId || agent.user_id !== authenticatedUser.id) throw new deps.SkillNotFoundError('Agent not found')
+      }
+      if (selected.projectId) {
+        const repository = deps.createProjectSessionRepository(client)
+        // repoId is the legacy one-based settings project selector, not a durable ID.
+        const project = input.projectId == null && /^\d+$/.test(selected.projectId)
+          ? (await repository.listProjects(authenticatedUser.id))[Number(selected.projectId) - 1]
+          : await repository.getProject(authenticatedUser.id, selected.projectId)
+        if (!project || project.userId !== authenticatedUser.id || (input.projectId != null && project.id !== selected.projectId)) throw new deps.SkillNotFoundError('Project not found')
+        selected.projectId = project.id
+        if (input.projectId != null && input.repoId != null && String(input.repoId) !== selected.projectId) invalid('conflicting project references')
+      }
+      return selected
+    }
+    const queryReferences = () => ({ scope: url.searchParams.get('scope') ?? undefined, agentId: url.searchParams.get('agentId') ?? undefined, projectId: url.searchParams.get('projectId') ?? undefined, repoId: url.searchParams.get('repoId') ?? undefined })
     const skillResponse = (skill: import('../packages/subpolar-contracts/src/index.ts').Skill) => ({
       ...skill,
       description: skill.metadata.description ?? '',
@@ -205,41 +252,53 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
     }
     try {
       if (request.method === 'GET' && path.length === 3) {
-        const skills = await (await skillStore()).list(authenticatedUser.id, { scope: scope(url.searchParams.get('scope')), agentId: url.searchParams.get('agentId') ?? undefined, projectId: url.searchParams.get('projectId') ?? url.searchParams.get('repoId') ?? undefined, includeDisabled: true })
+        const skills = await (await skillStore()).list(authenticatedUser.id, { ...await validateReferences(queryReferences()), includeDisabled: true })
         return deps.json(skills.map(skillResponse))
       }
       if (request.method === 'GET' && path.length === 4) {
-        const skill = await (await skillStore()).get(authenticatedUser.id, decodeURIComponent(path[3]), { scope: scope(url.searchParams.get('scope')), agentId: url.searchParams.get('agentId') ?? undefined, projectId: url.searchParams.get('projectId') ?? url.searchParams.get('repoId') ?? undefined })
+        const skill = await (await skillStore()).get(authenticatedUser.id, decodeURIComponent(path[3]), await validateReferences(queryReferences()))
+        await validateReferences(skill)
         return deps.json(skillResponse(skill))
       }
       if (request.method === 'POST' && path.length === 3) {
         const input = await deps.body(request)
         const name = typeof input.name === 'string' ? input.name : ''
+        const selectedMode = mode(input.mode) ?? 'discoverable'
+        const references = await validateReferences(input)
         const skill = await (await skillStore()).create(authenticatedUser.id, {
           id: typeof input.id === 'string' ? input.id : name,
           name,
-          scope: scope(typeof input.scope === 'string' ? input.scope : null) ?? 'global',
-          mode: input.mode === 'always-loaded' || input.mode === 'explicit-only' || input.mode === 'disabled' ? input.mode : 'discoverable',
+          ...references,
+          scope: references.scope ?? 'global',
+          mode: selectedMode,
           metadata: { ...(input.metadata && typeof input.metadata === 'object' && !Array.isArray(input.metadata) ? input.metadata as Record<string, string> : {}), ...(typeof input.description === 'string' ? { description: input.description } : {}) },
           body: typeof input.body === 'string' ? input.body : '',
           reference: typeof input.reference === 'string' ? input.reference : undefined,
-          agentId: projectId(input.agentId),
-          projectId: projectId(input.projectId ?? input.repoId),
+
         })
         return deps.json(skillResponse(skill), 201)
       }
       if ((request.method === 'PUT' || request.method === 'DELETE') && path.length === 4) {
         const id = decodeURIComponent(path[3])
-        const context = { scope: scope(url.searchParams.get('scope')), agentId: url.searchParams.get('agentId') ?? undefined, projectId: url.searchParams.get('projectId') ?? url.searchParams.get('repoId') ?? undefined }
+        const context = await validateReferences(queryReferences())
         if (request.method === 'DELETE') {
-          await (await skillStore()).delete(id, context)
+          const store = await skillStore()
+          await validateReferences(await store.get(authenticatedUser.id, id, context))
+          await store.delete(id, context)
           return deps.json({ success: true })
         }
         const input = await deps.body(request)
+        mode(input.mode)
+        const suppliedReferences = await validateReferences(input)
+        for (const key of ['scope', 'agentId', 'projectId']) {
+          if (suppliedReferences[key] !== undefined && suppliedReferences[key] !== context[key]) invalid('scope references must match query selectors')
+        }
         const version = typeof input.version === 'number' ? input.version : undefined
         if (!Number.isSafeInteger(version)) return deps.json({ error: 'version is required', code: 'INVALID_SKILL' }, 400)
         const nextVersion = version as number
-        const skill = await (await skillStore()).update(authenticatedUser.id, {
+        const store = await skillStore()
+        await validateReferences(await store.get(authenticatedUser.id, id, context))
+        const skill = await store.update(authenticatedUser.id, {
           id,
           version: nextVersion,
           ...context,

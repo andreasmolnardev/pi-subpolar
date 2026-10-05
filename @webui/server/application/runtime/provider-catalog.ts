@@ -213,8 +213,8 @@ function runtimeStatus(runtime: ProviderCatalogRuntime, providerId: string, opti
 
 function methodLabel(kind: ProviderAuthMethodKind, provider: PiProvider | undefined): string {
   if (kind === 'api_key') return safeText(provider?.auth.apiKey?.name, 'API key')
-  if (kind === 'subscription') return safeText(provider?.auth.oauth?.name, 'Subscription')
-  return safeText(provider?.auth.oauth?.name, 'OAuth')
+  return safeText(provider?.auth.oauth?.loginLabel,
+    safeText(provider?.auth.oauth?.name, kind === 'subscription' ? 'Subscription' : 'OAuth'))
 }
 
 function runtimeMethodKinds(runtime: ProviderCatalogRuntime, provider: PiProvider | undefined, providerId: string): ProviderAuthMethodKind[] {
@@ -240,10 +240,10 @@ function authMethods(
   ])
   const runtimeAuth = runtimeStatus(runtime, providerId, options)
   const checked = options.checkedAuth?.[providerId]
-  const configuredKind = runtime.isUsingSubscription?.(providerId) || provider?.auth.oauth?.isSubscription
+  const configuredKind = runtime.isUsingSubscription?.(providerId)
     ? 'subscription'
     : runtime.isUsingOAuth?.(providerId)
-      ? 'oauth'
+      ? (provider?.auth.oauth?.isSubscription ? 'subscription' : 'oauth')
       : 'api_key'
   const checkedKind = checked?.type === 'oauth'
     ? (runtime.isUsingSubscription?.(providerId) || provider?.auth.oauth?.isSubscription ? 'subscription' : 'oauth')

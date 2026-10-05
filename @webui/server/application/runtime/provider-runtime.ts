@@ -2,11 +2,12 @@ import type {
   Api,
   ApiStreamOptions,
   AssistantMessageEventStream,
+  AssistantMessage,
   AuthContext,
   AuthOperationOptions,
   Credential,
   CredentialInfo,
-  Context,
+  TranscriptContext,
   DeferredCancelOptions,
   DeferredFetchOptions,
   DeferredHandle,
@@ -17,6 +18,7 @@ import type {
   RefreshModelsContext,
   SimpleStreamOptions,
 } from '@earendil-works/pi-ai'
+import { InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import { ModelRuntime } from '@earendil-works/pi-coding-agent'
 
 import type { ProviderRuntimeFactory } from './provider-login-flow.ts'
@@ -45,7 +47,7 @@ export interface CreateProviderRuntimeOptions {
   /** The authenticated PocketBase user that owns every account in this runtime. */
   userId: string
   accountService: ProviderRuntimeAccountService
-  /** Use a prebuilt provider runtime as the implementation source for custom providers. */
+  /** Deprecated: shared runtimes are catalog-only and never supply inference implementations or auth. */
   baseRuntime?: ModelRuntime
   /** Avoids a second account-list request when the caller already has the snapshot. */
   accounts?: readonly ProviderAccount[]
@@ -221,11 +223,11 @@ function scopedProviderAuth(auth: ProviderAuth): ProviderAuth {
         ...(baseApiKey.check
           ? {
               check: (input: Parameters<NonNullable<typeof baseApiKey.check>>[0]) =>
-                baseApiKey.check!({ ...input, ctx: EMPTY_AUTH_CONTEXT }),
+                input.credential ? baseApiKey.check!({ ...input, ctx: EMPTY_AUTH_CONTEXT }) : Promise.resolve(undefined),
             }
           : {}),
         resolve: (input: Parameters<typeof baseApiKey.resolve>[0]) =>
-          baseApiKey.resolve({ ...input, ctx: EMPTY_AUTH_CONTEXT }),
+          input.credential ? baseApiKey.resolve({ ...input, ctx: EMPTY_AUTH_CONTEXT }) : Promise.resolve(undefined),
       }
     : undefined
   return {
@@ -242,6 +244,50 @@ function baseModel(model: Model<Api>, providerId: string): Model<Api> {
   return { ...model, provider: providerId }
 }
 
+/** Keep transcript/model selection identity account-qualified after native inference. */
+function accountStream(stream: AssistantMessageEventStream, providerId: string): AssistantMessageEventStream {
+  const message = (value: AssistantMessage): AssistantMessage => ({ ...value, provider: providerId })
+  return new Proxy(stream, {
+    get(target, property) {
+      if (property === 'result') return async () => message(await target.result())
+      if (property === Symbol.asyncIterator) return async function* () {
+        for await (const event of target) {
+          if ('partial' in event) yield { ...event, partial: message(event.partial) }
+          else if (event.type === 'done') yield { ...event, message: message(event.message) }
+          else if (event.type === 'error') yield { ...event, error: message(event.error) }
+        }
+      }
+      const value = Reflect.get(target, property, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+}
+
+/** Shared metadata/login catalog: no auth files, models.json, env auth or network refresh. */
+export async function createSharedProviderCatalogRuntime(): Promise<ModelRuntime> {
+  const runtime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+    refreshOnCreate: false,
+    allowModelNetwork: false,
+  })
+  for (const provider of runtime.getProviders()) runtime.registerNativeProvider(delegatedProvider(provider, provider.id))
+  await runtime.refresh({ allowNetwork: false })
+  return runtime
+}
+
+/** New-account logins must not commit credentials to the shared catalog runtime. */
+export async function createProviderLoginRuntime(base: Provider): Promise<ModelRuntime> {
+  const runtime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+    refreshOnCreate: false,
+    allowModelNetwork: false,
+  })
+  runtime.registerNativeProvider(delegatedProvider(base, base.id))
+  return runtime
+}
+
 function delegatedProvider(base: Provider, runtimeProviderId: string, displayName?: string): Provider {
   const delegated: Provider = {
     id: runtimeProviderId,
@@ -253,23 +299,24 @@ function delegatedProvider(base: Provider, runtimeProviderId: string, displayNam
     filterModels: base.filterModels
       ? (models, credential) => base.filterModels!(models.map((model) => baseModel(model, base.id)), credential).map((model) => runtimeModel(model, runtimeProviderId))
       : undefined,
-    stream<T extends Api>(model: Model<T>, context: Context, options?: ApiStreamOptions<T>): AssistantMessageEventStream {
-      return base.stream(model, context, options)
+    stream<T extends Api>(model: Model<T>, context: TranscriptContext, options?: ApiStreamOptions<T>): AssistantMessageEventStream {
+      // Native adapters inspect provider identity (including OpenAI's direct-token rules).
+      return accountStream(base.stream({ ...model, provider: base.id }, context, options), runtimeProviderId)
     },
-    streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
-      return base.streamSimple(model, context, options)
+    streamSimple(model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions): AssistantMessageEventStream {
+      return accountStream(base.streamSimple(baseModel(model, base.id), context, options), runtimeProviderId)
     },
     ...(base.fetchDeferred
       ? {
           fetchDeferred(model: Model<Api>, handle: DeferredHandle, options?: DeferredFetchOptions): AssistantMessageEventStream {
-            return base.fetchDeferred!(model, handle, options)
+            return accountStream(base.fetchDeferred!(baseModel(model, base.id), handle, options), runtimeProviderId)
           },
         }
       : {}),
     ...(base.cancelDeferred
       ? {
           cancelDeferred(model: Model<Api>, handle: DeferredHandle, options?: DeferredCancelOptions): Promise<void> {
-            return base.cancelDeferred!(model, handle, options)
+            return base.cancelDeferred!(baseModel(model, base.id), handle, options)
           },
         }
       : {}),
@@ -302,13 +349,14 @@ export async function createProviderRuntime(options: CreateProviderRuntimeOption
     refreshOnCreate: false,
     allowModelNetwork: false,
   })
-  const sourceRuntime = options.baseRuntime ?? runtime
-  const sourceProviders = new Map(sourceRuntime.getProviders().map((provider) => [provider.id, provider]))
+  // A shared provider may close over models.json keys, secret headers or mutable
+  // catalog state. Always delegate to fresh native implementations, never it.
+  const sourceProviders = new Map(runtime.getProviders().map((provider) => [provider.id, provider]))
   const initialProviderIds = runtime.getProviders().map((provider) => provider.id)
 
   for (const account of accounts) {
     const base = sourceProviders.get(account.providerType)
-    if (!base) throw new Error(`Pi provider implementation not found: ${account.providerType}`)
+    if (!base) throw new Error(`Owned custom provider inference is not configured: ${account.providerType}`)
     if (account.authType === 'oauth' && !base.auth.oauth) throw new Error(`Pi provider does not support OAuth: ${account.providerType}`)
     if (account.authType === 'api_key' && !base.auth.apiKey) throw new Error(`Pi provider does not support API keys: ${account.providerType}`)
     const runtimeProviderId = composeProviderRuntimeId(account.providerType, account.instanceId)

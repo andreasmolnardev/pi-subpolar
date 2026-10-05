@@ -261,6 +261,18 @@ export function ApiKeyDialog({
                 {provider.env?.length ? <> Expected environment name: <code>{envVarName}</code>.</> : null}
               </p>
             )}
+            {provider.providerId === "openai" && selectedMethod?.kind !== "api_key" && (
+              <p className="text-sm text-muted-foreground">
+                Pi opens Sign in with ChatGPT for the OpenAI Responses API. The callback listener runs on the server at port 1455.
+                For a remote server, paste the full final redirect URL including code, state, and client_id. This flow does not offer device code login.
+              </p>
+            )}
+            {provider.providerId === "openai-codex" && selectedMethod?.kind !== "api_key" && (
+              <p className="text-sm text-muted-foreground">
+                Pi will offer browser or device code login. For a remote server or container, choose Device code login (headless).
+                Browser login uses a callback on the server; if it cannot reach that callback, paste the full redirect URL into the manual prompt.
+              </p>
+            )}
             {error && <p className="text-sm text-destructive">{error}</p>}
             <DialogFooter>
               <Button variant="outline" onClick={() => void handleClose()}>Cancel</Button>
@@ -332,7 +344,9 @@ export function ApiKeyDialog({
                     <SelectTrigger id="provider-login-prompt"><SelectValue placeholder="Select an option" /></SelectTrigger>
                     <SelectContent>
                       {currentPrompt.prompt.options.map((option) => (
-                        <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
+                        <SelectItem key={option.id} value={option.id}>
+                          {option.label}{option.description ? ` — ${option.description}` : ""}
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>

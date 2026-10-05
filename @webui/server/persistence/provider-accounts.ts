@@ -111,6 +111,7 @@ export const PROVIDER_ACCOUNT_SCHEMA: ProviderAccountSchema = {
     fields: [
       { name: 'user_id', type: 'text', required: true },
       { name: 'instance_id', type: 'text', required: true },
+      { name: 'provider_type', type: 'text' },
       { name: 'payload', type: 'text', required: true },
       { name: 'updated_at', type: 'number', required: true },
     ],
@@ -179,6 +180,22 @@ export function providerAccountEquals(field: string, value: string): string {
 
 function ownerFilter(userId: string): string {
   return providerAccountEquals('user_id', userId)
+}
+
+function matchesOwnedInstance(record: AccountRecord, userId: string, instanceId: string): boolean {
+  return record.user_id === userId && record.instance_id === instanceId
+}
+
+function assertOwnedAccount(record: AccountRecord, userId: string, instanceId: string, expectedProvider: string): void {
+  if (!matchesOwnedInstance(record, userId, instanceId) || record.provider_type !== expectedProvider) {
+    throw new Error('Provider account record does not match the requested owner and selector')
+  }
+}
+
+function matchesCredential(record: AccountRecord, account: AccountRecord): boolean {
+  // Legacy rows have no provider_type; their provider binding remains in AES-GCM AAD.
+  return matchesOwnedInstance(record, String(account.user_id), String(account.instance_id)) &&
+    (record.provider_type === undefined || record.provider_type === '' || record.provider_type === account.provider_type)
 }
 
 function ownedInstanceFilter(userId: string, instanceId: string): string {
@@ -412,11 +429,11 @@ async function ensureCollection(
     } catch (error) {
       const raced = await firstOrNull(() => manager.getOne(name))
       if (!raced) throw error
-      await extendCollection(manager, raced, fields, indexes)
+      await extendCollection(manager, raced, fields, indexes, rules)
     }
     return
   }
-  await extendCollection(manager, existing, fields, indexes)
+  await extendCollection(manager, existing, fields, indexes, rules)
 }
 
 async function extendCollection(
@@ -424,6 +441,7 @@ async function extendCollection(
   existing: AccountRecord,
   fields: readonly Record<string, unknown>[],
   indexes: readonly string[],
+  rules?: Record<string, unknown>,
 ): Promise<void> {
   const currentFields = Array.isArray(existing.fields)
     ? existing.fields.filter((field): field is Record<string, unknown> => typeof field === 'object' && field !== null)
@@ -434,10 +452,12 @@ async function extendCollection(
   const knownFields = new Set(currentFields.map((field) => String(field.name)))
   const missingFields = fields.filter((field) => !knownFields.has(String(field.name)))
   const missingIndexes = indexes.filter((index) => !currentIndexes.includes(index))
-  if (missingFields.length || missingIndexes.length) {
+  const rulesChanged = rules && Object.entries(rules).some(([key, value]) => existing[key] !== value)
+  if (missingFields.length || missingIndexes.length || rulesChanged) {
     await manager.update(existing.id, {
       ...(missingFields.length ? { fields: [...currentFields, ...missingFields] } : {}),
       ...(missingIndexes.length ? { indexes: [...currentIndexes, ...missingIndexes] } : {}),
+      ...(rulesChanged ? rules : {}),
     })
   }
 }
@@ -483,10 +503,12 @@ export class ProviderAccountService {
     const now = this.now()
     const metadata = accountData(userId, instanceId, normalized, now)
     const account = await collection(this.client, PROVIDER_ACCOUNTS_COLLECTION).create(metadata)
+    assertOwnedAccount(account, userId, instanceId, normalized.providerType)
     try {
       await collection(this.client, PROVIDER_ACCOUNT_CREDENTIALS_COLLECTION).create({
         user_id: userId,
         instance_id: instanceId,
+        provider_type: normalized.providerType,
         payload: encryptCredential(normalized.credential, key, userId, instanceId, normalized.providerType, normalized.authType),
         updated_at: now,
       })
@@ -508,7 +530,7 @@ export class ProviderAccountService {
       filter: ownerFilter(userId),
       sort: 'provider_type,display_name,instance_id',
     })
-    return records.map(accountFromRecord)
+    return records.filter((record) => record.user_id === userId).map(accountFromRecord)
   }
 
   async updateAccount(userId: string, instanceId: string, input: UpdateProviderAccountInput): Promise<ProviderAccount | null> {
@@ -532,13 +554,15 @@ export class ProviderAccountService {
       }),
       updated_at: now,
     }
+    const credentialCollection = collection(this.client, PROVIDER_ACCOUNT_CREDENTIALS_COLLECTION)
+    const stored = normalized.credential === undefined ? null : await firstOrNull(() => credentialCollection.getFirstListItem(ownedInstanceFilter(userId, current.instanceId)))
+    if (stored && !matchesCredential(stored, existing)) throw new Error('Provider credential record does not match the requested owner and selector')
     const updated = await collection(this.client, PROVIDER_ACCOUNTS_COLLECTION).update(existing.id, metadata)
+    assertOwnedAccount(updated, userId, current.instanceId, current.providerType)
     if (normalized.credential !== undefined && key) {
-      const credentialCollection = collection(this.client, PROVIDER_ACCOUNT_CREDENTIALS_COLLECTION)
-      const stored = await firstOrNull(() => credentialCollection.getFirstListItem(ownedInstanceFilter(userId, instanceId)))
-      const payload = encryptCredential(normalized.credential, key, userId, instanceId, current.providerType, normalized.authType ?? current.authType)
-      if (stored) await credentialCollection.update(stored.id, { payload, updated_at: now })
-      else await credentialCollection.create({ user_id: userId, instance_id: instanceId, payload, updated_at: now })
+      const payload = encryptCredential(normalized.credential, key, userId, current.instanceId, current.providerType, normalized.authType ?? current.authType)
+      if (stored) await credentialCollection.update(stored.id, { provider_type: current.providerType, payload, updated_at: now })
+      else await credentialCollection.create({ user_id: userId, instance_id: current.instanceId, provider_type: current.providerType, payload, updated_at: now })
     }
     return accountFromRecord(updated)
   }
@@ -547,7 +571,8 @@ export class ProviderAccountService {
     assertUserId(userId)
     const existing = await this.findOwnedAccount(userId, instanceId)
     if (!existing) return false
-    const credential = await firstOrNull(() => collection(this.client, PROVIDER_ACCOUNT_CREDENTIALS_COLLECTION).getFirstListItem(ownedInstanceFilter(userId, instanceId)))
+    const credential = await firstOrNull(() => collection(this.client, PROVIDER_ACCOUNT_CREDENTIALS_COLLECTION).getFirstListItem(ownedInstanceFilter(userId, String(existing.instance_id))))
+    if (credential && !matchesCredential(credential, existing)) throw new Error('Provider credential record does not match the requested owner and selector')
     if (credential) await collection(this.client, PROVIDER_ACCOUNT_CREDENTIALS_COLLECTION).delete(credential.id)
     await collection(this.client, PROVIDER_ACCOUNTS_COLLECTION).delete(existing.id)
     return true
@@ -585,9 +610,9 @@ export class ProviderAccountService {
     const account = await this.findOwnedAccount(userId, instanceId)
     if (!account) return null
     const metadata = accountFromRecord(account)
+    const credential = await firstOrNull(() => collection(this.client, PROVIDER_ACCOUNT_CREDENTIALS_COLLECTION).getFirstListItem(ownedInstanceFilter(userId, metadata.instanceId)))
+    if (!credential || !matchesCredential(credential, account)) return null
     const key = decodeSecretKey(this.encryptionKey ?? process.env[PROVIDER_SECRET_KEY_ENV])
-    const credential = await firstOrNull(() => collection(this.client, PROVIDER_ACCOUNT_CREDENTIALS_COLLECTION).getFirstListItem(ownedInstanceFilter(userId, instanceId)))
-    if (!credential) return null
     const loaded = decryptCredential(String(credential.payload), key, userId, metadata.instanceId, metadata.providerType, metadata.authType)
     await collection(this.client, PROVIDER_ACCOUNTS_COLLECTION).update(account.id, { last_used_at: this.now() }).catch(() => undefined)
     return loaded
@@ -596,7 +621,8 @@ export class ProviderAccountService {
   private async findOwnedAccount(userId: string, instanceId: string): Promise<AccountRecord | null> {
     assertUserId(userId)
     const normalizedInstanceId = requiredText(instanceId, 'instanceId', 300)
-    return firstOrNull(() => collection(this.client, PROVIDER_ACCOUNTS_COLLECTION).getFirstListItem(ownedInstanceFilter(userId, normalizedInstanceId)))
+    const record = await firstOrNull(() => collection(this.client, PROVIDER_ACCOUNTS_COLLECTION).getFirstListItem(ownedInstanceFilter(userId, normalizedInstanceId)))
+    return record && matchesOwnedInstance(record, userId, normalizedInstanceId) ? record : null
   }
 }
 

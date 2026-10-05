@@ -5,6 +5,7 @@ import type {
   AuthPrompt,
   AuthType,
   Credential,
+  LoginOptions,
 } from '@earendil-works/pi-ai'
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 
@@ -142,6 +143,8 @@ export interface ProviderLoginFlowStorage {
 
 export interface CreateProviderLoginFlowControllerOptions {
   runtimeFactory: ProviderRuntimeFactory
+  /** Native SDK login options, including a stable installation ID when required. */
+  loginOptions?: LoginOptions
   /** Persist credentials without exposing them in flow state or HTTP responses. */
   credentialSink?: ProviderLoginCredentialSink
   storage?: ProviderLoginFlowStorage
@@ -337,6 +340,7 @@ export class InMemoryProviderLoginFlowStorage implements ProviderLoginFlowStorag
 export class ProviderLoginFlowController {
   private readonly storage: ProviderLoginFlowStorage
   private readonly runtimeFactory: ProviderRuntimeFactory
+  private readonly loginOptions?: LoginOptions
   private readonly credentialSink?: ProviderLoginCredentialSink
   private readonly providerInstances?: ProviderInstanceRegistry
   private readonly resolveProviderInstance?: ProviderInstanceResolver
@@ -352,6 +356,7 @@ export class ProviderLoginFlowController {
     }
 
     this.runtimeFactory = options.runtimeFactory
+    this.loginOptions = options.loginOptions
     this.credentialSink = options.credentialSink
     this.storage = options.storage ?? new InMemoryProviderLoginFlowStorage()
     this.providerInstances = options.providerInstances
@@ -583,7 +588,7 @@ export class ProviderLoginFlowController {
         prompt: (prompt) => this.prompt(active, prompt),
         notify: (event) => this.notify(active, event),
       }
-      const credential = await runtime.login(record.runtimeProviderId, record.type, interaction)
+      const credential = await runtime.login(record.runtimeProviderId, record.type, interaction, this.loginOptions)
       if (record.phase !== 'pending') return
       if (!credential || !isAuthType(credential.type)) throw new Error('Provider returned an invalid credential')
       if (this.credentialSink) {

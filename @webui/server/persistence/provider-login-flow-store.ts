@@ -294,7 +294,12 @@ function sanitizeFlow(value: unknown, maxEvents: number): StoredProviderLoginFlo
   const result = sanitizeResult(input.result, flowId)
   const error = sanitizeError(input.error)
   if (currentPrompt) flow.currentPrompt = currentPrompt
-  if (result) flow.result = result
+  if (result) {
+    if (result.providerInstanceId !== flow.providerInstanceId || result.runtimeProviderId !== flow.runtimeProviderId || result.type !== flow.type || result.credentialType !== flow.type) {
+      throw new Error('PocketBase provider login flow result is invalid')
+    }
+    flow.result = result
+  }
   if (error) flow.error = error
 
   const highestSequence = flow.events.reduce((highest, event) => Math.max(highest, event.sequence), 0)
@@ -397,11 +402,19 @@ async function extendCollection(manager: CollectionManager, existing: FlowRecord
   ))
   const fieldsChanged = updatedFields.some((field, index) => field !== currentFields[index])
   const missingIndexes = schema.indexes.filter((index) => !currentIndexes.includes(index))
-  if (missingFields.length || missingIndexes.length || fieldsChanged || existing.createRule !== PROVIDER_LOGIN_FLOW_CREATE_RULE) {
+  const rules = {
+    listRule: PROVIDER_LOGIN_FLOW_OWNER_RULE,
+    viewRule: PROVIDER_LOGIN_FLOW_OWNER_RULE,
+    createRule: PROVIDER_LOGIN_FLOW_CREATE_RULE,
+    updateRule: PROVIDER_LOGIN_FLOW_OWNER_RULE,
+    deleteRule: PROVIDER_LOGIN_FLOW_OWNER_RULE,
+  }
+  const rulesChanged = Object.entries(rules).some(([key, value]) => existing[key] !== value)
+  if (missingFields.length || missingIndexes.length || fieldsChanged || rulesChanged) {
     await manager.update(existing.id, {
       ...(missingFields.length || fieldsChanged ? { fields: [...updatedFields, ...missingFields] } : {}),
       ...(missingIndexes.length ? { indexes: [...currentIndexes, ...missingIndexes] } : {}),
-      ...(existing.createRule !== PROVIDER_LOGIN_FLOW_CREATE_RULE ? { createRule: PROVIDER_LOGIN_FLOW_CREATE_RULE } : {}),
+      ...(rulesChanged ? rules : {}),
     })
   }
 }
@@ -440,7 +453,7 @@ export class PocketBaseProviderLoginFlowStorage implements ProviderLoginFlowStor
   async get(flowId: string): Promise<StoredProviderLoginFlow | undefined> {
     assertFlowId(flowId)
     const record = await firstOrNull(() => collection(this.client).getFirstListItem(flowFilter(flowId)))
-    if (!record) return undefined
+    if (!record || record.flow_id !== flowId) return undefined
     return this.expireStale(record)
   }
 
@@ -448,7 +461,7 @@ export class PocketBaseProviderLoginFlowStorage implements ProviderLoginFlowStor
     assertOwnerId(ownerId)
     assertFlowId(flowId)
     const record = await firstOrNull(() => collection(this.client).getFirstListItem(ownedFlowFilter(ownerId, flowId)))
-    if (!record) return undefined
+    if (!record || record.user_id !== ownerId || record.flow_id !== flowId) return undefined
     return this.expireStale(record)
   }
 
@@ -458,7 +471,7 @@ export class PocketBaseProviderLoginFlowStorage implements ProviderLoginFlowStor
     const flows = collection(this.client)
     const existing = await firstOrNull(() => flows.getFirstListItem(flowFilter(safe.flowId)))
     if (existing) {
-      if (text(existing.user_id, 'user_id', MAX_ID_LENGTH) !== safe.ownerId) {
+      if (existing.user_id !== safe.ownerId || existing.flow_id !== safe.flowId) {
         throw new Error('PocketBase provider login flow is owned by another user')
       }
       await flows.update(existing.id, storageData(safe))
@@ -471,7 +484,7 @@ export class PocketBaseProviderLoginFlowStorage implements ProviderLoginFlowStor
       // that writer's owner to be overwritten by this update.
       const raced = await firstOrNull(() => flows.getFirstListItem(flowFilter(safe.flowId)))
       if (!raced) throw error
-      if (text(raced.user_id, 'user_id', MAX_ID_LENGTH) !== safe.ownerId) {
+      if (raced.user_id !== safe.ownerId || raced.flow_id !== safe.flowId) {
         throw new Error('PocketBase provider login flow is owned by another user')
       }
       await flows.update(raced.id, storageData(safe))
@@ -481,14 +494,14 @@ export class PocketBaseProviderLoginFlowStorage implements ProviderLoginFlowStor
   async delete(flowId: string): Promise<void> {
     assertFlowId(flowId)
     const record = await firstOrNull(() => collection(this.client).getFirstListItem(flowFilter(flowId)))
-    if (record) await collection(this.client).delete(record.id)
+    if (record && record.flow_id === flowId) await collection(this.client).delete(record.id)
   }
 
   async deleteOwned(ownerId: string, flowId: string): Promise<void> {
     assertOwnerId(ownerId)
     assertFlowId(flowId)
     const record = await firstOrNull(() => collection(this.client).getFirstListItem(ownedFlowFilter(ownerId, flowId)))
-    if (record) await collection(this.client).delete(record.id)
+    if (record && record.user_id === ownerId && record.flow_id === flowId) await collection(this.client).delete(record.id)
   }
 
   private expireInMemoryIfNeeded(flow: StoredProviderLoginFlow): StoredProviderLoginFlow {

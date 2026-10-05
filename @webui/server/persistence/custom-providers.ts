@@ -64,6 +64,14 @@ function ownedFilter(userId: string, providerId?: string): string {
   return providerId === undefined ? owner : `${owner} && provider_id = "${escapeFilter(providerId)}"`
 }
 
+function matchesProvider(record: CustomProviderRecord, userId: string, providerId: string): boolean {
+  return record.user_id === userId && record.provider_id === providerId
+}
+
+function assertProvider(record: CustomProviderRecord, userId: string, providerId: string): void {
+  if (!matchesProvider(record, userId, providerId)) throw new Error('Custom provider record does not match the requested owner and selector')
+}
+
 function assertUserId(userId: string): void {
   if (typeof userId !== 'string' || !userId.trim() || userId !== userId.trim()) throw new CustomProviderValidationError('A PocketBase user id is required')
 }
@@ -278,13 +286,14 @@ export class CustomProviderService {
 
   async list(userId: string): Promise<CustomProvider[]> {
     assertUserId(userId)
-    return (await collection(this.client).getFullList({ filter: ownedFilter(userId), sort: 'name,provider_id' })).map(publicProvider)
+    return (await collection(this.client).getFullList({ filter: ownedFilter(userId), sort: 'name,provider_id' })).filter((record) => record.user_id === userId).map(publicProvider)
   }
 
   async save(userId: string, input: Record<string, unknown>): Promise<{ provider: CustomProvider; created: boolean }> {
     assertUserId(userId)
     const id = text(input.id, 'id')
     const existing = await firstOrNull(() => collection(this.client).getFirstListItem(ownedFilter(userId, id)))
+    if (existing) assertProvider(existing, userId, id)
     const suppliedHeaders = splitHeaders(input.headers)
     const suppliedApiKey = typeof input.apiKey === 'string' && input.apiKey ? input.apiKey : undefined
     let secretPayload: SecretPayload | undefined
@@ -299,13 +308,14 @@ export class CustomProviderService {
     const record = existing
       ? await collection(this.client).update(String(existing.id), providerData(userId, input, Date.now(), secretPayload, existing))
       : await collection(this.client).create(providerData(userId, input, Date.now(), secretPayload))
+    assertProvider(record, userId, id)
     return { provider: publicProvider(record), created: !existing }
   }
 
   async delete(userId: string, providerId: string): Promise<void> {
     assertUserId(userId)
     const existing = await firstOrNull(() => collection(this.client).getFirstListItem(ownedFilter(userId, providerId)))
-    if (existing) await collection(this.client).delete(String(existing.id))
+    if (existing && matchesProvider(existing, userId, providerId)) await collection(this.client).delete(String(existing.id))
   }
 }
 

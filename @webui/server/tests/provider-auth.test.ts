@@ -1,5 +1,11 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type PocketBase from 'pocketbase'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { getSupportedThinkingLevels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
+import { ModelRuntime, SettingsManager } from '@earendil-works/pi-coding-agent'
+import { createProviderLoginRuntime, createProviderRuntime, composeProviderRuntimeId } from '../application/runtime/provider-runtime.ts'
 import type {
   Api,
   AuthInteraction,
@@ -139,6 +145,241 @@ async function waitForPhase(
   }
   throw new Error(`Timed out waiting for login flow phase ${phase}`)
 }
+
+describe('native OpenAI Codex OAuth integration (separate from direct ChatGPT sign-in)', () => {
+  it('logs in via native device code, saves owner-scoped accounts, and selects models without sharing credentials', async () => {
+    const client = new FakePocketBase()
+    const service = accountService(client, ['personal', 'work'])
+    const sharedCredentials = new InMemoryCredentialStore()
+    const shared = await ModelRuntime.create({ credentials: sharedCredentials, modelsPath: null, refreshOnCreate: false })
+    const provider = shared.getProvider('openai-codex')!
+    expect(provider.auth.oauth?.isSubscription).toBe(true)
+    const access = `header.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'chatgpt-test' } })).toString('base64url')}.signature`
+    const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/usercode')) return Response.json({ device_auth_id: 'test-device', user_code: 'ABCD-EFGH', interval: 0 })
+      if (url.endsWith('/deviceauth/token')) return Response.json({ authorization_code: 'test-code', code_verifier: 'test-verifier' })
+      if (url.endsWith('/oauth/token')) return Response.json({ access_token: access,
+              refresh_token: String(init?.body).includes('grant_type=refresh_token') ? 'rotated-private-refresh' : 'private-refresh', expires_in: 3600 })
+      throw new Error(`Unexpected network request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const controller = new ProviderLoginFlowController({
+        runtimeFactory: () => createProviderLoginRuntime(provider),
+        credentialSink: async (context, credential) => {
+          await service.createAccount(context.ownerId, { providerType: context.runtimeProviderId,
+            displayName: context.displayName ?? 'ChatGPT', authType: credential.type, credential })
+        },
+      })
+      for (const displayName of ['Personal', 'Work']) {
+        const flow = await controller.start({ ownerId: 'owner-a', providerInstanceId: 'openai-codex', type: 'oauth', displayName })
+        const reference = { ownerId: 'owner-a', flowId: flow.flowId }
+        const prompt = await waitForPrompt(controller, reference)
+        expect(prompt.prompt).toMatchObject({ type: 'select', options: [
+          { id: 'browser', label: 'Browser login (default)' },
+          { id: 'device_code', label: 'Device code login (headless)' },
+        ] })
+        await controller.respond({ ...reference, promptId: prompt.promptId, value: 'device_code' })
+        const completed = await waitForPhase(controller, reference, 'completed')
+        const events = await controller.getEvents(reference)
+        expect(events.events).toContainEqual(expect.objectContaining({ type: 'device_code', userCode: 'ABCD-EFGH' }))
+        const publicState = JSON.stringify({ completed, events })
+        expect(publicState).not.toContain(access)
+        expect(publicState).not.toContain('private-refresh')
+        await expect(controller.getStatus({ ownerId: 'owner-b', flowId: flow.flowId })).rejects.toMatchObject({ code: 'FLOW_NOT_FOUND' })
+      }
+      expect(await sharedCredentials.list()).toEqual([])
+      expect(await service.listAccounts('owner-b')).toEqual([])
+      const accounts = await service.listAccounts('owner-a')
+      expect(accounts.map((account) => account.displayName).sort()).toEqual(['Personal', 'Work'])
+      const runtime = await createProviderRuntime({ userId: 'owner-a', accountService: service, baseRuntime: shared })
+      for (const account of accounts) {
+        const id = composeProviderRuntimeId('openai-codex', account.instanceId)
+        const models = await runtime.getAvailable(id)
+        expect(models.length).toBeGreaterThan(0)
+        expect(runtime.getModel(id, models[0]!.id)).toBeDefined()
+        expect((await runtime.getAuth(models[0]!))?.auth.apiKey).toBe(access)
+      }
+      const firstAccount = accounts[0]!
+      await service.updateAccount('owner-a', firstAccount.instanceId, { credential: {
+        type: 'oauth', access, refresh: 'private-refresh', expires: Date.now() - 1, accountId: 'chatgpt-test',
+      } })
+      const refreshedRuntime = await createProviderRuntime({ userId: 'owner-a', accountService: service, baseRuntime: shared })
+      await refreshedRuntime.getAuth(composeProviderRuntimeId('openai-codex', firstAccount.instanceId))
+      expect(await service.loadCredential('owner-a', firstAccount.instanceId)).toMatchObject({ refresh: 'rotated-private-refresh' })
+      expect(await service.loadCredential('owner-a', accounts[1]!.instanceId)).toMatchObject({ refresh: 'private-refresh' })
+      expect(await sharedCredentials.list()).toEqual([])
+      expect(JSON.stringify(createProviderCatalog(shared, { accounts: accounts.map((account) => ({
+        id: account.instanceId, provider_id: account.providerType, display_name: account.displayName,
+        auth_type: account.authType, status: 'authenticated',
+      })) }))).not.toContain('private-refresh')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('native OpenAI Sign in with ChatGPT', () => {
+  const deviceId = 'bda98322-0154-4b61-a805-0319125e7b20'
+  const tokenResponse = { access_token: 'direct-access', refresh_token: 'direct-refresh',
+    id_token: 'mock-id-token', expires_in: 3600, scope: 'openid chatgpt.tokens.use.direct' }
+
+  it('persists the native installation UUID across reloads and ignores project device IDs', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'subpolar-provider-device-'))
+    try {
+      const cwd = join(directory, 'project')
+      const agentDir = join(directory, 'agent')
+      mkdirSync(join(cwd, '.pi'), { recursive: true })
+      writeFileSync(join(cwd, '.pi', 'settings.json'), JSON.stringify({ deviceId }))
+      const settings = SettingsManager.create(cwd, agentDir)
+      const id = settings.getOrCreateDeviceId()
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+      expect(id).not.toBe(deviceId)
+      expect(settings.getOrCreateDeviceId()).toBe(id)
+      await settings.flush()
+      expect(SettingsManager.create(cwd, agentDir).getOrCreateDeviceId()).toBe(id)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('uses native registration, issued client ID, token refresh, account selection and Responses request rules', async () => {
+    const client = new FakePocketBase()
+    const service = accountService(client, ['direct', 'key'])
+    const sharedCredentials = new InMemoryCredentialStore()
+    const shared = await ModelRuntime.create({ credentials: sharedCredentials, modelsPath: null, refreshOnCreate: false })
+    const provider = shared.getProvider('openai')!
+    expect(provider.auth.oauth?.loginLabel).toBe('Sign in with ChatGPT')
+    expect(provider.auth.apiKey).toBeDefined()
+    expect(shared.getProvider('openai-codex')?.auth.oauth).toBeDefined()
+    const catalog = createProviderCatalog(shared)
+    expect(catalog.providers.find((entry) => entry.id === 'openai')?.authMethods).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'api_key' }),
+      expect.objectContaining({ kind: 'subscription', label: 'Sign in with ChatGPT' }),
+    ]))
+    const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      expect(String(input)).toBe('https://auth.openai.com/api/accounts/oauth/token')
+      const body = new URLSearchParams(String(init?.body))
+      expect(body.get('client_id')).toBe('issued-client')
+      expect(body.get('resource')).toBe('https://api.openai.com/v1')
+      return Response.json({ ...tokenResponse, refresh_token: body.get('grant_type') === 'refresh_token' ? 'rotated-direct-refresh' : 'direct-refresh' })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const controller = new ProviderLoginFlowController({
+        loginOptions: { getDeviceId: () => deviceId },
+        runtimeFactory: () => createProviderLoginRuntime(provider),
+        credentialSink: async (context, credential) => {
+          await service.createAccount(context.ownerId, { providerType: context.runtimeProviderId,
+            displayName: 'Direct ChatGPT', authType: credential.type, credential })
+        },
+      })
+      const flow = await controller.start({ ownerId: 'owner-a', providerInstanceId: 'openai', type: 'oauth' })
+      const reference = { ownerId: 'owner-a', flowId: flow.flowId }
+      const prompt = await waitForPrompt(controller, reference)
+      expect(prompt.prompt.type).toBe('manual_code')
+      const events = await controller.getEvents(reference)
+      const authUrl = events.events.find((event) => event.type === 'auth_url')!
+      if (authUrl.type !== 'auth_url') throw new Error('Missing native authorization URL')
+      const authorize = new URL(authUrl.url)
+      expect(authorize.origin + authorize.pathname).toBe('https://auth.openai.com/api/accounts/authorize')
+      expect(authorize.searchParams.get('client_id')).toBe('dynamic_agent_client')
+      expect(authorize.searchParams.get('ext_agent_host_id')).toBe(`urn:uuid:${deviceId}`)
+      expect(authorize.searchParams.get('scope')).toContain('chatgpt.tokens.use.direct')
+      expect(authorize.searchParams.get('code_challenge_method')).toBe('S256')
+      const redirect = new URL(authorize.searchParams.get('redirect_uri')!)
+      redirect.search = new URLSearchParams({ code: 'mock-code', state: authorize.searchParams.get('state')!, client_id: 'issued-client' }).toString()
+      await controller.respond({ ...reference, promptId: prompt.promptId, value: redirect.toString() })
+      const completed = await waitForPhase(controller, reference, 'completed')
+      expect(JSON.stringify(completed)).not.toContain('direct-access')
+      await expect(controller.getStatus({ ownerId: 'owner-b', flowId: flow.flowId })).rejects.toMatchObject({ code: 'FLOW_NOT_FOUND' })
+      const stored = await service.loadCredential('owner-a', 'direct')
+      expect(stored).toMatchObject({ clientId: 'issued-client', scopes: ['openid', 'chatgpt.tokens.use.direct'] })
+      await service.updateAccount('owner-a', 'direct', { credential: { ...stored!, expires: Date.now() - 1 } as Credential })
+      await service.createAccount('owner-a', { providerType: 'openai', displayName: 'API key', authType: 'api_key', credential: apiKey('sk-test-key') })
+      const runtime = await createProviderRuntime({ userId: 'owner-a', accountService: service, baseRuntime: shared })
+      const directId = composeProviderRuntimeId('openai', 'direct')
+      const keyId = composeProviderRuntimeId('openai', 'key')
+      const model = runtime.getModels(directId).find((entry) => entry.reasoning)!
+      expect(model.api).toBe('openai-responses')
+      expect(getSupportedThinkingLevels(model)).toContain('medium')
+      expect((await runtime.getAuth(model))?.auth.apiKey).toBe('direct-access')
+      expect(await service.loadCredential('owner-a', 'direct')).toMatchObject({ refresh: 'rotated-direct-refresh' })
+      expect((await runtime.getAuth(keyId))?.auth.apiKey).toBe('sk-test-key')
+      const accountCatalog = createProviderCatalog(runtime)
+      expect(accountCatalog.providers.find((entry) => entry.id === keyId)?.authMethods).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'api_key', status: expect.objectContaining({ state: 'authenticated' }) }),
+        expect.objectContaining({ kind: 'subscription', status: expect.objectContaining({ state: 'unconfigured' }) }),
+      ]))
+      expect(await sharedCredentials.list()).toEqual([])
+      expect(await service.listAccounts('owner-b')).toEqual([])
+      const other = await createProviderRuntime({ userId: 'owner-b', accountService: service, baseRuntime: shared })
+      expect(other.getModel(directId, model.id)).toBeUndefined()
+      expect(await other.getAvailable()).toEqual([])
+
+      const requests: { url: string; headers: Headers; body: Record<string, unknown> }[] = []
+      const inferenceFetch = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        requests.push({ url: String(input), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) })
+        return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: {
+          id: 'resp_mock', status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 },
+        } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } })
+      })
+      for (const id of [directId, keyId]) {
+        const selected = runtime.getModel(id, model.id)!
+        const result = await runtime.completeSimple(selected, { systemPrompt: 'Test system prompt', messages: [{ role: 'user', content: 'Test only', timestamp: 1 }] }, {
+          fetch: Object.assign(inferenceFetch, { preconnect: vi.fn() }), reasoning: 'medium', temperature: 0.2, maxTokens: 64, cacheRetention: 'long', maxRetries: 0,
+        })
+        expect(result.stopReason, result.errorMessage).not.toBe('error')
+                expect(result.provider).toBe(id)
+      }
+      const stream = runtime.stream({ ...model, api: 'openai-responses' }, {
+        systemPrompt: 'Test system prompt', messages: [{ role: 'user', content: 'Test only', timestamp: 1 }],
+      }, { fetch: Object.assign(inferenceFetch, { preconnect: vi.fn() }), reasoningEffort: 'medium', maxRetries: 0 })
+      const streamedEvents = []
+      for await (const event of stream) {
+        streamedEvents.push(event)
+        if ('partial' in event) expect(event.partial.provider).toBe(directId)
+        if (event.type === 'done') expect(event.message.provider).toBe(directId)
+      }
+      expect(streamedEvents.some((event) => event.type === 'done')).toBe(true)
+      expect((await stream.result()).provider).toBe(directId)
+      expect(requests).toHaveLength(3)
+      for (const request of requests) {
+        expect(request.url).toBe('https://api.openai.com/v1/responses')
+        expect(request.body.model).toBe(model.id)
+        expect(request.body.reasoning).toMatchObject({ effort: 'medium' })
+        expect(JSON.stringify(request.body)).toContain('Test system prompt')
+      }
+      expect(requests[0]!.headers.get('authorization')).toBe('Bearer direct-access')
+      for (const field of ['temperature', 'max_output_tokens', 'prompt_cache_retention', 'prompt_cache_options']) expect(requests[0]!.body).not.toHaveProperty(field)
+      expect(requests[1]!.headers.get('authorization')).toBe('Bearer sk-test-key')
+      expect(requests[1]!.body).toMatchObject({ temperature: 0.2, max_output_tokens: 64 })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it.each([
+    { patch: { scope: 'openid' }, message: 'chatgpt.tokens.use.direct' },
+    { patch: { id_token: undefined }, message: 'ID token' },
+    { patch: { expires_in: 0 }, message: 'expires_in' },
+    { patch: { access_token: '' }, message: 'access_token' },
+  ])('rejects invalid native token responses: $message', async ({ patch, message }) => {
+    const shared = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ...tokenResponse, ...patch })))
+    let authorize: URL | undefined
+    try {
+      await expect(shared.getProvider('openai')!.auth.oauth!.login({
+        signal: new AbortController().signal,
+        notify: (event) => { if (event.type === 'auth_url') authorize = new URL(event.url) },
+        prompt: async () => `http://127.0.0.1:1455/auth/callback?code=mock-code&state=${authorize!.searchParams.get('state')}&client_id=issued-client`,
+      }, { getDeviceId: () => deviceId })).rejects.toThrow(message)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
 
 function catalogRuntime(): ProviderCatalogRuntime {
   const model = {

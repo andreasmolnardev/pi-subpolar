@@ -50,13 +50,13 @@ export class PocketBaseProxyCredentialStore {
 
   async list(ownerId: string): Promise<ProxyCredential[]> {
     const records = await collection(this.client).getFullList({ filter: ownerFilter(ownerId), sort: 'created_at' })
-    return records.filter((record) => !record.revoked_at).map(fromRecord)
+    return records.filter((record) => record.owner_id === ownerId && !record.revoked_at).map(fromRecord)
   }
 
   async authenticate(secret: string): Promise<{ ownerId: string; credential: ProxyCredential } | null> {
     if (!secret) return null
     const record = await collection(this.client).getFirstListItem(`secret_hash = "${escapeFilter(hashProxySecret(secret))}"`).catch(() => null)
-    if (!record || (record.revoked_at !== undefined && record.revoked_at !== null && Number(record.revoked_at) > 0)) return null
+    if (!record || record.secret_hash !== hashProxySecret(secret) || typeof record.owner_id !== 'string' || !record.owner_id.trim() || (record.revoked_at !== undefined && record.revoked_at !== null && Number(record.revoked_at) > 0)) return null
     const credential = fromRecord(record)
     await collection(this.client).update(record.id, { last_used_at: Date.now() })
     return { ownerId: String(record.owner_id), credential }
@@ -76,7 +76,7 @@ export class PocketBaseProxyCredentialStore {
 
   async revoke(ownerId: string, credentialId: string): Promise<boolean> {
     const record = await collection(this.client).getFirstListItem(`${ownerFilter(ownerId)} && credential_id = "${escapeFilter(credentialId)}"`).catch(() => null)
-    if (!record) return false
+    if (!record || record.owner_id !== ownerId || record.credential_id !== credentialId) return false
     await collection(this.client).update(record.id, { revoked_at: Date.now() })
     return true
   }

@@ -390,7 +390,7 @@ function statusBadge(instance: ProviderInstance) {
 
 function loginTarget(provider: ProviderCatalogProvider, instance: ProviderInstance, preferredKind?: ProviderAuthMethodKind): ProviderLoginTarget {
   const methods = preferredKind
-    ? [...provider.authMethods].sort((left) => left.kind === preferredKind ? -1 : 1)
+    ? [...provider.authMethods].sort((left, right) => Number(right.kind === preferredKind) - Number(left.kind === preferredKind))
     : provider.authMethods
   return {
     providerId: provider.id,
@@ -468,6 +468,10 @@ export function ProviderSettings() {
     ))
   }, [availableSearch, catalogProviders])
 
+  const chatGPTProvider = catalogProviders.find((provider) => provider.id === 'openai' &&
+    provider.authMethods.some((method) => method.kind !== 'api_key' && method.available && method.label === 'Sign in with ChatGPT'))
+  const chatGPTMethod = chatGPTProvider?.authMethods.find((method) => method.kind !== 'api_key' && method.available)
+
   const connectedInstances = useMemo(
     () => catalogProviders.flatMap((provider) => provider.instances.filter((instance) => instance.status.configured)),
     [catalogProviders],
@@ -516,6 +520,23 @@ export function ProviderSettings() {
               </div>
               <Badge variant="secondary">{connectedInstances.length} connected</Badge>
             </div>
+
+            {chatGPTProvider && (
+              <Card className="bg-card border-border">
+                <CardContent className="pt-4 space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Sign in to use the normal OpenAI Responses API with an eligible ChatGPT account, or choose an OpenAI API key. OpenAI Codex remains a separate provider; account and model usage limits apply.
+                  </p>
+                  <Button onClick={() => {
+                    setApiKeyTarget(loginTarget(chatGPTProvider, { id: chatGPTProvider.id, instanceId: chatGPTProvider.id, providerId: chatGPTProvider.id, label: chatGPTProvider.name, source: 'runtime', status: chatGPTProvider.authStatus }, chatGPTMethod?.kind))
+                    setApiKeyMode('add')
+                    setApiKeyDialogOpen(true)
+                  }}>
+                    <Shield className="h-4 w-4 mr-2" /> Sign in with ChatGPT
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
 
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
