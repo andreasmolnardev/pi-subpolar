@@ -11,7 +11,8 @@ Branch: `feature/session-worktree-review`. Implementation is organized into feat
 | 3. Local voice | Bounded process/input/output execution; cancellation escalation; response-body deadlines; unconfigured TTS returns 503 rather than false timeout | Real speech models, recordings, playback and authenticated deployment | [Voice](progress-voice.md) |
 | 4. Tools CLI | Session-scoped discovery, structured auth errors and core approval-required responses | Live gateway credentials, durable continuation and wait semantics | [Permissions and tools CLI](progress-permissions-tools-cli.md) |
 | 5. Agent profiles | Validated CRUD/context identity; project policy ceilings cannot enable agent-denied capabilities | Full effective-settings provenance and runtime policy parity | [Profiles, memory, skills](progress-profiles-memory-skills.md) |
-| 6. Projects/Git, 7. Subagents/worktrees, 15. Parallel review | Session changes pill, diff review, named snapshot staging areas, independent commits, editor/quick-open; HEAD/local/cached-remote base picker, SHA-pinned clean checkout and owned new session; safe cleanup tests | Authenticated policy-aware remote fetch, result integration/merging and atomic concurrent attachment | [Worktrees](progress-worktrees.md), [workspace UI](../@webui/src/components/workspace/README.md) |
+| 6. Projects/Git, 7. Subagents/worktrees, 15. Parallel review | Session changes pill, diff review, named snapshot staging areas, independent commits, editor/quick-open; HEAD/local/cached-remote base picker, SHA-pinned clean checkout and owned new session; safe cleanup tests; structured read-only Git tools and repository workspace view | Authenticated policy-aware remote fetch, push/finish lifecycle, result integration/merging and atomic concurrent attachment | [Worktrees](progress-worktrees.md), [workspace UI](../@webui/src/components/workspace/README.md) |
+| Git provider integrations | Owner-scoped encrypted GitHub/Gitee PAT accounts, migration of legacy preference secrets, sanitized remote identity matching, read-only repository/branch/issue/PR/check browsing; provider creation capability is explicitly false | PR creation/mutation routes, authenticated Git fetch/push, pagination, live provider verification; configure `SUBPOLAR_PROVIDER_SECRET_KEY` before bridge startup | [Provider implementation](../@webui/server/git/PROVIDERS.md) |
 | 8. Registry/OpenAPI | Owner/shared registry isolation, effective discovery policy, explicit on-demand inspection, fail-closed selective OpenAPI drafts | Complete shared compiler, source refresh and integration configuration | [Integrations and routing](progress-integrations-routing.md) |
 | 9. Automations | Scheduling/concurrency/retry corrections, owner-bound completion, cancellation projection, correct partial updates/history filtering | Distributed leases, active Pi recovery and terminal outbox reconciliation | [Automations/inbox](progress-automations-inbox.md) |
 | 10. Notifications/inbox | Preference persistence fixed; client-forged authoritative inbox records denied; owner-scoped cancellation delivery | Standards-compliant Web Push/email, preference enforcement and functional inbox/run navigation | [Automations/inbox](progress-automations-inbox.md) |
@@ -42,10 +43,19 @@ Current follow-up validation:
 - `bun install --frozen-lockfile`: passed with no changes.
 - `bun run typecheck`: frontend and bridge passed.
 - `bun run build`: passed; large-chunk and Zod annotation warnings remain.
-- `bun run test:ui`: **942 tests passed across 105 files**.
-- `bun run test:core`: **120 tests passed across 16 files**.
-- `bun run test:server`: passed with the server script's Bun-native and Node-backed Vitest groups. Stale owner/policy fixtures were corrected without weakening implementation checks; the earlier Git access assertions and event-cursor runner mismatch are resolved.
+- Baseline integration results below predate the remote-development feature batch; do not treat them as the latest counts.
+
+## Remote-development feature batch validation (2026-10-05)
+
+- `bun run typecheck`: passed for frontend and bridge.
+- `bun run test:ui`: **957 tests passed across 110 files**.
+- `bun run test:core`: **122 tests passed across 16 files**.
+- `bun run test:server`: **452 tests passed across 45 files**.
 - `bun run test:voice`: **44 tests passed across 2 files**.
+- Focused new-session/repository UI tests: **7 passed**; provider account/migration/provider adapter Bun tests: **12 passed**.
+- `git diff --check`: passed before feature-scoped commits.
+
+No live two-user deployment or real GitHub/Gitee credential, OAuth, fetch/push, or PR mutation verification was performed.
 - `git diff --check`: passed.
 - Root and WebUI resolve Pi AI to the same root `node_modules` package.
 
