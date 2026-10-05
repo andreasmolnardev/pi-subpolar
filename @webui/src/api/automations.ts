@@ -91,26 +91,45 @@ function mapRun(value: AutomationRun | AutomationRecord): AutomationRun {
   } as AutomationRun
 }
 
-function automationInput(data: CreateAutomationJobRequest | UpdateAutomationJobRequest, repoId?: number): Record<string, unknown> {
+function intervalCron(value: unknown): string {
+  const minutes = value === undefined ? 60 : value
+  if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes <= 0) throw new Error('Invalid automation interval')
+  if (minutes < 60 && 60 % minutes === 0) return `*/${minutes} * * * *`
+  if (minutes === 60) return '0 * * * *'
+  if (minutes < 1440 && minutes % 60 === 0 && 1440 % minutes === 0) return `0 */${minutes / 60} * * *`
+  if (minutes === 1440) return '0 0 * * *'
+  throw new Error('This interval cannot be represented by a five-field cron schedule; use an explicit cron schedule')
+}
+
+function automationInput(data: CreateAutomationJobRequest | UpdateAutomationJobRequest, repoId?: number, partial = false): Record<string, unknown> {
   const input = data as Record<string, unknown>
   if (Object.keys(input).length === 1 && typeof input.enabled === 'boolean') return { enabled: input.enabled }
+  if (partial) {
+    const patch: Record<string, unknown> = {}
+    for (const key of ['name', 'prompt', 'timezone', 'retry_policy', 'concurrency_policy', 'enabled']) {
+      if (input[key] !== undefined) patch[key] = input[key]
+    }
+    if (input.agent_id !== undefined || input.agentSlug !== undefined) patch.agent_id = input.agent_id ?? input.agentSlug
+    if (input.project_id !== undefined) patch.project_id = input.project_id
+    if (input.schedule !== undefined) patch.schedule = input.schedule
+    else if (input.cronExpression !== undefined) patch.schedule = { kind: 'recurring', cron: String(input.cronExpression).trim() }
+    else if (input.intervalMinutes !== undefined || input.automationMode === 'interval') patch.schedule = { kind: 'recurring', cron: intervalCron(input.intervalMinutes) }
+    return patch
+  }
   const schedule = input.schedule
   if (schedule && typeof schedule === 'object' && !Array.isArray(schedule)) {
     return { ...input, ...(repoId === undefined || repoId === 0 ? {} : { project_id: String(repoId) }), agent_id: input.agent_id ?? input.agentSlug ?? 'master' }
   }
-  const mode = input.automationMode
-  const interval = typeof input.intervalMinutes === 'number' && Number.isInteger(input.intervalMinutes) ? input.intervalMinutes : 60
+
   const cron = typeof input.cronExpression === 'string' && input.cronExpression.trim()
     ? input.cronExpression.trim()
-    : interval >= 1440
-      ? '0 0 * * *'
-      : `*/${Math.max(1, Math.min(interval, 59))} * * * *`
+    : intervalCron(input.intervalMinutes)
   return {
     name: input.name,
     prompt: input.prompt,
     agent_id: input.agent_id ?? input.agentSlug ?? 'master',
     timezone: typeof input.timezone === 'string' && input.timezone.trim() ? input.timezone : 'UTC',
-    schedule: mode === 'cron' || typeof input.cronExpression === 'string' ? { kind: 'recurring', cron } : { kind: 'recurring', cron },
+    schedule: { kind: 'recurring', cron },
     ...(repoId === undefined || repoId === 0 ? {} : { project_id: String(repoId) }),
     ...(input.retry_policy && typeof input.retry_policy === 'object' ? { retry_policy: input.retry_policy } : {}),
     ...(input.concurrency_policy ? { concurrency_policy: input.concurrency_policy } : {}),
@@ -185,7 +204,7 @@ export async function updateRepoAutomation(repoId: number, jobId: number | strin
   return { job: mapAutomation(jobEnvelope(await fetchWrapper<AutomationEnvelope>(`${API_BASE_URL}/api/automations/${encodeURIComponent(String(jobId))}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(automationInput(data, repoId)),
+    body: JSON.stringify(automationInput(data, repoId, true)),
   }))).job }
 }
 

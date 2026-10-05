@@ -58,7 +58,7 @@ export async function handleNotificationsRoute(context: BridgeRequestContext): P
         const record = await deps.getUserPreferences(client, authenticatedUser.id)
         const current = deps.object(record?.preferences)
         const requested = deps.object(input.preferences ?? input)
-        const saved = await deps.saveUserPreferences(client, authenticatedUser.id, { ...current, notifications: deps.notificationPreferenceValue({ ...object(current.notifications), ...requested, events: { ...object(deps.object(current.notifications).events), ...object(requested.events) } }) })
+        const saved = await deps.saveUserPreferences(client, authenticatedUser.id, { ...current, notifications: deps.notificationPreferenceValue({ ...deps.object(current.notifications), ...requested, events: { ...deps.object(deps.object(current.notifications).events), ...deps.object(requested.events) } }) })
         return deps.json({ preferences: deps.notificationPreferenceValue(deps.object(saved.preferences).notifications), updatedAt: saved.updated_at ?? Date.now() }, 200, correlationId)
       }
       if (path.length === 3 && path[2] === 'delivery-status' && request.method === 'GET') {

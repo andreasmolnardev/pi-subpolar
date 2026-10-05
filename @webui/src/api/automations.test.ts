@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cancelRepoAutomationRun, createRepoAutomation, getAutomationCounts, listAllAutomationRuns, listAllAutomations, runRepoAutomation } from './automations'
+import { cancelRepoAutomationRun, createRepoAutomation, getAutomationCounts, listAllAutomationRuns, listAllAutomations, runRepoAutomation, updateRepoAutomation } from './automations'
 
 describe('automation API routes', () => {
   beforeEach(() => {
@@ -20,6 +20,23 @@ describe('automation API routes', () => {
     expect(url).not.toContain('/repos/')
     expect(JSON.parse(String(options.body))).toMatchObject({ project_id: '2', agent_id: 'writer', schedule: { kind: 'recurring', cron: '0 9 * * *' } })
     expect(JSON.parse(String(options.body))).not.toHaveProperty('owner_id')
+  })
+
+  it('preserves unspecified schedule, agent, timezone, and project on partial updates', async () => {
+    await updateRepoAutomation(2, 'automation-1', { name: 'Renamed' } as never)
+    const [, options] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(String(options.body))).toEqual({ name: 'Renamed' })
+  })
+
+  it.each([[60, '0 * * * *'], [120, '0 */2 * * *'], [30, '*/30 * * * *'], [1440, '0 0 * * *']])('maps a %s minute clock-aligned interval without silently changing it', async (intervalMinutes, cron) => {
+    await createRepoAutomation(0, { name: 'Interval', prompt: 'run', automationMode: 'interval', intervalMinutes } as never)
+    const [, options] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(String(options.body)).schedule).toEqual({ kind: 'recurring', cron })
+  })
+
+  it('rejects intervals cron cannot represent instead of silently changing them', async () => {
+    await expect(createRepoAutomation(0, { name: 'Interval', prompt: 'run', automationMode: 'interval', intervalMinutes: 90 } as never)).rejects.toThrow('cannot be represented')
+    expect(fetch).not.toHaveBeenCalled()
   })
 
   it('uses bounded canonical run endpoints', async () => {

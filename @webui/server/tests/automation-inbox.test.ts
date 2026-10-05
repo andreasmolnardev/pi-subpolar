@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AutomationLeaseError, AutomationRepository, createAutomationWorker, executeAutomation, expireAutomationLeases, nextCronRun, validateAutomationInput } from '../application/automations/automation.ts'
+import { AutomationLeaseError, AutomationRepository, createAutomationWorker, executeAutomation, expireAutomationLeases, markInterruptedRuns, nextCronRun, validateAutomationInput } from '../application/automations/automation.ts'
 import { InboxRepository } from '../persistence/inbox.ts'
 import { NotificationRepository } from '../persistence/notifications.ts'
 import { TaskRepository } from '../application/task-control-plane.ts'
@@ -22,6 +22,94 @@ function fakeClient(store = { records: new Map<string, Record<string, unknown>[]
 }
 
 describe('durable automation and inbox foundation', () => {
+  it('rejects mismatched completion definitions before persisting a result or projecting a foreign link', async () => {
+    const client = fakeClient()
+    const repository = new AutomationRepository(client as never, { serializationScope: 'process' })
+    const definition = await repository.create('owner-a', { name: 'Private', prompt: 'run', agent_id: 'agent-a', timezone: 'UTC', schedule: { kind: 'once', at: Date.now() } })
+    const pending = await repository.trigger('owner-a', definition.id, 'manual:1')
+    const claim = await repository.claimRun('owner-a', pending.id, 60000)
+    await expect(repository.finishRun('owner-a', pending.id, claim.leaseId!, { ...definition, owner_id: 'owner-b', project_id: 'foreign-project' }, {})).rejects.toThrow('does not match run')
+    expect(await new InboxRepository(client as never).list('owner-a')).toEqual([])
+    expect((await repository.history('owner-a', definition.id))[0].state).toBe('running')
+  })
+
+  it('projects cancellation once, notifies only the owner, and prevents late success', async () => {
+    const client = fakeClient()
+    const notifications = new NotificationRepository(client as never)
+    await notifications.subscribe('owner-a', { channel: 'push', target: 'https://example.com/owner-a' })
+    await notifications.subscribe('owner-b', { channel: 'push', target: 'https://example.com/owner-b' })
+    const recipients: string[] = []
+    const repository = new AutomationRepository(client as never, { serializationScope: 'process', notificationAdapter: async (subscription, item) => { recipients.push(subscription.owner_id); expect(item.underlying_state).toBe('cancelled') } })
+    const definition = await repository.create('owner-a', { name: 'Cancel', prompt: 'run', agent_id: 'agent-a', timezone: 'UTC', schedule: { kind: 'once', at: Date.now() } })
+    const pending = await repository.trigger('owner-a', definition.id, 'manual:1')
+    const claim = await repository.claimRun('owner-a', pending.id, 60000)
+    await repository.cancelRun('owner-a', pending.id)
+    await repository.cancelRun('owner-a', pending.id)
+    expect((await repository.finishRun('owner-a', pending.id, claim.leaseId!, definition, { text: 'late' })).state).toBe('cancelled')
+    expect(recipients).toEqual(['owner-a'])
+    expect(await new InboxRepository(client as never).list('owner-b')).toEqual([])
+    expect(await new InboxRepository(client as never).list('owner-a')).toHaveLength(1)
+  })
+
+  it.each(['allow', 'queue', 'skip'] as const)('applies %s concurrency to scheduled triggers while a manual run is retrying', async (policy) => {
+    const client = fakeClient()
+    const repository = new AutomationRepository(client as never, { serializationScope: 'process' })
+    const definition = await repository.create('owner-a', { name: 'Retry', prompt: 'run', agent_id: 'agent-a', timezone: 'UTC', schedule: { kind: 'once', at: Date.now() }, concurrency_policy: policy, retry_policy: { max_attempts: 2, backoff_ms: 60000 } })
+    const manual = await repository.trigger('owner-a', definition.id, 'manual:retry')
+    await executeAutomation(repository, 'owner-a', manual.id, async () => { throw new Error('temporary') })
+    const scheduled = await repository.triggerDue('owner-a')
+    expect(scheduled).toHaveLength(1)
+    expect(scheduled[0].id === manual.id).toBe(policy === 'skip')
+    expect((await repository.getOwned('owner-a', definition.id))!.next_run_at).toBeNull()
+    const claim = await repository.claimRun('owner-a', scheduled[0].id, 60000)
+    expect(Boolean(claim.leaseId)).toBe(policy === 'allow')
+    expect(await repository.triggerDue('owner-a')).toEqual([])
+  })
+
+  it('does not consume a due one-shot schedule when a manual run completes', async () => {
+    const client = fakeClient()
+    const repository = new AutomationRepository(client as never, { serializationScope: 'process' })
+    const at = Date.now() - 1000
+    const definition = await repository.create('owner-a', { name: 'Once', prompt: 'run', agent_id: 'agent-a', timezone: 'UTC', schedule: { kind: 'once', at } })
+    const manual = await repository.trigger('owner-a', definition.id, 'manual:1')
+    await executeAutomation(repository, 'owner-a', manual.id, async () => ({ text: 'done' }))
+    expect((await repository.getOwned('owner-a', definition.id))!.next_run_at).toBe(at)
+    const [scheduled] = await repository.triggerDue('owner-a')
+    expect(scheduled.trigger_key).toBe(`schedule:${definition.id}:${at}`)
+    expect(scheduled.id).not.toBe(manual.id)
+  })
+
+  it('recovers pending/retrying work after repository recreation but marks active work unknown without replaying it', async () => {
+    const client = fakeClient()
+    const repository = new AutomationRepository(client as never, { serializationScope: 'process' })
+    const definition = await repository.create('owner-a', { name: 'Restart', prompt: 'run', agent_id: 'agent-a', timezone: 'UTC', schedule: { kind: 'once', at: Date.now() + 60000 }, concurrency_policy: 'allow', retry_policy: { max_attempts: 2, backoff_ms: 0 } })
+    const active = await repository.trigger('owner-a', definition.id, 'manual:active')
+    await repository.claimRun('owner-a', active.id, 60000)
+    const retry = await repository.trigger('owner-a', definition.id, 'manual:retry')
+    await executeAutomation(repository, 'owner-a', retry.id, async () => { throw new Error('temporary') })
+    const pending = await repository.trigger('owner-a', definition.id, 'manual:pending')
+    await markInterruptedRuns(client as never, { serializationScope: 'process' })
+    const resumed = new AutomationRepository(client as never, { serializationScope: 'process' })
+    const executed: string[] = []
+    await createAutomationWorker(resumed, async (run) => { executed.push(run.id); return { text: 'done' } }).executeDue()
+    expect(executed.sort()).toEqual([pending.id, retry.id].sort())
+    expect((await resumed.history('owner-a', definition.id)).find((run) => run.id === active.id)!.state).toBe('unknown')
+    const items = await new InboxRepository(client as never).list('owner-a')
+    expect(items.find((item) => item.reference_id === active.id)).toMatchObject({ underlying_state: 'interrupted' })
+  })
+
+  it('does not schedule, execute, finish, or cancel another owner’s runs', async () => {
+    const client = fakeClient()
+    const repository = new AutomationRepository(client as never, { serializationScope: 'process' })
+    const definition = await repository.create('owner-b', { name: 'Private', prompt: 'private', agent_id: 'agent-b', timezone: 'UTC', schedule: { kind: 'once', at: Date.now() } })
+    const pending = await repository.trigger('owner-b', definition.id, 'manual:1')
+    expect(await repository.triggerDue('owner-a')).toEqual([])
+    expect(await repository.history('owner-a', definition.id)).toEqual([])
+    await expect(repository.claimRun('owner-a', pending.id, 60000)).rejects.toThrow('Run not found')
+    await expect(repository.finishRun('owner-a', pending.id, 'lease', definition, {})).rejects.toThrow('Run not found')
+    expect(await repository.cancelRun('owner-a', pending.id)).toBeNull()
+    expect(await new InboxRepository(client as never).list('owner-a')).toEqual([])
+  })
    it('rejects unsafe prompts, identifiers, schedules, and timezones', () => {
     expect(() => validateAutomationInput({ name: 'x', prompt: 'ok\u0000', agent_id: 'agent', timezone: 'UTC', schedule: { kind: 'once', at: Date.now() } })).toThrow()
     expect(() => validateAutomationInput({ name: 'x', prompt: 'ok', agent_id: 'bad id', timezone: 'UTC', schedule: { kind: 'once', at: Date.now() } })).toThrow()
@@ -67,7 +155,7 @@ describe('durable automation and inbox foundation', () => {
 
   it('drains queued runs in creation order after completion', async () => {
     const client = fakeClient(); const repository = new AutomationRepository(client as never, { serializationScope: 'process' })
-    const definition = await repository.create('owner-a', { name: 'Queue', prompt: 'run', agent_id: 'agent-a', timezone: 'UTC', schedule: { kind: 'once', at: Date.now() }, concurrency_policy: 'queue' })
+    const definition = await repository.create('owner-a', { name: 'Queue', prompt: 'run', agent_id: 'agent-a', timezone: 'UTC', schedule: { kind: 'once', at: Date.now() + 60000 }, concurrency_policy: 'queue' })
     const first = await repository.trigger('owner-a', definition.id, 'one'); const second = await repository.trigger('owner-a', definition.id, 'two')
     const order: string[] = []; const worker = createAutomationWorker(repository, async (current) => { order.push(current.trigger_key); return current.trigger_key })
     await worker.execute('owner-a', first.id); await worker.executeDue()

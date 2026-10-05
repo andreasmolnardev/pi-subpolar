@@ -113,7 +113,10 @@ export function validateAutomationInput(input: AutomationInput): AutomationInput
   if (typeof input.prompt !== 'string' || !SAFE_PROMPT.test(input.prompt) || input.prompt.length > MAX_TEXT) throw new Error('Invalid automation prompt')
   assertSafeIdentifier(input.agent_id, 'agent id')
   if (input.project_id) assertSafeIdentifier(input.project_id, 'project id')
+  if (typeof input.timezone !== 'string' || !input.timezone.trim()) throw new Error('Invalid timezone')
   try { new Intl.DateTimeFormat('en-US', { timeZone: input.timezone }) } catch { throw new Error('Invalid timezone') }
+  if (!input.schedule || typeof input.schedule !== 'object' || Array.isArray(input.schedule)) throw new Error('Invalid automation schedule')
+  if (input.concurrency_policy !== undefined && !['allow', 'skip', 'queue'].includes(input.concurrency_policy)) throw new Error('Invalid concurrency policy')
   if (input.schedule.kind !== 'once' && input.schedule.kind !== 'recurring') throw new Error('Invalid automation schedule')
   if (input.schedule.kind === 'once' && (!Number.isSafeInteger(input.schedule.at) || input.schedule.at! <= 0)) throw new Error('One-shot automation requires a valid time')
   if (input.schedule.kind === 'recurring' && (!input.schedule.cron || !validateCron(input.schedule.cron))) throw new Error('Invalid recurring schedule')
@@ -158,7 +161,7 @@ function capabilityFromClient(client: PocketBase): AutomationPersistenceCapabili
   return (client as unknown as { automationPersistence?: AutomationPersistenceCapability }).automationPersistence
 }
 
-type AutomationResultState = 'succeeded' | 'failed' | 'review_required' | 'interrupted'
+type AutomationResultState = 'succeeded' | 'failed' | 'review_required' | 'interrupted' | 'cancelled'
 
 function resultRequiresReview(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
@@ -205,12 +208,14 @@ export class AutomationRepository {
       ...(definition.project_id ? { project_id: definition.project_id } : {}),
       kind: 'automation_result',
       reference_id: runRecord.id,
-      title: state === 'review_required' ? 'Automation requires review' : state === 'failed' ? 'Automation failed' : state === 'interrupted' ? 'Automation interrupted' : 'Automation completed',
+      title: state === 'review_required' ? 'Automation requires review' : state === 'failed' ? 'Automation failed' : state === 'interrupted' ? 'Automation interrupted' : state === 'cancelled' ? 'Automation cancelled' : 'Automation completed',
       body: state === 'failed' || state === 'interrupted'
         ? (errorMessage ?? 'The automation run needs attention.')
         : state === 'review_required'
           ? 'Review the automation result before accepting it.'
-          : 'The automation completed successfully.',
+          : state === 'cancelled'
+            ? 'The automation run was cancelled.'
+            : 'The automation completed successfully.',
       deep_link: { path: `/runs/${encodeURIComponent(runRecord.id)}`, runId: runRecord.id, automationId: definition.id },
       underlying_state: state,
       metadata: { automation_id: definition.id, run_id: runRecord.id, state },
@@ -301,12 +306,7 @@ export class AutomationRepository {
         const record = await this.getOwned(ownerId, item.id)
         if (!record || record.state !== 'active' || (record.next_run_at ?? Number.MAX_SAFE_INTEGER) > now) return null
         const runs = await this.runsFor(ownerId, record.id)
-        const retry = runs.find((candidate) => candidate.state === 'retrying')
-        if (retry) {
-          if ((retry.retry_at ?? Number.MAX_SAFE_INTEGER) <= now) return retry
-          if (record.concurrency_policy === 'skip') await this.advanceSchedule(record, now)
-          return retry
-        }
+
         const active = runs.find((candidate) => ACTIVE_RUN_STATES.includes(candidate.state))
         if (active && record.concurrency_policy === 'skip') { await this.advanceSchedule(record, now); return active }
         const scheduledAt = record.next_run_at ?? now
@@ -363,6 +363,8 @@ export class AutomationRepository {
       if (!ACTIVE_RUN_STATES.includes(currentRun.state)) return currentRun
       const updated = await collection(this.client, 'automation_runs').update(runId, { state: 'cancelled', finished_at: Date.now(), lease_id: null, lease_expires_at: null })
       activeExecutors.get(this.client as unknown as object)?.get(runId)?.abort()
+      const definition = await this.getOwned(ownerId, String(updated.automation_id))
+      if (definition) await this.projectResult(ownerId, run(updated), definition, 'cancelled')
       return run(updated)
     })
   }
@@ -420,6 +422,7 @@ export class AutomationRepository {
       const currentRaw = await this.getRun(runId)
       if (!currentRaw || currentRaw.owner_id !== ownerId) throw new Error('Run not found')
       const current = run(currentRaw)
+      if (automationRecord.owner_id !== ownerId || automationRecord.id !== current.automation_id) throw new Error('Automation does not match run')
       if (current.state === 'cancelled') return current
       if (current.state !== 'running' || current.lease_id !== leaseId) throw new AutomationLeaseError('Automation lease is not owned by this worker')
       const now = Date.now()
@@ -432,8 +435,8 @@ export class AutomationRepository {
         const storedDefinition = await this.getOwned(ownerId, automationRecord.id)
         const definition = storedDefinition ?? automationRecord
         if (storedDefinition) {
-          const nextRun = definition.next_run_at
-          await collection(this.client, 'automations').update(definition.id, { ...(nextRun === undefined || nextRun <= now ? { next_run_at: definition.schedule.kind === 'recurring' ? nextCronRun(definition.schedule.cron!, definition.timezone, now) : null } : {}), last_run_at: now, updated_at: now })
+          // Schedule consumption belongs to triggerDue, not manual completion or retries.
+          await collection(this.client, 'automations').update(definition.id, { last_run_at: now, updated_at: now })
         }
         await this.projectResult(ownerId, run(updated), definition, resultRequiresReview(resultValue) ? 'review_required' : 'succeeded')
         return run(updated)

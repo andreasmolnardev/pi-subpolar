@@ -13,10 +13,7 @@ export async function handleAutomationsRoute(context: BridgeRequestContext): Pro
         const limit = deps.routeLimit(url.searchParams.get('limit'))
         const offsetValue = Number(url.searchParams.get('offset') ?? 0)
         const offset = Number.isInteger(offsetValue) && offsetValue >= 0 ? Math.min(offsetValue, 10000) : 0
-        const runsCollection = client.collection('automation_runs') as unknown as { getList?: (page: number, perPage: number, options: Record<string, unknown>) => Promise<{ items: Array<Record<string, unknown>> }>; getFullList: (options: Record<string, unknown>) => Promise<Array<Record<string, unknown>>> }
-        const page = Math.floor(offset / 100) + 1
-        const pageResult = await runsCollection.getList?.(page, 100, { filter: `owner_id = "${deps.escapeFilter(authenticatedUser.id)}"`, sort: '-created_at' })
-        const rawRuns = pageResult?.items ?? await runsCollection.getFullList({ filter: `owner_id = "${deps.escapeFilter(authenticatedUser.id)}"`, sort: '-created_at' })
+        const rawRuns = await client.collection('automation_runs').getFullList({ filter: `owner_id = "${deps.escapeFilter(authenticatedUser.id)}"`, sort: '-created_at' }) as Array<Record<string, unknown>>
         const definitions = new Map((await automations.listOwned(authenticatedUser.id)).map((item) => [item.id, item]))
         const projectValue = url.searchParams.get('repoId') ?? url.searchParams.get('projectId') ?? undefined
         const projectId = await deps.ownedProjectIdForRoute(client, authenticatedUser.id, projectValue)
@@ -25,11 +22,11 @@ export async function handleAutomationsRoute(context: BridgeRequestContext): Pro
         const triggerFilter = url.searchParams.get('triggerSource')
         const runs = rawRuns
           .filter((item) => item.owner_id === authenticatedUser.id && definitions.has(String(item.automation_id)))
-          .filter((item) => !url.searchParams.get('status') || item.state === url.searchParams.get('status'))
+          .filter((item) => !url.searchParams.get('status') || item.state === (url.searchParams.get('status') === 'completed' ? 'succeeded' : url.searchParams.get('status')))
           .filter((item) => !jobFilter || String(item.automation_id) === jobFilter)
           .filter((item) => projectId === undefined || definitions.get(String(item.automation_id))?.project_id === projectId)
           .filter((item) => !triggerFilter || (triggerFilter === 'manual' ? String(item.trigger_key).startsWith('manual') : triggerFilter === 'automation' ? String(item.trigger_key).startsWith('schedule') : true))
-          .slice(pageResult ? offset % 100 : offset, pageResult ? (offset % 100) + limit : offset + limit)
+          .slice(offset, offset + limit)
           .map((item) => ({ ...item, automation: definitions.get(String(item.automation_id)) }))
         return deps.json({ runs, limit, offset }, 200, correlationId)
       }
@@ -51,7 +48,8 @@ export async function handleAutomationsRoute(context: BridgeRequestContext): Pro
         if (projectId === null) return deps.routeError(correlationId, 'PROJECT_NOT_FOUND', 'Project is not owned by the authenticated user', 403)
         const created = await automations.create(authenticatedUser.id, { name: input.name, prompt: input.prompt, agent_id: input.agent_id, timezone: input.timezone, schedule: input.schedule as never, ...(projectId === undefined ? {} : { project_id: projectId }), ...(input.retry_policy && typeof input.retry_policy === 'object' ? { retry_policy: input.retry_policy as never } : {}), ...(input.concurrency_policy === 'allow' || input.concurrency_policy === 'skip' || input.concurrency_policy === 'queue' ? { concurrency_policy: input.concurrency_policy } : {}) })
         if (input.enabled === false) await automations.cancel(authenticatedUser.id, created.id)
-        return deps.json({ automation: created, job: created }, 201, correlationId)
+        const result = await automations.getOwned(authenticatedUser.id, created.id)
+        return deps.json({ automation: result, job: result }, 201, correlationId)
       }
       if (path.length === 3) {
         const id = decodeURIComponent(path[2])

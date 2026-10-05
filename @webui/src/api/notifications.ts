@@ -6,7 +6,7 @@ export interface NotificationDeliveryStatus {
   id: string
   inbox_id: string
   subscription_id: string
-  state: 'delivered' | 'failed'
+  state: 'pending' | 'delivered' | 'failed'
   error_message?: string
   created_at: number
 }

@@ -197,6 +197,7 @@ function SidebarAgentItem({
 }
 
 interface Agent {
+  id?: string;
   prompt?: string;
   description?: string;
   mode?: "subagent" | "primary" | "all";
