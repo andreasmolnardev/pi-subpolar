@@ -21,7 +21,7 @@ export async function handleBrowserRoute(context: BridgeRequestContext): Promise
       if (path.length === 5 && path[4] === 'audit' && request.method === 'GET') {
         const owned = await browser.get(context, browserId)
         const audit = await (await deps.applicationDatabase()).collection('browser_audit').getFullList({ filter: `owner_id = "${deps.escapeFilter(authenticatedUser.id)}" && browser_session_id = "${deps.escapeFilter(owned.id)}"`, sort: '-created_at' })
-        return deps.json({ audit })
+        return deps.json({ audit: audit.filter(row => row.owner_id === authenticatedUser.id && row.browser_session_id === owned.id) })
       }
       return deps.json({ error: 'Browser session route not found' }, 404)
     } catch (error) {
