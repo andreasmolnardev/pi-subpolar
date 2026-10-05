@@ -12,14 +12,26 @@ import { WORKSPACE_OPEN_FILE, WORKSPACE_QUICK_OPEN, requestWorkspaceFile } from 
 import { changeAuthOwner, getAuthGeneration } from '@/stores/authIdentityStore'
 import { workspaceDrafts } from './cache'
 
+const repositoryMetadataMock = vi.hoisted(() => ({ sources: vi.fn() }))
+vi.mock('@/api/worktrees', () => ({ worktreesApi: { sources: repositoryMetadataMock.sources } }))
+
+const gitMocks = vi.hoisted(() => ({ status: vi.fn(), branches: vi.fn(), worktrees: vi.fn() }))
+vi.mock('@/api/git', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api/git')>(),
+  fetchRepositoryStatus: gitMocks.status,
+  fetchRepositoryBranches: gitMocks.branches,
+  fetchRepositoryWorktrees: gitMocks.worktrees,
+}))
+
 vi.mock('@/api/session-workspace', () => ({ sessionWorkspaceApi: {
   get: vi.fn(), diff: vi.fn(), files: vi.fn(), file: vi.fn(), save: vi.fn(), search: vi.fn(),
   createGroup: vi.fn(), updateGroup: vi.fn(), stage: vi.fn(), unstage: vi.fn(), commit: vi.fn(),
 } }))
 let workspace: SessionWorkspace
-function mount(sessionId = 'session') {
+function mount(sessionId = 'session', projectRouteId?: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
-  return render(<QueryClientProvider client={client}><SessionWorkspaceChanges sessionId={sessionId} /></QueryClientProvider>)
+  const view = render(<QueryClientProvider client={client}><SessionWorkspaceChanges sessionId={sessionId} projectRouteId={projectRouteId} /></QueryClientProvider>)
+  return { ...view, client }
 }
 async function review() { fireEvent.click(await screen.findByRole('button', { name: 'Review' })) }
 async function files() { await review(); fireEvent.click(screen.getByRole('tab', { name: 'Files' })) }
@@ -34,9 +46,81 @@ beforeEach(() => {
   vi.mocked(api.files).mockImplementation(async (_id, path) => ({ entries: path ? [{ name: 'nested.ts', path: 'src/nested.ts', directory: false }] : [{ name: 'src', path: 'src', directory: true }, { name: 'a.ts', path: 'a.ts', directory: false }] }))
   vi.mocked(api.file).mockResolvedValue({ content: 'original' })
   vi.mocked(api.save).mockImplementation(async (_id, _path, content) => ({ content }))
+  gitMocks.status.mockResolvedValue({ repository: { root: '.', gitDir: '.git', bare: false, head: '0123456789abcdef' }, status: { branch: 'feature/local-review', ahead: 2, behind: 1, entries: [{ path: 'src/change.ts', index: 'M', worktree: ' ', untracked: false, renamed: false }], omitted: [], truncated: false }, requestId: 'status-request' })
+  gitMocks.branches.mockResolvedValue({ repository: { root: '.', gitDir: '.git', bare: false, head: '0123456789abcdef' }, branches: [{ name: 'feature/local-review', ref: 'refs/heads/feature/local-review', current: true, remote: false, target: 'origin/main', sha: '0123456789abcdef' }, { name: 'origin/main', ref: 'refs/remotes/origin/main', current: false, remote: true, sha: 'fedcba9876543210' }], requestId: 'branch-request' })
+  gitMocks.worktrees.mockResolvedValue({ repository: { root: '.', gitDir: '.git', bare: false, head: '0123456789abcdef' }, worktrees: [{ path: '.', head: '0123456789abcdef', branch: 'feature/local-review', detached: false, locked: false, prunable: false }], requestId: 'worktree-request' })
+  repositoryMetadataMock.sources.mockResolvedValue({ repositoryId: 'durable-project-record-id', repository: { head: '0123456789abcdef' }, branches: [], remotes: [] })
 })
 
 describe('SessionWorkspaceChanges', () => {
+  it('resolves the durable owned repository ID instead of passing the numeric display ID to Git APIs', async () => {
+    const view = mount('repo-context-session', '7')
+    await review()
+    fireEvent.click(screen.getByRole('tab', { name: 'Repository' }))
+    expect((await screen.findAllByText('feature/local-review')).length).toBeGreaterThan(0)
+    expect(screen.getByText(/HEAD:/)).toBeInTheDocument()
+    expect(screen.getByText('0123456789abcdef')).toBeInTheDocument()
+    expect(screen.getByText('2 ahead')).toBeInTheDocument()
+    expect(screen.getByText('1 behind')).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: 'Dirty files' })).toHaveTextContent('src/change.ts')
+    expect(screen.getAllByText('origin/main', { exact: false }).length).toBeGreaterThan(0)
+    expect(screen.getByText('SHA fedcba9876543210')).toBeInTheDocument()
+    expect(screen.getByText('Base SHA fedcba9876543210')).toBeInTheDocument()
+    expect(screen.getAllByText('.', { exact: true }).length).toBeGreaterThan(0)
+    expect(screen.getByText(/no supported GitHub or Gitee remote identity was found/)).toBeInTheDocument()
+    expect(repositoryMetadataMock.sources).toHaveBeenCalledWith('repo-context-session')
+    expect(gitMocks.status).toHaveBeenCalledWith('durable-project-record-id')
+    expect(gitMocks.branches).toHaveBeenCalledWith('durable-project-record-id')
+    expect(gitMocks.worktrees).toHaveBeenCalledWith('durable-project-record-id')
+    expect(gitMocks.status).not.toHaveBeenCalledWith('7')
+    expect(gitMocks.branches).not.toHaveBeenCalledWith('7')
+    expect(gitMocks.worktrees).not.toHaveBeenCalledWith('7')
+    const contextKeys = view.client.getQueryCache().getAll().map(query => query.queryKey).filter(key => key[0] === 'session-repository-context')
+    expect(contextKeys.length).toBeGreaterThan(0)
+    expect(contextKeys.some(key => key.includes('repo-context-session') && key.includes('7') && key.includes('durable-project-record-id'))).toBe(true)
+    view.unmount()
+  })
+
+  it('shows repository empty and error states without querying an unlinked project', async () => {
+    const view = mount('unlinked-session', '0')
+    await review()
+    fireEvent.click(screen.getByRole('tab', { name: 'Repository' }))
+    expect(await screen.findByText('This session is not linked to a project repository.')).toBeInTheDocument()
+    expect(repositoryMetadataMock.sources).not.toHaveBeenCalled()
+    expect(gitMocks.status).not.toHaveBeenCalled()
+    expect(gitMocks.branches).not.toHaveBeenCalled()
+    expect(gitMocks.worktrees).not.toHaveBeenCalled()
+    view.unmount()
+
+    gitMocks.status.mockRejectedValue(new Error('Git repository is unavailable'))
+    gitMocks.branches.mockRejectedValue(new Error('Git repository is unavailable'))
+    gitMocks.worktrees.mockRejectedValue(new Error('Git repository is unavailable'))
+    const failed = mount('repo-error-session', '7')
+    await review()
+    fireEvent.click(screen.getByRole('tab', { name: 'Repository' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Git repository is unavailable')
+    failed.unmount()
+  })
+
+  it('does not retain repository query results across account changes', async () => {
+    act(() => changeAuthOwner('repo-account-a'))
+    gitMocks.status.mockResolvedValueOnce({ repository: { root: '.', gitDir: '.git', bare: false, head: 'account-a-head' }, status: { branch: 'account-a-branch', ahead: 0, behind: 0, entries: [], omitted: [], truncated: false }, requestId: 'a' })
+    const view = mount('shared-repo-session', '7')
+    await review()
+    fireEvent.click(screen.getByRole('tab', { name: 'Repository' }))
+    expect(await screen.findByText('account-a-branch')).toBeInTheDocument()
+
+    gitMocks.status.mockResolvedValueOnce({ repository: { root: '.', gitDir: '.git', bare: false, head: 'account-b-head' }, status: { branch: 'account-b-branch', ahead: 0, behind: 0, entries: [], omitted: [], truncated: false }, requestId: 'b' })
+    act(() => changeAuthOwner('repo-account-b'))
+    await review()
+    fireEvent.click(screen.getByRole('tab', { name: 'Repository' }))
+    expect(await screen.findByText('account-b-branch')).toBeInTheDocument()
+    expect(screen.queryByText('account-a-branch')).not.toBeInTheDocument()
+    expect(view.client.getQueryCache().getAll().some(query => query.queryKey[0] === 'session-repository-context' && query.queryKey[1] === 'repo-account-a')).toBe(false)
+    view.unmount()
+    act(() => changeAuthOwner(null))
+  })
+
   it('isolates two owners sharing a session ID, including drafts and diff previews while loading', async () => {
     act(() => changeAuthOwner('account-a'))
     const view = mount('shared-session')

@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { CircleChevronDown } from 'lucide-react'
 
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { listProjects, type Project } from '@/api/projects'
+import { fetchRepositoryBranches, fetchRepositoryWorktrees } from '@/api/git'
+import { worktreesApi } from '@/api/worktrees'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { getProviders } from '@/api/providers'
 import { SUBPOLAR_API_BASE_URL } from '@/config'
 import { useAgents } from '@/hooks/usePiHarness'
@@ -70,8 +73,19 @@ export function NewSession() {
     queryFn: () => resolveNewSessionContext(route),
   })
   const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: listProjects })
+  const queryClient = useQueryClient()
   const providersQuery = useQuery({ queryKey: ['subpolar', 'providers', 'new-session'], queryFn: () => getProviders(), staleTime: 30000 })
   const [projectId, setProjectId] = useState<string>()
+  const [rootProjectId, setRootProjectId] = useState<string>()
+  const [workspaceChoice, setWorkspaceChoice] = useState('__root__')
+  const [worktreeId, setWorktreeId] = useState<string>()
+  const [sessionRepositoryId, setSessionRepositoryId] = useState<string>()
+  const [newWorktreeOpen, setNewWorktreeOpen] = useState(false)
+  const [newWorktreeBranch, setNewWorktreeBranch] = useState('')
+  const [newWorktreeRef, setNewWorktreeRef] = useState('HEAD')
+  const [newWorktreeApproved, setNewWorktreeApproved] = useState(false)
+  const [newWorktreeBusy, setNewWorktreeBusy] = useState(false)
+  const [newWorktreeError, setNewWorktreeError] = useState('')
   const [agentName, setAgentName] = useState<string | undefined>(route.agentName)
   const [permission, setPermission] = useState<string>()
   const [model, setModel] = useState('__auto__')
@@ -105,6 +119,27 @@ export function NewSession() {
   const selectedProject: Project | NonNullable<typeof contextQuery.data>['project'] | undefined =
     projectsQuery.data?.find((project) => String(project.id) === resolvedProjectId) ??
     (contextQuery.data && String(contextQuery.data.project.id) === resolvedProjectId ? contextQuery.data.project : undefined)
+  const repositoryId = !selectedProject?.isGeneralChat
+    ? (selectedProject as (Project & { repositoryId?: string }) | undefined)?.repositoryId
+    : undefined
+  const worktreesQuery = useQuery({
+    queryKey: ['new-session-worktrees', repositoryId],
+    queryFn: () => fetchRepositoryWorktrees(repositoryId!),
+    enabled: Boolean(repositoryId),
+    retry: false,
+  })
+  const worktreeBranchesQuery = useQuery({
+    queryKey: ['new-session-worktree-branches', repositoryId],
+    queryFn: () => fetchRepositoryBranches(repositoryId!),
+    enabled: Boolean(repositoryId && newWorktreeOpen),
+    retry: false,
+  })
+  const existingWorktreeProjects = (worktreesQuery.data?.worktrees ?? []).filter((tree) => !tree.prunable && tree.path !== '.')
+    .map((tree) => ({ tree, project: projectsQuery.data?.find((project) => project.id !== null && project.name.startsWith(`${selectedProject?.name} · ${tree.branch ?? ''} · `)) }))
+    .filter((item): item is { tree: NonNullable<typeof worktreesQuery.data>['worktrees'][number]; project: Project & { id: number } } => Boolean(item.project))
+  const sourceSha = newWorktreeRef === 'HEAD'
+    ? worktreeBranchesQuery.data?.repository.head
+    : worktreeBranchesQuery.data?.branches.find((branch) => branch.ref === newWorktreeRef)?.sha
   const agentsQuery = useAgents(SUBPOLAR_API_BASE_URL, selectedProject?.fullPath)
   const visibleAgents = (agentsQuery.data ?? []).filter((agent) =>
     !selectedProject?.hasAgentOverride || selectedProject.agentNames?.includes(agent.name),
@@ -165,6 +200,41 @@ export function NewSession() {
     setCustomized(true)
     setHoveringCustomize(true)
   }
+  const chooseProjectRoot = (value: string) => {
+    setProjectId(value)
+    setRootProjectId(undefined)
+    setWorkspaceChoice('__root__')
+    setWorktreeId(undefined)
+    setSessionRepositoryId(undefined)
+    setAgentName(undefined)
+  }
+  const createNewWorktree = async () => {
+    if (!repositoryId || !sourceSha || !newWorktreeBranch.trim() || !newWorktreeApproved) return
+    setNewWorktreeBusy(true)
+    setNewWorktreeError('')
+    try {
+      const created = await worktreesApi.create(repositoryId, {
+        branch: newWorktreeBranch.trim(),
+        sourceRef: newWorktreeRef,
+        expectedSha: sourceSha,
+        approved: true,
+      })
+      await queryClient.invalidateQueries({ queryKey: ['projects'] })
+      await projectsQuery.refetch()
+      markCustomized()
+      setProjectId(String(created.projectId))
+      setWorkspaceChoice('__root__')
+      setWorktreeId(created.worktree.id)
+      setSessionRepositoryId(created.repositoryId)
+      setNewWorktreeOpen(false)
+      setNewWorktreeBranch('')
+      setNewWorktreeApproved(false)
+    } catch (error) {
+      setNewWorktreeError(error instanceof Error ? error.message : 'Unable to create worktree')
+    } finally {
+      setNewWorktreeBusy(false)
+    }
+  }
 
   return (
     <div className="flex h-dvh max-h-dvh flex-col overflow-hidden bg-gradient-to-br from-background via-background to-background">
@@ -207,8 +277,7 @@ export function NewSession() {
                     value={resolvedProjectId}
                     onValueChange={(value) => {
                       if (value !== resolvedProjectId) markCustomized()
-                      setProjectId(value)
-                      setAgentName(undefined)
+                      chooseProjectRoot(value)
                     }}
                   >
                     <SelectTrigger className="h-8 w-auto gap-1 border-0 bg-transparent px-2 text-sm font-normal shadow-none hover:bg-accent focus:ring-0 [&>svg:last-child]:hidden">
@@ -219,6 +288,42 @@ export function NewSession() {
                       {projectOptions.map((project) => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
+                  {!selectedProject?.isGeneralChat && <>
+                    <span aria-hidden="true" className="text-muted-foreground">/</span>
+                    <Select value={workspaceChoice} onValueChange={(value) => {
+                      if (value === '__new__') { setNewWorktreeOpen(true); return }
+                      if (value.startsWith('worktree:')) {
+                        const entry = existingWorktreeProjects.find((item) => `worktree:${item.project.id}` === value)
+                        const project = entry?.project
+                        if (project?.id !== undefined && project.id !== null && entry) {
+                          markCustomized()
+                          setRootProjectId(String(selectedProject?.id ?? ''))
+                          setProjectId(String(project.id))
+                          setWorkspaceChoice(value)
+                          const prefix = `${selectedProject?.name} · ${entry.tree.branch ?? ''} · `
+                          setWorktreeId(project.name.slice(prefix.length))
+                          setSessionRepositoryId((project as Project & { repositoryId?: string }).repositoryId)
+                          setAgentName(undefined)
+                        }
+                      } else {
+                        if (rootProjectId) setProjectId(rootProjectId)
+                        setRootProjectId(undefined)
+                        setWorkspaceChoice('__root__')
+                        setWorktreeId(undefined)
+                        setSessionRepositoryId(undefined)
+                      }
+                    }}>
+                      <SelectTrigger className="h-8 w-auto max-w-56 gap-1 border-0 bg-transparent px-2 text-sm font-normal shadow-none hover:bg-accent focus:ring-0 [&>svg:last-child]:hidden">
+                        <SelectValue placeholder="Project root" />
+                        <CircleChevronDown className="h-4 w-4 text-muted-foreground" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__root__">Project root / current checkout</SelectItem>
+                        {existingWorktreeProjects.map(({ tree, project }) => <SelectItem key={project.id} value={`worktree:${project.id}`}>{tree.branch ?? 'Detached worktree'}</SelectItem>)}
+                        <SelectItem value="__new__" disabled={!repositoryId}>{repositoryId ? 'New worktree…' : 'New worktree unavailable (project ID missing)'}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </>}
                   <span aria-hidden="true" className="text-muted-foreground">•</span>
                   <Select
                     onOpenChange={handleSelectOpenChange}
@@ -288,6 +393,8 @@ export function NewSession() {
             defaultModel={model}
             defaultPermission="default"
             projectId={resolvedProjectId}
+            worktreeId={worktreeId}
+            repositoryId={sessionRepositoryId ?? repositoryId}
             agent={agentName}
             permission={selectedPermission}
             model={model}
@@ -296,6 +403,30 @@ export function NewSession() {
             routingEnabled={!customized}
             hideModelSelect
           />
+          <Dialog open={newWorktreeOpen} onOpenChange={setNewWorktreeOpen}>
+            <DialogContent>
+              <DialogTitle>Create a new worktree</DialogTitle>
+              <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); void createNewWorktree() }}>
+                <p className="text-sm text-muted-foreground">Creates a clean linked checkout from the selected commit. The current checkout and its changes are not copied or modified.</p>
+                {!repositoryId && <p role="alert">This project response does not include a stable repository ID, so worktree creation is unavailable.</p>}
+                {worktreeBranchesQuery.isPending && <p role="status">Loading repository references…</p>}
+                {worktreeBranchesQuery.error && <p role="alert">{worktreeBranchesQuery.error.message}</p>}
+                <label className="grid gap-1 text-sm">Source reference
+                  <select className="rounded border border-border px-3 py-2" value={newWorktreeRef} onChange={(event) => { setNewWorktreeRef(event.target.value); setNewWorktreeApproved(false) }}>
+                    <option value="HEAD">Current HEAD</option>
+                    {(worktreeBranchesQuery.data?.branches ?? []).map((branch) => <option key={branch.ref} value={branch.ref}>{branch.name}</option>)}
+                  </select>
+                </label>
+                <p className="break-all font-mono text-xs">Commit: {sourceSha ?? 'No commit available'}</p>
+                <label className="grid gap-1 text-sm">New branch
+                  <input required className="rounded border border-border px-3 py-2" value={newWorktreeBranch} onChange={(event) => { setNewWorktreeBranch(event.target.value); setNewWorktreeApproved(false) }} placeholder="feature/my-change" />
+                </label>
+                <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={newWorktreeApproved} onChange={(event) => setNewWorktreeApproved(event.target.checked)} />I approve creating this branch and linked checkout at the displayed commit.</label>
+                {newWorktreeError && <p role="alert" className="text-sm text-destructive">{newWorktreeError}</p>}
+                <div className="flex justify-end gap-2"><button type="button" className="rounded border border-border px-3 py-2 text-sm" disabled={newWorktreeBusy} onClick={() => setNewWorktreeOpen(false)}>Cancel</button><button className="rounded border border-border px-3 py-2 text-sm disabled:opacity-50" disabled={newWorktreeBusy || worktreeBranchesQuery.isFetching || !sourceSha || !newWorktreeBranch.trim() || !newWorktreeApproved}>{newWorktreeBusy ? 'Creating…' : 'Create worktree'}</button></div>
+              </form>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </div>

@@ -5,6 +5,7 @@ import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 
 export interface Project {
   id: number | null
+  repositoryId?: string
   name: string
   directory: string
   fullPath: string

@@ -1,6 +1,6 @@
 import { executeGit, type GitExecutor, GitExecutionError, DEFAULT_GIT_OUTPUT_BYTES } from './executor.ts'
-import { GitServiceError, type GitBranch, type GitCheckpoint, type GitDiff, type GitMutationApproval, type GitMutationOperation, type GitMutationResult, type GitRepository, type GitStatus, type GitStatusEntry, type GitWorktree } from './contracts.ts'
-import { GitPathPolicy, safeRef } from './policy.ts'
+import { GitServiceError, type GitBranch, type GitCheckpoint, type GitDiff, type GitMutationApproval, type GitMutationOperation, type GitMutationResult, type GitRepository, type GitStatus, type GitStatusEntry, type GitLog, type GitCommit, type GitWorktree } from './contracts.ts'
+import { GitPathPolicy, isSensitiveRepositoryPath, safeRef } from './policy.ts'
 import { relative, resolve } from 'node:path'
 
 const GIT_DETAIL_LIMIT = 512
@@ -8,14 +8,42 @@ function conflictDetails(value: string): string { const detail = value.replaceAl
 function executionError(error: unknown, conflict = false): never { if (error instanceof GitExecutionError) { if (conflict && error.kind === 'failed') throw new GitServiceError('GIT_CONFLICT', conflictDetails(error.stderr || error.stdout)); throw new GitServiceError(error.kind === 'timeout' ? 'GIT_TIMEOUT' : error.kind === 'output' ? 'GIT_OUTPUT_LIMIT' : 'GIT_FAILED', error.message) } ; throw error }
 function lines(value: string): string[] { return value.split('\n').map((line) => line.trim()).filter(Boolean) }
 
+type GitProviderRemote = { remote: string; provider: 'github' | 'gitee'; owner: string; repo: string }
+const safeRemoteName = (name: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)
+function providerIdentity(remote: string, value: string): GitProviderRemote | undefined {
+  if (!safeRemoteName(remote) || value.length > 2048 || /[?#]/.test(value)) return undefined
+  let host = ''
+  let path = ''
+  if (/^https:\/\//i.test(value) || /^ssh:\/\//i.test(value)) {
+    try {
+      const url = new URL(value)
+      if (url.protocol !== 'https:' && url.protocol !== 'ssh:') return undefined
+      if (url.search || url.hash || (url.protocol === 'https:' && url.port && url.port !== '443') || (url.protocol === 'ssh:' && url.port && url.port !== '22')) return undefined
+      host = url.hostname.toLowerCase()
+      path = url.pathname.slice(1)
+    } catch { return undefined }
+  } else {
+    const scp = /^(?:[A-Za-z0-9._-]+@)?(github\.com|gitee\.com):(.+)$/.exec(value)
+    if (!scp) return undefined
+    host = scp[1]!
+    path = scp[2]!
+  }
+  const provider = host === 'github.com' ? 'github' : host === 'gitee.com' ? 'gitee' : undefined
+  if (!provider) return undefined
+  if (path.toLowerCase().endsWith('.git')) path = path.slice(0, -4)
+  const parts = path.split('/')
+  if (parts.length !== 2 || parts.some(part => !/^[A-Za-z0-9_.-]+$/.test(part) || part === '.' || part === '..')) return undefined
+  return { remote, provider, owner: parts[0]!, repo: parts[1]! }
+}
+
 export class GitReadService {
   constructor(protected readonly policy: GitPathPolicy, protected readonly run: GitExecutor = executeGit) {}
   protected async command(args: readonly string[], cwd: string, signal?: AbortSignal, maxOutputBytes = DEFAULT_GIT_OUTPUT_BYTES, truncateOutput = false) { const conflict = args[0] === 'stash' && args[1] === 'apply'; try { const result = await this.run(args, { cwd, signal, maxOutputBytes, truncateOutput }); if (result.code !== 0) { if (conflict) throw new GitServiceError('GIT_CONFLICT', conflictDetails(result.stderr || result.stdout)); throw new GitServiceError('GIT_FAILED', 'Git operation failed') } return result } catch (error) { return executionError(error, conflict) } }
   private async repository(root: string, signal?: AbortSignal): Promise<GitRepository> {
     try {
-      const result = await this.command(['rev-parse', '--git-dir', '--is-bare-repository'], root, signal)
-      const values = lines(result.stdout)
-      if (values.length < 2 || values[1] !== 'false') throw new GitServiceError('NOT_REPOSITORY', 'Project is not a Git repository', 422)
+      const result = await this.command(['rev-parse', '--git-dir', '--is-bare-repository', '--show-prefix'], root, signal)
+      const values = result.stdout.split('\n')
+      if (values.length < 3 || values[1] !== 'false' || values[2] !== '') throw new GitServiceError('NOT_REPOSITORY', 'Project must be the root of a Git repository', 422)
       let head: string | null = null
       try { head = lines((await this.command(['rev-parse', '--verify', 'HEAD'], root, signal)).stdout)[0] ?? null } catch (error) { if (!(error instanceof GitServiceError) || error.code !== 'GIT_FAILED') throw error }
        return { root: '.', gitDir: resolve(root, values[0]!), bare: false, head }
@@ -42,10 +70,46 @@ export class GitReadService {
      return { repository, status: { branch, ahead: Number(tracking?.[1] ?? 0), behind: Number(tracking?.[2] ?? 0), entries, omitted, truncated: false } }
   }
   async branches(userId: string, projectId: string, signal?: AbortSignal) { const { root } = await this.policy.project(userId, projectId); const repository = await this.repository(root, signal); const result = await this.command(['for-each-ref', '--format=%(HEAD)%00%(refname:short)%00%(refname)%00%(upstream:short)%00%(objectname)%00%(symref)', 'refs/heads', 'refs/remotes'], root, signal); const branches: GitBranch[] = []
-    for (const row of result.stdout.split('\n').filter(Boolean)) { const [head, name, ref, target, sha, symbolic] = row.split('\0'); if (name && ref) branches.push({ name, ref, current: head === '*', remote: ref.startsWith('refs/remotes/'), ...(target ? { target } : {}), ...(sha ? { sha } : {}), ...(symbolic ? { symbolic } : {}) }) }; const remotes = lines((await this.command(['remote'], root, signal)).stdout); return { repository, branches, remotes }
+    for (const row of result.stdout.split('\n').filter(Boolean)) { const [head, name, ref, target, sha, symbolic] = row.split('\0'); if (name && ref) branches.push({ name, ref, current: head === '*', remote: ref.startsWith('refs/remotes/'), ...(target ? { target } : {}), ...(sha ? { sha } : {}), ...(symbolic ? { symbolic } : {}) }) }
+    const remotes = lines((await this.command(['remote'], root, signal)).stdout)
+    const providerRemotes: GitProviderRemote[] = []
+    for (const remote of remotes) {
+      if (!safeRemoteName(remote)) continue
+      try {
+        const configured = (await this.command(['remote', 'get-url', remote], root, signal, 4096)).stdout.trim()
+        const identity = providerIdentity(remote, configured)
+        if (identity) providerRemotes.push(identity)
+      } catch (error) { if (!(error instanceof GitServiceError) || error.code !== 'GIT_FAILED') throw error }
+    }
+    return { repository, branches, remotes, providerRemotes }
+  }
+  async log(userId: string, projectId: string, input: { ref?: string; path?: string; limit?: number } = {}, signal?: AbortSignal): Promise<{ repository: GitRepository; log: GitLog }> {
+    const { root } = await this.policy.project(userId, projectId); const repository = await this.repository(root, signal)
+    const ref = safeRef(input.ref); const path = this.policy.path(root, input.path); const limit = input.limit ?? 20
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new GitServiceError('INVALID_REQUEST', 'Git log limit must be between 1 and 100')
+    const args = ['--literal-pathspecs', 'log', '--format=%H%x00%an%x00%at%x00%s', '-n', String(limit), '--end-of-options', ...(ref ? [ref] : []), '--', ...(path ? [path] : [])]
+    const result = await this.command(args, root, signal, 512 * 1024, true)
+    const commits: GitCommit[] = []
+    for (const record of result.stdout.split('\n')) {
+      if (!record) continue
+      const [sha, author, timestamp, ...subject] = record.split('\0')
+      if (!sha || !/^[0-9a-f]{40,64}$/i.test(sha) || author === undefined || !timestamp || !/^\d+$/.test(timestamp)) continue
+      commits.push({ sha, author: author.slice(0, 256), timestamp: Number(timestamp), subject: subject.join('\0').slice(0, 1000) })
+    }
+    return { repository, log: { ...(ref ? { ref } : {}), ...(path ? { path } : {}), commits, truncated: result.truncated === true } }
   }
   async diff(userId: string, projectId: string, input: { path?: string; ref?: string; staged?: boolean } = {}, signal?: AbortSignal) { const { root } = await this.policy.project(userId, projectId); const repository = await this.repository(root, signal); const path = this.policy.path(root, input.path); const ref = safeRef(input.ref)
-    const args = ['diff', '--no-ext-diff', '--binary', '--no-color']; if (input.staged) args.push('--cached'); if (ref) args.push(ref); args.push('--'); if (path) args.push(path); const result = await this.command(args, root, signal, DEFAULT_GIT_OUTPUT_BYTES, true); const binary = result.stdout.includes('Binary files') || result.stdout.includes('GIT binary patch'); return { repository, diff: { ...(ref ? { ref } : {}), ...(path ? { path } : {}), text: result.stdout, truncated: result.truncated === true, binary, bytes: Buffer.byteLength(result.stdout) } satisfies GitDiff }
+    const args = ['--literal-pathspecs', 'diff', '--no-ext-diff', '--binary', '--no-color']; if (input.staged) args.push('--cached'); if (ref) args.push(ref)
+    if (path) args.push('--', path)
+    else {
+      const nameArgs = ['--literal-pathspecs', 'diff', '--name-only', '-z']; if (input.staged) nameArgs.push('--cached'); if (ref) nameArgs.push(ref)
+      const names = await this.command(nameArgs, root, signal, 1024 * 1024, true)
+      if (names.truncated) throw new GitServiceError('GIT_OUTPUT_LIMIT', 'Git diff path list exceeded the output limit')
+      const visiblePaths = names.stdout.split('\0').filter(name => name && !name.split('/').some(isSensitiveRepositoryPath))
+      if (!visiblePaths.length) return { repository, diff: { ...(ref ? { ref } : {}), text: '', truncated: false, binary: false, bytes: 0 } satisfies GitDiff }
+      args.push('--', ...visiblePaths)
+    }
+    const result = await this.command(args, root, signal, DEFAULT_GIT_OUTPUT_BYTES, true); const binary = result.stdout.includes('Binary files') || result.stdout.includes('GIT binary patch'); return { repository, diff: { ...(ref ? { ref } : {}), ...(path ? { path } : {}), text: result.stdout, truncated: result.truncated === true, binary, bytes: Buffer.byteLength(result.stdout) } satisfies GitDiff }
   }
   async worktrees(userId: string, projectId: string, signal?: AbortSignal) { const { root } = await this.policy.project(userId, projectId); const repository = await this.repository(root, signal); const result = await this.command(['worktree', 'list', '--porcelain'], root, signal); const worktrees: GitWorktree[] = []; let current: Partial<GitWorktree> | undefined
     const flush = () => { if (current?.path) worktrees.push({ path: current.path === root ? '.' : relative(root, current.path), head: current.head ?? null, branch: current.branch ?? null, detached: current.detached === true, locked: current.locked === true, prunable: current.prunable === true }); current = undefined }

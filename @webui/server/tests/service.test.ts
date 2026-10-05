@@ -22,6 +22,15 @@ describe('Git read service', () => {
     expect(() => policy.path(root, 'link/secret')).toThrowError(GitServiceError)
   })
 
+  it('denies sensitive filenames to Git path-based reads and mutations', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'subpolar-git-')); const root = join(workspace, 'repo'); await mkdir(root)
+    const policy = new GitPathPolicy(async () => project(root), workspace)
+    for (const path of ['.env', 'config/credentials.json', 'keys/id_rsa', 'server.pem']) {
+      expect(() => policy.path(root, path)).toThrowError(GitServiceError)
+    }
+    expect(policy.path(root, '.env.example')).toBe('.env.example')
+  })
+
   it('passes argv without interpolation and parses status, branches, diff, and worktrees', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'subpolar-git-')); const root = join(workspace, 'repo'); await mkdir(root)
     const calls: string[][] = []
@@ -31,8 +40,9 @@ describe('Git read service', () => {
       if (args[0] === 'rev-parse') return { stdout: 'abc123\n', stderr: '', code: 0 }
        if (args[0] === 'status') return { stdout: '## main...origin/main [ahead 1, behind 2]\0 M file.ts\0?? new.txt\0R  renamed.ts\0old.ts\0C  copied.ts\0source.ts\0', stderr: '', code: 0 }
       if (args[0] === 'for-each-ref') return { stdout: '*\0main\0refs/heads/main\0origin/main\0abc123\0\n \0origin/main\0refs/remotes/origin/main\0\0abc123\0\n', stderr: '', code: 0 }
+            if (args[0] === 'remote' && args[1] === 'get-url') return { stdout: 'https://github.com/acme/demo.git\n', stderr: '', code: 0 }
             if (args[0] === 'remote') return { stdout: 'origin\n', stderr: '', code: 0 }
-      if (args[0] === 'diff') return { stdout: 'diff --git a/file.ts b/file.ts\n+hello\n', stderr: '', code: 0 }
+      if (args.includes('diff')) return { stdout: 'diff --git a/file.ts b/file.ts\n+hello\n', stderr: '', code: 0 }
       if (args[0] === 'worktree') return { stdout: `worktree ${root}\nHEAD abc123\nbranch refs/heads/main\n\n`, stderr: '', code: 0 }
       throw new Error('unexpected command')
     }
@@ -48,11 +58,65 @@ describe('Git read service', () => {
     const sources = await service.branches('user-a', 'project-a')
         expect(sources.branches[0]).toMatchObject({ current: true, ref: 'refs/heads/main', target: 'origin/main', sha: 'abc123' })
         expect(sources.remotes).toEqual(['origin'])
+        expect(sources.providerRemotes).toEqual([{ remote: 'origin', provider: 'github', owner: 'acme', repo: 'demo' }])
     expect((await service.diff('user-a', 'project-a', { path: 'file.ts' })).diff.binary).toBe(false)
     expect((await service.worktrees('user-a', 'project-a')).worktrees[0]?.path).toBe('.')
     expect(calls.some((args) => args.includes('file.ts') && args.every((arg) => !arg.includes('&&')))).toBe(true)
     await expect(service.diff('user-a', 'project-a', { path: '--output=/tmp/x' })).rejects.toMatchObject({ code: 'PATH_DENIED' })
     await expect(service.diff('user-a', 'project-a', { ref: 'main..HEAD' })).rejects.toMatchObject({ code: 'REF_DENIED' })
+  })
+
+  it('normalizes supported remote identities while redacting credentials and excluding other remotes', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'subpolar-git-')); const root = join(workspace, 'repo'); await mkdir(root)
+    const calls: string[][] = []
+    const configured = new Map([
+      ['https-auth', 'https://alice:secret@github.com/acme/private.git'],
+      ['ssh-auth', 'ssh://alice:secret@gitee.com/team/project.git'],
+      ['scp', 'git@github.com:octo/sample.git'],
+      ['private-host', 'https://git.example.com/acme/repo.git'],
+      ['local', 'file:///tmp/acme/repo.git'],
+      ['query', 'https://github.com/acme/repo.git?token=secret'],
+      ['-opt', 'https://github.com/acme/repo.git'],
+    ])
+    const run: GitExecutor = async args => {
+      calls.push([...args])
+      if (args[0] === 'rev-parse' && args[1] === '--git-dir') return { stdout: '.git' + String.fromCharCode(10) + 'false' + String.fromCharCode(10), stderr: '', code: 0 }
+      if (args[0] === 'rev-parse') return { stdout: 'abc123' + String.fromCharCode(10), stderr: '', code: 0 }
+      if (args[0] === 'for-each-ref') return { stdout: '', stderr: '', code: 0 }
+      if (args[0] === 'remote' && args.length === 1) return { stdout: [...configured.keys()].join(String.fromCharCode(10)) + String.fromCharCode(10), stderr: '', code: 0 }
+      if (args[0] === 'remote' && args[1] === 'get-url') return { stdout: (configured.get(args[2]!) ?? '') + String.fromCharCode(10), stderr: '', code: 0 }
+      throw new Error('unexpected command')
+    }
+    const sources = await new GitReadService(new GitPathPolicy(async () => project(root), workspace), run).branches('user-a', 'project-a')
+    expect(sources.providerRemotes).toEqual([
+      { remote: 'https-auth', provider: 'github', owner: 'acme', repo: 'private' },
+      { remote: 'ssh-auth', provider: 'gitee', owner: 'team', repo: 'project' },
+      { remote: 'scp', provider: 'github', owner: 'octo', repo: 'sample' },
+    ])
+    expect(JSON.stringify(sources)).not.toMatch(/alice|secret|git\.example|file:\/\//)
+    expect(calls).not.toContainEqual(['remote', 'get-url', '-opt'])
+  })
+
+  it('bounds Git log, validates refs and paths, and uses end-of-options', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'subpolar-git-')); const root = join(workspace, 'repo'); await mkdir(root)
+    const calls: string[][] = []
+    const run: GitExecutor = async (args, _options) => {
+      calls.push([...args])
+      if (args.includes('rev-parse') && args.includes('--git-dir')) return { stdout: '.git\nfalse\n', stderr: '', code: 0 }
+      if (args.includes('rev-parse')) return { stdout: 'abc123\n', stderr: '', code: 0 }
+      if (args.includes('log')) return { stdout: `${'a'.repeat(40)}\0Author\0${1700000000}\0Subject\n`, stderr: '', code: 0 }
+      throw new Error('unexpected command')
+    }
+    const service = new GitReadService(new GitPathPolicy(async () => project(root), workspace), run)
+    await expect(service.log('user-a', 'project-a', { limit: 101 })).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+    await expect(service.log('user-a', 'project-a', { ref: '--all' })).rejects.toMatchObject({ code: 'REF_DENIED' })
+    await expect(service.log('user-a', 'project-a', { path: '../secret' })).rejects.toMatchObject({ code: 'PATH_DENIED' })
+    const result = await service.log('user-a', 'project-a', { ref: 'main', path: 'src/file.ts', limit: 5 })
+    expect(result.log.commits).toEqual([{ sha: 'a'.repeat(40), author: 'Author', timestamp: 1700000000, subject: 'Subject' }])
+    expect(calls.at(-1)).toEqual(['--literal-pathspecs', 'log', '--format=%H%x00%an%x00%at%x00%s', '-n', '5', '--end-of-options', 'main', '--', 'src/file.ts'])
+        await service.log('user-a', 'project-a', { path: ':(glob)**' })
+        expect(calls.at(-1)).toContain('--literal-pathspecs')
+        expect(calls.at(-1)).toContain(':(glob)**')
   })
 
   it('omits an unsafe untracked symlink without losing safe status entries', async () => {

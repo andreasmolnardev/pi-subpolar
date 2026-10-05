@@ -81,6 +81,8 @@ export type SessionRecord = {
   permissionOverride?: PermissionOverride
   /** Empty for General Chat or an orphaned legacy project. */
   projectId?: string
+  /** Owned task_worktrees record attached when this session was created. */
+  worktreeId?: string
   tags: string[]
 }
 
@@ -113,6 +115,7 @@ export type CreateSessionInput = {
   model?: string
   directory?: string
   permissionOverride?: PermissionOverride
+  worktreeId?: string | null
   tags?: unknown
   /** Migration-only escape hatch for a session whose project definition was absent. */
   allowOrphanProject?: boolean
@@ -208,6 +211,7 @@ export const PROJECT_SESSION_SCHEMA = {
       { name: 'session_id', type: 'text', required: true },
       // Empty means General Chat or a legacy session whose project was unavailable.
       { name: 'project_id', type: 'text' },
+      { name: 'worktree_id', type: 'text' },
       { name: 'project_name', type: 'text', required: true },
       { name: 'title', type: 'text', required: true },
       { name: 'created_at', type: 'number', required: true },
@@ -331,6 +335,7 @@ function sessionFromRecord(value: CollectionRecord): StoredSessionRecord {
     ...(optionalString(value.directory) ? { directory: optionalString(value.directory) } : {}),
     ...(permission ? { permissionOverride: permission } : {}),
     ...(optionalString(value.project_id) ? { projectId: optionalString(value.project_id) } : {}),
+    ...(optionalString(value.worktree_id) ? { worktreeId: optionalString(value.worktree_id) } : {}),
     tags: normalizeSessionTags(value.tags),
   }
 }
@@ -374,6 +379,7 @@ function sessionData(userId: string, input: CreateSessionInput, now: number): Re
     user_id: userId,
     session_id: id,
     project_id: input.projectId?.trim() || '',
+    worktree_id: input.worktreeId?.trim() || '',
     project_name: project,
     title,
     created_at: timestamp(input.createdAt, now),
@@ -411,6 +417,7 @@ function sessionUpdateData(input: UpdateSessionInput): Record<string, unknown> {
     data.project_id = input.projectId?.trim() || ''
     if (!input.projectId?.trim() && input.project === undefined) data.project_name = GENERAL_CHAT_NAME
   }
+  if (input.worktreeId !== undefined) data.worktree_id = input.worktreeId?.trim() || ''
   if (input.project !== undefined) {
     const project = input.project.trim()
     if (!project) throw new Error('Session project is required')

@@ -58,13 +58,16 @@ export async function handleProjectsRoute(context: BridgeRequestContext): Promis
       const task = await tasks.create({ owner_id: authenticatedUser!.id, project_id: projectId, state: 'draft', kind: 'task', title: `Worktree: ${input.branch}`, base_ref: input.sourceRef })
       const controller = new WorktreeController(new PocketBaseWorktreeStore(client))
       let worktree
+      let linkedProjectId: string | undefined
       try {
         worktree = await controller.create({ ownerId: authenticatedUser!.id, projectId, repository: root, taskId: task.id, baseRef: input.sourceRef, branch: input.branch, expectedSha: input.expectedSha })
         // Register the actual checkout as an owned repository. Existing runtime cwd isolation stays intact.
         const linked = await repository.createProject(authenticatedUser!.id, { name: `${project.name} · ${worktree.branch} · ${worktree.id}`, path: worktree.path, ...(project.hasAgentOverride ? { agentNames: project.agentNames ?? [] } : {}) })
+        linkedProjectId = linked.id
         const projects = await repository.listProjects(authenticatedUser!.id)
         return deps.json({ worktree, repositoryId: linked.id, projectId: projects.findIndex(item => item.id === linked.id) + 1 }, 201)
       } catch (error) {
+        if (linkedProjectId) await repository.deleteProject(authenticatedUser!.id, linkedProjectId).catch(() => undefined)
         if (worktree) await controller.remove(worktree).catch(() => undefined)
         await tasks.transition(authenticatedUser!.id, task.id, 'cancelled', { error_code: 'WORKTREE_CREATE_FAILED' }).catch(() => undefined)
         throw error
@@ -235,6 +238,7 @@ export async function handleProjectsRoute(context: BridgeRequestContext): Promis
         id: index + 1,
         name: project.name,
         path: project.path,
+        repositoryId: project.id,
         agentNames: project.agentNames,
         hasAgentOverride: project.hasAgentOverride,
       })),
@@ -251,7 +255,7 @@ export async function handleProjectsRoute(context: BridgeRequestContext): Promis
       const preferences = await deps.getUserPreferences(client, authenticatedUser!.id)
       return deps.json({
         context: {
-          project: deps.projectResponse(resolved.project, projectId, projectId === 0),
+          project: deps.projectResponse(resolved.project, projectId, projectId === 0, typeof resolved.project.repositoryId === 'string' ? resolved.project.repositoryId : undefined),
           agent: { id: resolved.agent.id, name: resolved.agent.name, description: resolved.agent.description },
           defaults: { permission: 'ask', ...(deps.preferenceModel(preferences?.preferences, 'conversation') ? { model: deps.preferenceModel(preferences?.preferences, 'conversation') } : {}) },
         },

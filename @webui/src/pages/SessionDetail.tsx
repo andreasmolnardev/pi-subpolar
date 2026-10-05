@@ -792,7 +792,7 @@ export function SessionDetail() {
                   </div>
                 </div>
               )}
-              {sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} />}
+              {sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} projectRouteId={repoId > 0 ? String(repoId) : undefined} />}
               {sessionId && !isGeneralChatProject && <div className="pb-2"><CreateWorktreeDialog key={sessionId} sessionId={sessionId} agent={sessionAgent.agent} /></div>}
               <ChatInputBar
                 ref={promptInputRef}

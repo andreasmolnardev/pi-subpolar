@@ -19,6 +19,13 @@ export function safeRelativePath(value: string | undefined): string | undefined 
   return parts.join('/')
 }
 
+export function isSensitiveRepositoryPath(value: string): boolean {
+  const name = value.split('/').at(-1)?.toLowerCase() ?? ''
+  return name === '.env' || name.startsWith('.env.') && !name.endsWith('.example')
+    || /(?:^|[._-])(secret|credential|credentials|token|private[-_]?key|id_rsa|id_ed25519)(?:[._-]|$)/i.test(name)
+    || /\.(?:pem|key|p12|pfx|jks)$/i.test(name)
+}
+
 export function safeRef(value: string | undefined): string | undefined {
   if (value === undefined || value === '') return undefined
   if (!/^[A-Za-z0-9][A-Za-z0-9._/@+-]{0,255}$/.test(value) || value.includes('..') || value.endsWith('/') || value.includes('@{')) throw new GitServiceError('REF_DENIED', 'Invalid Git reference')
@@ -40,6 +47,7 @@ export class GitPathPolicy {
   path(root: string, value: string | undefined): string | undefined {
     const relativePath = safeRelativePath(value)
     if (!relativePath) return undefined
+    if (relativePath.split('/').some(isSensitiveRepositoryPath)) throw new GitServiceError('PATH_DENIED', 'Repository path is not allowed')
     const candidate = resolve(root, relativePath)
     if (!isPathWithin(root, candidate)) throw new GitServiceError('PATH_DENIED', 'Repository path is not allowed')
     try { if (!isPathWithin(root, realpathSync.native(candidate))) throw new GitServiceError('PATH_DENIED', 'Repository path is not allowed') } catch (error) {

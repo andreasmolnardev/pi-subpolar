@@ -74,6 +74,8 @@ interface ChatInputBarProps {
   sendImmediately?: boolean;
   sessionID?: string;
   directory?: string;
+  worktreeId?: string;
+  repositoryId?: string;
   disabled?: boolean;
   isSessionActive?: boolean;
   hideAgentSelect?: boolean;
@@ -100,6 +102,8 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     sendImmediately = false,
     sessionID,
     directory,
+    worktreeId,
+    repositoryId,
     disabled = false,
     isSessionActive = false,
     hideAgentSelect = false,
@@ -604,6 +608,8 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
         agent: selectedAgentForRequest,
         model: currentModel === "__auto__" ? undefined : currentModel,
         permission: selectedPermissionForRequest,
+        worktreeId,
+        repositoryId,
       });
 
       if (sendImmediately) {

@@ -97,6 +97,20 @@ describe('linked worktree integration', () => {
     await expect(controller().remove({ ...foreign, ownerId: 'owner-a', taskId: 'task-a', path: join(root, 'worktrees', 'owner-a', 'task-a', foreign.id) })).rejects.toThrow('not owned')
     expect(existsSync(foreign.path)).toBe(true)
   })
+  it('returns only normalized provider identity in worktree sources', async () => {
+    await git('remote', 'add', 'origin', 'https://alice:secret@github.com/acme/repo.git')
+    const url = new URL('http://localhost/api/sessions/session-a/worktree-sources')
+    const response = await handleSessionsRoute({ request: new Request(url.href), url, path: url.pathname.split('/').slice(1), authenticatedUser: { id: 'owner-a' }, gatewayCredential: null, internalRequest: false, deps: {
+      applicationDatabase: async () => ({}),
+      createProjectSessionRepository: () => ({ getSession: async (owner: string) => owner === 'owner-a' ? { projectId: 'project-a', directory: repo } : null, getProject: async (owner: string, id: string) => owner === 'owner-a' && id === 'project-a' ? { id, name: 'Repo', path: repo } : null }),
+      json: (value: unknown, status = 200) => Response.json(value, { status }),
+    } } as never)
+    expect(response?.status).toBe(200)
+    const body = await response!.json()
+    expect(body).toMatchObject({ repositoryId: 'project-a', providerRepository: { remote: 'origin', provider: 'github', owner: 'acme', repo: 'repo' } })
+    expect(JSON.stringify(body)).not.toMatch(/alice|secret|github\\.com/)
+  })
+
   it('reports full refs, upstream names, SHAs and configured remote names without fetching', async () => {
     await git('remote', 'add', 'company', 'https://example.invalid/repository.git')
     await git('update-ref', 'refs/remotes/company/main', sha)
@@ -156,6 +170,31 @@ describe('linked worktree integration', () => {
     expect(stored.get('tasks/task-route')).toMatchObject({ worktree_id: result.worktree.id, owner_id: 'owner-a' })
     expect(await git('symbolic-ref', 'HEAD')).toBe('refs/heads/main')
   })
+  it('removes the linked project when listing projects fails after worktree registration', async () => {
+    const projects = [{ id: 'project-a', name: 'Repo', path: repo }]
+    const stored = new Map<string, any>()
+    let projectDeleted = false
+    const client = { collection: (name: string) => ({
+      create: async (data: any) => { const row = { id: name === 'tasks' ? 'task-cleanup' : 'audit-cleanup', ...data }; stored.set(`${name}/${row.id}`, row); return row },
+      getOne: async (id: string) => { const row = stored.get(`${name}/${id}`); if (!row) throw new Error('not found'); return row },
+      update: async (id: string, data: any) => { const row = { ...stored.get(`${name}/${id}`), ...data }; stored.set(`${name}/${id}`, row); return row },
+      delete: async (id: string) => { stored.delete(`${name}/${id}`) },
+    }) }
+    const url = new URL('http://localhost/api/projects/project-a/repository/worktrees')
+    const response = await handleProjectsRoute({ request: new Request(url.href, { method: 'POST' }), url, path: url.pathname.split('/').slice(1), authenticatedUser: { id: 'owner-a' }, gatewayCredential: null, internalRequest: false, deps: {
+      applicationDatabase: async () => client, body: async () => ({ branch: 'feature/cleanup', sourceRef: 'HEAD', expectedSha: sha, approved: true }),
+      createProjectSessionRepository: () => ({ getProject: async (owner: string, id: string) => owner === 'owner-a' ? projects.find(project => project.id === id) : null,
+        createProject: async (_owner: string, data: any) => { const linked = { id: 'linked-cleanup', ...data }; projects.push(linked); return linked },
+        listProjects: async () => { throw new Error('project listing unavailable') },
+        deleteProject: async (_owner: string, id: string) => { projectDeleted = true; const index = projects.findIndex(project => project.id === id); if (index >= 0) projects.splice(index, 1); return true },
+      }), json: (value: unknown, status = 200) => Response.json(value, { status }), redactedDiagnostic: () => 'redacted',
+    } } as never)
+    expect(response?.status).toBe(400)
+    expect(projectDeleted).toBe(true)
+    expect(projects).toHaveLength(1)
+    expect(await git('worktree', 'list', '--porcelain')).not.toContain('feature/cleanup')
+    expect(stored.get('tasks/task-cleanup')).toMatchObject({ state: 'cancelled', error_code: 'WORKTREE_CREATE_FAILED' })
+  })
   it('reads current HEAD from the session’s registered linked checkout, not the primary checkout', async () => {
     const record = await controller().create(input())
     writeFileSync(join(record.path, 'file.txt'), 'linked\n')
@@ -199,11 +238,11 @@ describe('linked worktree integration', () => {
     const response = await handleSessionsRoute(context as never)
     expect(response?.status).toBe(201)
     expect(calls).toContainEqual(['owner-a', project.id])
-    expect(calls).toContainEqual(expect.objectContaining({ directory: record.path, projectId: project.id, permissionOverride: 'ask' }))
+    expect(calls).toContainEqual(expect.objectContaining({ directory: record.path, projectId: project.id, worktreeId: record.id, permissionOverride: 'ask' }))
     expect(calls).toContainEqual(expect.objectContaining({ session_id: expect.any(String) }))
     const retried = await handleSessionsRoute(context as never)
     expect(retried?.status).toBe(200)
-    expect(await retried!.json()).toMatchObject({ session: { id: savedSession.id, directory: record.path } })
+    expect(await response!.json()).toMatchObject({ session: { id: savedSession.id, directory: record.path, worktreeId: record.id } })
     expect(calls.filter(call => typeof call === 'object' && call !== null && 'directory' in call)).toHaveLength(1)
   })
   it('rejects attachments to the primary checkout or invalid task linkage before creating a session', async () => {

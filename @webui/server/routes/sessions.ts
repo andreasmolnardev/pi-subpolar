@@ -27,7 +27,10 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
     const owned = await repository.listSessions(authenticatedUser!.id, { project, includeArchived: true })
     const records = owned.map((session) => {
       const local = deps.sessions.find((item) => item.id === session.id && item.userId === authenticatedUser!.id)
-      const record = deps.localSessionRecord(session)
+      const record = {
+        ...deps.localSessionRecord(session),
+        ...(session.worktreeId ? { worktreeId: session.worktreeId } : {}),
+      }
       if (local) Object.assign(local, record)
       return record
     }).filter((session) => {
@@ -72,7 +75,8 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       if (session.directory && canonicalProjectPath(session.directory) !== root) throw new GitServiceError('PATH_DENIED', 'Session checkout does not match its owned repository; register that checkout before creating a worktree')
       const service = new GitReadService(policy)
       const result = await service.branches(authenticatedUser!.id, session.projectId, request.signal)
-      return deps.json({ ...result, repositoryId: session.projectId })
+      const { providerRemotes, ...sources } = result
+      return deps.json({ ...sources, ...(providerRemotes[0] ? { providerRepository: providerRemotes[0] } : {}), repositoryId: session.projectId })
     } catch (error) {
       if (error instanceof GitServiceError) return deps.json({ error: { code: error.code, message: error.message } }, error.status)
       return deps.json({ error: { code: 'GIT_FAILED', message: 'Unable to inspect worktree sources' } }, 400)
@@ -185,6 +189,7 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       id,
       project: project.name,
       ...(typeof project.id === 'string' ? { projectId: project.id } : {}),
+      ...(attachedWorktree ? { worktreeId: attachedWorktree.id } : {}),
       title: typeof input.title === 'string' && input.title.trim() ? input.title.trim() : 'Untitled session',
       tags,
       createdAt: now,
@@ -205,6 +210,7 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       model: stored.model,
       userId: stored.userId,
       permissionOverride: stored.permissionOverride,
+      ...(stored.worktreeId ? { worktreeId: stored.worktreeId } : {}),
       tags: stored.tags,
     }
     if (attachedWorktree) {
@@ -232,6 +238,10 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       if (!ownedRecord) return deps.json({ error: 'Session not found' }, 404)
       const ownerId = ownedRecord.userId
       if (!ownerId) return deps.json({ error: 'Session not found' }, 404)
+      if (path.length === 3) {
+        const durableSession = await deps.createProjectSessionRepository(ownershipClient).getSession(ownerId, id)
+        if (durableSession?.worktreeId) ownedRecord.worktreeId = durableSession.worktreeId
+      }
       if (path[3] === 'workspace') {
         try {
           const input = request.method === 'GET' ? { query: url.searchParams.get('query') ?? '' } : await deps.body(request)

@@ -6,6 +6,8 @@ export type GitStatusOmission = { path: string; reason: 'PATH_DENIED' }
 export type GitStatus = { branch: string | null; ahead: number; behind: number; entries: GitStatusEntry[]; omitted: GitStatusOmission[]; truncated: boolean }
 export type GitBranch = { name: string; ref: string; current: boolean; remote: boolean; target?: string; sha?: string; symbolic?: string }
 export type GitDiff = { ref?: string; path?: string; text: string; truncated: boolean; binary: boolean; bytes: number }
+export type GitCommit = { sha: string; author: string; timestamp: number; subject: string }
+export type GitLog = { ref?: string; path?: string; commits: GitCommit[]; truncated: boolean }
 export type GitWorktree = { path: string; head: string | null; branch: string | null; detached: boolean; locked: boolean; prunable: boolean }
 
 export type GitReadResult = {
@@ -13,6 +15,7 @@ export type GitReadResult = {
   status?: GitStatus
   branches?: GitBranch[]
   diff?: GitDiff
+  log?: GitLog
   worktrees?: GitWorktree[]
 }
 

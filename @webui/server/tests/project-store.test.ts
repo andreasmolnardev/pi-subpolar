@@ -48,10 +48,12 @@ describe('session tags', () => {
     const repository = createProjectSessionRepository(client as never)
     const project = await repository.createProject('owner-a', { name: 'Build', path: `${configuredWorkspaceRoot()}/build` })
     const created = await repository.createSession('owner-a', {
-      id: 'session-a', projectId: project.id, title: 'Session', tags: ['Work', 'work', 'Review'],
+      id: 'session-a', projectId: project.id, worktreeId: 'worktree-a', title: 'Session', tags: ['Work', 'work', 'Review'],
     })
     expect(created.tags).toEqual(['Work', 'Review'])
-    expect((await repository.getSession('owner-a', 'session-a'))?.tags).toEqual(['Work', 'Review'])
+    expect(created.worktreeId).toBe('worktree-a')
+    expect((await repository.getSession('owner-a', 'session-a'))).toMatchObject({ tags: ['Work', 'Review'], worktreeId: 'worktree-a' })
+    expect((await repository.updateSession('owner-a', 'session-a', { worktreeId: 'worktree-b' }))?.worktreeId).toBe('worktree-b')
     expect(await repository.getSession('owner-b', 'session-a')).toBeNull()
     expect(await repository.updateSession('owner-b', 'session-a', { tags: ['Other'] })).toBeNull()
     expect((await repository.getSession('owner-a', 'session-a'))?.tags).toEqual(['Work', 'Review'])
@@ -63,10 +65,13 @@ describe('session tags', () => {
       id: 'legacy-record', collection: 'sessions', user_id: 'owner-a', session_id: 'legacy',
       project_name: 'General Chat', title: 'Legacy', created_at: 1, updated_at: 2, tags: null,
     }])
-    expect((await createProjectSessionRepository(client as never).getSession('owner-a', 'legacy'))?.tags).toEqual([])
+    const legacy = await createProjectSessionRepository(client as never).getSession('owner-a', 'legacy')
+    expect(legacy?.tags).toEqual([])
+    expect(legacy?.worktreeId).toBeUndefined()
   })
 
-  it('declares the durable tags field in the session schema', () => {
+  it('declares optional worktree metadata and tags in the session schema', () => {
+    expect(PROJECT_SESSION_SCHEMA.sessions.fields).toContainEqual({ name: 'worktree_id', type: 'text' })
     expect(PROJECT_SESSION_SCHEMA.sessions.fields).toContainEqual({ name: 'tags', type: 'json' })
   })
 })

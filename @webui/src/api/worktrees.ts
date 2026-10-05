@@ -2,7 +2,8 @@ import { API_BASE_URL } from '@/config'
 import { fetchWrapper } from './fetchWrapper'
 
 export interface WorktreeSource { name: string; ref: string; current: boolean; remote: boolean; target?: string; sha?: string; symbolic?: string }
-export interface WorktreeSources { repositoryId: string; repository: { head: string | null }; branches: WorktreeSource[]; remotes: string[] }
+export interface WorktreeProviderRepository { remote: string; provider: 'github' | 'gitee'; owner: string; repo: string }
+export interface WorktreeSources { repositoryId: string; repository: { head: string | null }; branches: WorktreeSource[]; remotes: string[]; providerRepository?: WorktreeProviderRepository }
 export interface CreatedWorktree { repositoryId: string; projectId: number; worktree: { id: string; branch: string; path: string; baseRef: string; baseSha: string } }
 const json = (body: unknown) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 const repository = (id: string) => `${API_BASE_URL}/api/projects/${encodeURIComponent(id)}/repository`
