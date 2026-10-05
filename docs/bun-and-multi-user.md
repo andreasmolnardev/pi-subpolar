@@ -122,8 +122,10 @@ management/discovery consumers of the stdio adapter require separate review.
 ### No OS sandbox
 
 Owner checks, workspace path validation, policies, approvals, and redaction are
-application-level controls. They are **not an OS sandbox**, and no isolated
-per-tenant worker dispatch is implemented.
+application-level controls. They are **not an OS sandbox**, and no per-tenant
+worker dispatch is implemented. A long-running process
+service is therefore not enabled; see the [process capability safety
+assessment](long-running-process-assessment.md) before proposing one.
 
 The shared-host tool gateway supports guarded `read`, `write`, `edit`, and `ls`
 only for an explicitly validated durable owner/session workspace. Paths must be
