@@ -1,6 +1,11 @@
 /* Domain route extracted from bridge-request-handler.ts. */
 // @ts-nocheck
 import type { BridgeRequestContext } from '../bridge-route-context.ts'
+import { GitReadService } from '../git/service.ts'
+import { GitPathPolicy } from '../git/policy.ts'
+import { GitServiceError } from '../git/contracts.ts'
+import { canonicalProjectPath } from '../core/project-filesystem.ts'
+import { sessionWorkspaceService, WorkspaceError } from '../application/session-workspace.ts'
 
 export async function handleSessionsRoute(context: BridgeRequestContext): Promise<Response | undefined> {
   const { request, url, path, correlationId, deps, gatewayCredential, internalRequest } = context
@@ -55,6 +60,24 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
     })
   }
 
+  if (path[1] === 'sessions' && path.length === 4 && path[3] === 'worktree-sources' && request.method === 'GET') {
+    if (!authenticatedUser || gatewayCredential || internalRequest) return deps.json({ error: 'Worktree sources require an authenticated session owner' }, 403)
+    const client = await deps.applicationDatabase()
+    const repository = deps.createProjectSessionRepository(client)
+    const session = await repository.getSession(authenticatedUser!.id, decodeURIComponent(path[2]))
+    if (!session?.projectId) return deps.json({ error: { code: 'PROJECT_NOT_FOUND', message: 'Session has no owned repository' } }, 404)
+    try {
+      const policy = new GitPathPolicy((owner, id) => repository.getProject(owner, id))
+      const { root } = await policy.project(authenticatedUser.id, session.projectId)
+      if (session.directory && canonicalProjectPath(session.directory) !== root) throw new GitServiceError('PATH_DENIED', 'Session checkout does not match its owned repository; register that checkout before creating a worktree')
+      const service = new GitReadService(policy)
+      const result = await service.branches(authenticatedUser!.id, session.projectId, request.signal)
+      return deps.json({ ...result, repositoryId: session.projectId })
+    } catch (error) {
+      if (error instanceof GitServiceError) return deps.json({ error: { code: error.code, message: error.message } }, error.status)
+      return deps.json({ error: { code: 'GIT_FAILED', message: 'Unable to inspect worktree sources' } }, 400)
+    }
+  }
   if (path[1] === 'sessions' && path.length === 2 && request.method === 'POST') {
     const input = await deps.body(request)
     const client = await deps.applicationDatabase()
@@ -65,7 +88,10 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       ? input.project
       : typeof input.project === 'string' && /^\d+$/.test(input.project) ? Number(input.project) : undefined
     const requestedProjectName = typeof input.project === 'string' && !/^\d+$/.test(input.project) ? input.project : undefined
-    const selectedProject = requestedProjectId !== undefined
+    if (input.repositoryId !== undefined && (typeof input.repositoryId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(input.repositoryId))) return deps.json({ error: 'Invalid repository ID' }, 400)
+    const selectedProject = input.repositoryId !== undefined
+      ? await repository.getProject(authenticatedUser!.id, input.repositoryId)
+      : requestedProjectId !== undefined
       ? requestedProjectId === 0 ? deps.generalChatProject() : ownedProjects[requestedProjectId - 1]
       : requestedProjectName
         ? requestedProjectName === 'General Chat' ? deps.generalChatProject() : ownedProjects.find((item) => item.name === requestedProjectName)
@@ -100,7 +126,26 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       const status = resolved.code === 'NEW_SESSION_PROJECT_NOT_FOUND' || resolved.code === 'NEW_SESSION_AGENT_NOT_FOUND' ? 404 : 409
       return deps.json({ error: resolved.message, code: resolved.code }, status)
     }
-    const project: Project = resolved.project
+    const project: Project = input.repositoryId !== undefined ? { ...resolved.project, ...selectedProject } : resolved.project
+    let attachedWorktree = null
+    if (input.worktreeId !== undefined) {
+      if (gatewayCredential || internalRequest || typeof input.worktreeId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(input.worktreeId) || input.repositoryId === undefined) return deps.json({ error: 'Owned repository and worktree IDs are required' }, 400)
+      try {
+              await new GitPathPolicy((owner, id) => repository.getProject(owner, id)).project(authenticatedUser.id, input.repositoryId)
+            } catch (error) {
+              if (error instanceof GitServiceError) return deps.json({ error: { code: error.code, message: error.message } }, error.status)
+              throw error
+            }
+            attachedWorktree = await client.collection('task_worktrees').getFirstListItem(`id = "${deps.escapeFilter(input.worktreeId)}" && owner_id = "${deps.escapeFilter(authenticatedUser!.id)}" && state = "active"`).catch(() => null)
+      if (!attachedWorktree || canonicalProjectPath(attachedWorktree.path) !== canonicalProjectPath(project.path)) return deps.json({ error: 'Worktree does not match the owned repository' }, 403)
+      const linkedTask = await client.collection('tasks').getFirstListItem(`id = "${deps.escapeFilter(attachedWorktree.task_id)}" && owner_id = "${deps.escapeFilter(authenticatedUser!.id)}"`).catch(() => null)
+      if (!linkedTask || linkedTask.worktree_id !== attachedWorktree.id || linkedTask.project_id !== attachedWorktree.project_id) return deps.json({ error: 'Worktree task ownership or repository linkage is invalid' }, 403)
+      if (linkedTask.session_id) {
+        const existing = await repository.getSession(authenticatedUser!.id, linkedTask.session_id)
+        if (existing && existing.projectId === project.id && typeof existing.directory === 'string' && canonicalProjectPath(existing.directory) === canonicalProjectPath(project.path)) return deps.json({ session: deps.storedSessionResponse(existing, ownedProjects) })
+        return deps.json({ error: 'Worktree already has a session linkage; inspect the task before retrying' }, 409)
+      }
+    }
     const thinking = input.thinking === undefined ? undefined
       : input.thinking === 'off' || input.thinking === 'minimal' || input.thinking === 'low' || input.thinking === 'medium' || input.thinking === 'high' || input.thinking === 'xhigh'
         ? input.thinking
@@ -162,6 +207,14 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       permissionOverride: stored.permissionOverride,
       tags: stored.tags,
     }
+    if (attachedWorktree) {
+      try {
+        await client.collection('tasks').update(attachedWorktree.task_id, { session_id: stored.id, updated_at: Date.now() })
+      } catch (error) {
+        await repository.deleteSession(authenticatedUser!.id, stored.id)
+        throw error
+      }
+    }
     deps.sessions.push(record)
     await deps.saveState(record)
     deps.rpcSession(record.id, record.userId!, record, project, record.profile ?? 'master', record.permissionOverride)
@@ -171,7 +224,7 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
   if (path[1] === 'sessions' && path.length >= 3) {
     const id = decodeURIComponent(path[2] ?? '')
     try {
-      const store = await deps.runtimeStore()
+      if (path[3] === 'workspace' && (!authenticatedUser || internalRequest || gatewayCredential)) return deps.json({ error: 'Workspace review requires an authenticated session owner', code: 'FORBIDDEN' }, 403)
       const ownershipClient = await deps.applicationDatabase()
       const ownedRecord = internalRequest
         ? await deps.ownedSessionRecord(ownershipClient, (await deps.createProjectSessionRepository(ownershipClient).getSessionById(id))?.userId ?? '', id)
@@ -179,6 +232,19 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       if (!ownedRecord) return deps.json({ error: 'Session not found' }, 404)
       const ownerId = ownedRecord.userId
       if (!ownerId) return deps.json({ error: 'Session not found' }, 404)
+      if (path[3] === 'workspace') {
+        try {
+          const input = request.method === 'GET' ? { query: url.searchParams.get('query') ?? '' } : await deps.body(request)
+          const result = await sessionWorkspaceService.request(ownerId, id, ownedRecord.directory, request.method, path.slice(4).map(decodeURIComponent), url.searchParams.get('path'), input)
+          return deps.json(result)
+        } catch (error) {
+          if (error instanceof WorkspaceError) return deps.json({ error: error.message, code: error.code }, error.status)
+          if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return deps.json({ error: 'Workspace file or directory not found', code: 'NOT_FOUND' }, 404)
+          console.warn(`Workspace request failed: ${deps.redactedDiagnostic(error)}`)
+          return deps.json({ error: 'Workspace operation failed', code: 'WORKSPACE_FAILED' }, 400)
+        }
+      }
+      const store = await deps.runtimeStore()
       if (path.length === 3 && request.method === 'GET') return deps.json(deps.storedSessionResponse(ownedRecord, await deps.createProjectSessionRepository(ownershipClient).listProjects(ownerId)))
       if (path.length === 3 && request.method === 'PATCH') {
         const input = await deps.body(request)

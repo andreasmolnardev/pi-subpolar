@@ -1,0 +1,312 @@
+import { useState } from 'react'
+import { MemoryRouter } from 'react-router-dom'
+import { CommandPalette } from '@/components/navigation/CommandPalette'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { FetchError } from '@/api/fetchWrapper'
+import { sessionWorkspaceApi as api, type SessionWorkspace } from '@/api/session-workspace'
+import { useSessionStatus } from '@/stores/sessionStatusStore'
+import { SessionWorkspaceChanges } from './SessionWorkspaceChanges'
+import { WORKSPACE_OPEN_FILE, WORKSPACE_QUICK_OPEN, requestWorkspaceFile } from './quickOpen'
+import { changeAuthOwner, getAuthGeneration } from '@/stores/authIdentityStore'
+import { workspaceDrafts } from './cache'
+
+vi.mock('@/api/session-workspace', () => ({ sessionWorkspaceApi: {
+  get: vi.fn(), diff: vi.fn(), files: vi.fn(), file: vi.fn(), save: vi.fn(), search: vi.fn(),
+  createGroup: vi.fn(), updateGroup: vi.fn(), stage: vi.fn(), unstage: vi.fn(), commit: vi.fn(),
+} }))
+let workspace: SessionWorkspace
+function mount(sessionId = 'session') {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+  return render(<QueryClientProvider client={client}><SessionWorkspaceChanges sessionId={sessionId} /></QueryClientProvider>)
+}
+async function review() { fireEvent.click(await screen.findByRole('button', { name: 'Review' })) }
+async function files() { await review(); fireEvent.click(screen.getByRole('tab', { name: 'Files' })) }
+beforeEach(() => {
+  vi.resetAllMocks()
+  useSessionStatus.getState().clearStatus('session')
+  workspace = { isGit: true, branch: 'main', additions: 7, deletions: 2,
+    files: [{ path: 'a.ts', status: 'modified', additions: 3, deletions: 2 }, { path: 'b.ts', status: 'added', additions: 4, deletions: 0 }],
+    groups: [{ id: 'one', name: 'First', message: 'My commit', paths: [] }, { id: 'two', name: 'Second', message: '', paths: [] }] }
+  vi.mocked(api.get).mockImplementation(async () => structuredClone(workspace))
+  vi.mocked(api.diff).mockResolvedValue({ text: '--- a/a.ts\n+++ b/a.ts\n-old\n+new' })
+  vi.mocked(api.files).mockImplementation(async (_id, path) => ({ entries: path ? [{ name: 'nested.ts', path: 'src/nested.ts', directory: false }] : [{ name: 'src', path: 'src', directory: true }, { name: 'a.ts', path: 'a.ts', directory: false }] }))
+  vi.mocked(api.file).mockResolvedValue({ content: 'original' })
+  vi.mocked(api.save).mockImplementation(async (_id, _path, content) => ({ content }))
+})
+
+describe('SessionWorkspaceChanges', () => {
+  it('isolates two owners sharing a session ID, including drafts and diff previews while loading', async () => {
+    act(() => changeAuthOwner('account-a'))
+    const view = mount('shared-session')
+    await files()
+    fireEvent.click(await screen.findByRole('button', { name: 'a.ts' }))
+    const editor = await screen.findByRole('textbox', { name: 'Edit a.ts' })
+    fireEvent.change(editor, { target: { value: 'account A private draft' } })
+    expect(workspaceDrafts.size).toBe(1)
+    fireEvent.click(screen.getByRole('tab', { name: 'Review' }))
+    expect(await screen.findByText('+new')).toBeInTheDocument()
+    const oldGeneration = getAuthGeneration()
+    vi.mocked(api.get).mockReturnValue(new Promise(() => {}))
+    act(() => changeAuthOwner('account-b'))
+    expect(workspaceDrafts.size).toBe(0)
+    expect(screen.queryByDisplayValue('account A private draft')).not.toBeInTheDocument()
+    expect(screen.queryByText('+new')).not.toBeInTheDocument()
+    expect(screen.queryByText('My commit')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Loading workspace…').length).toBeGreaterThan(0)
+    act(() => window.dispatchEvent(new CustomEvent(WORKSPACE_OPEN_FILE, { detail: {
+      sessionId: 'shared-session', path: 'a.ts', requestId: 100, owner: 'account-a', generation: oldGeneration,
+    } })))
+    expect(screen.queryByRole('navigation', { name: 'Workspace file explorer' })).not.toBeInTheDocument()
+    view.unmount()
+    act(() => changeAuthOwner(null))
+  })
+
+  it('drops logout drafts and late file responses rather than restoring them on the next login', async () => {
+    act(() => changeAuthOwner('account-a'))
+    const view = mount('logout-session')
+    await files()
+    fireEvent.click(await screen.findByRole('button', { name: 'a.ts' }))
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Edit a.ts' }), { target: { value: 'unsaved account A source' } })
+    expect(workspaceDrafts.size).toBe(1)
+    fireEvent.click(screen.getByRole('button', { name: 'src' }))
+    let finish!: (value: { content: string }) => void
+    vi.mocked(api.file).mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    fireEvent.click(await screen.findByRole('button', { name: 'nested.ts' }))
+    await waitFor(() => expect(api.file).toHaveBeenCalledWith('logout-session', 'src/nested.ts'))
+    act(() => changeAuthOwner(null))
+    await act(async () => { finish({ content: 'late account A source' }) })
+    expect(workspaceDrafts.size).toBe(0)
+    const unload = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(unload)
+    expect(unload.defaultPrevented).toBe(false)
+    act(() => changeAuthOwner('account-b'))
+    await files()
+    expect(screen.queryByDisplayValue('late account A source')).not.toBeInTheDocument()
+    expect(screen.queryByDisplayValue('unsaved account A source')).not.toBeInTheDocument()
+    vi.mocked(api.file).mockResolvedValue({ content: 'account B source' })
+    fireEvent.click(await screen.findByRole('button', { name: 'a.ts' }))
+    expect(await screen.findByRole('textbox', { name: 'Edit a.ts' })).toHaveValue('account B source')
+    view.unmount()
+    act(() => changeAuthOwner(null))
+  })
+  it('uses backend totals, exposes styled individual diffs, and switches accessible tabs', async () => {
+    mount()
+    const pill = await screen.findByRole('button', { name: '2 files changed +7 −2' })
+    expect(within(pill).getByText('+7')).toBeInTheDocument()
+    fireEvent.click(pill)
+    expect(await screen.findByText('+new')).toHaveClass('bg-green-500/10')
+    expect(screen.getByText('-old')).toHaveClass('bg-red-500/10')
+    fireEvent.click(screen.getByRole('button', { name: 'b.ts' }))
+    await waitFor(() => expect(api.diff).toHaveBeenCalledWith('session', 'b.ts'))
+    fireEvent.click(screen.getByRole('tab', { name: 'Browser' }))
+    expect(screen.getByText(/Browser preview is not available yet/)).toBeVisible()
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Browser' }), { key: 'Home' })
+    expect(screen.getByRole('tab', { name: 'Review' })).toHaveAttribute('aria-selected', 'true')
+  })
+  it('keeps a Files launcher with zero changes and hides Commit for non-Git workspaces', async () => {
+    workspace = { ...workspace, isGit: false, files: [], additions: 0, deletions: 0 }
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Files' }))
+    expect(await screen.findByRole('navigation', { name: 'Workspace file explorer' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Commit' })).not.toBeInTheDocument()
+  })
+  it('stages to a destination, moves and unstages snapshots, refreshing after each mutation', async () => {
+    vi.mocked(api.stage).mockImplementation(async (_id, path, groupId) => {
+      workspace.groups = workspace.groups.map(g => ({ ...g, paths: g.id === groupId ? [path] : [] }))
+      return { groups: workspace.groups }
+    })
+    vi.mocked(api.unstage).mockImplementation(async () => { workspace.groups.forEach(g => { g.paths = [] }); return { groups: workspace.groups } })
+    mount(); await review()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Stage' })[0])
+    await screen.findByRole('button', { name: 'Edit First' })
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Unstage' })).toHaveLength(2))
+    fireEvent.change(screen.getByLabelText('Staging destination'), { target: { value: 'two' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Move' })[0])
+    await waitFor(() => expect(api.stage).toHaveBeenLastCalledWith('session', 'a.ts', 'two'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit Second' })).toHaveTextContent('(1)'))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Unstage' })[0])
+    await waitFor(() => expect(api.unstage).toHaveBeenCalledWith('session', 'a.ts'))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Unstage' })).not.toBeInTheDocument())
+  })
+  it('never auto commits and surfaces commit failures after confirmation', async () => {
+    workspace.groups[0].paths = ['a.ts']
+    vi.mocked(api.commit).mockRejectedValue(new Error('HEAD changed; restage the file'))
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Commit' }))
+    expect(api.commit).not.toHaveBeenCalled()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Commit area' })[0])
+    expect(api.commit).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm commit' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('HEAD changed; restage the file')
+    expect(api.commit).toHaveBeenCalledWith('session', 'one')
+  })
+  it('creates areas and edits the commit message by clicking the area name', async () => {
+    vi.mocked(api.createGroup).mockImplementation(async (_id, name) => { const g = { id: 'three', name, message: '', paths: [] }; workspace.groups.push(g); return g })
+    vi.mocked(api.updateGroup).mockImplementation(async (_id, id, update) => { const g = workspace.groups.find(g => g.id === id)!; Object.assign(g, update); return g })
+    mount(); await review()
+    fireEvent.change(screen.getByLabelText('New area name'), { target: { value: 'Third' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create area' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Third' }))
+    fireEvent.change(screen.getByLabelText('Commit message'), { target: { value: 'Ship it' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save area' }))
+    await waitFor(() => expect(screen.queryByRole('form', { name: 'Edit staging area' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Ship it', { selector: 'p' })).toBeInTheDocument())
+    expect(api.updateGroup).toHaveBeenCalledWith('session', 'three', { name: 'Third', message: 'Ship it' })
+  })
+  it('loads directories lazily and preserves dirty drafts through tab and panel switches', async () => {
+    mount('editor-tabs'); await files()
+    expect(api.files).not.toHaveBeenCalledWith('editor-tabs', 'src')
+    fireEvent.click(await screen.findByRole('button', { name: /src/ }))
+    expect(await screen.findByRole('button', { name: /nested.ts/ })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /a.ts/ }))
+    fireEvent.change(await screen.findByLabelText('Edit a.ts'), { target: { value: 'draft' } })
+    fireEvent.click(screen.getByRole('tab', { name: 'Review', exact: true }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Files', exact: true }))
+    expect(screen.getByLabelText('Edit a.ts')).toHaveValue('draft')
+    fireEvent.click(screen.getByRole('button', { name: 'Close workspace panel' }))
+    await review(); fireEvent.click(screen.getByRole('tab', { name: 'Files', exact: true }))
+    expect(screen.getByLabelText('Edit a.ts')).toHaveValue('draft')
+    fireEvent.click(screen.getByRole('button', { name: 'Save file' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save file' })).toBeDisabled())
+    expect(api.save).toHaveBeenCalledWith('editor-tabs', 'a.ts', 'draft', 'original')
+  })
+  it('retains drafts on content conflict and guards close/reload before discarding', async () => {
+    vi.mocked(api.save).mockRejectedValue(new FetchError('conflict', 409, 'CONTENT_CONFLICT'))
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    mount('editor-conflict'); await files()
+    fireEvent.click(await screen.findByRole('button', { name: /a.ts/ }))
+    fireEvent.change(await screen.findByLabelText('Edit a.ts'), { target: { value: 'my draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save file' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Your draft is safe')
+    expect(screen.getByLabelText('Edit a.ts')).toHaveValue('my draft')
+    fireEvent.click(screen.getByRole('button', { name: 'Close a.ts' }))
+    expect(confirm).toHaveBeenCalled()
+    expect(screen.getByLabelText('Edit a.ts')).toHaveValue('my draft')
+    fireEvent.click(screen.getByRole('button', { name: 'Reload from disk' }))
+    expect(api.file).toHaveBeenCalledTimes(1)
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Reload from disk' }))
+    await waitFor(() => expect(screen.getByLabelText('Edit a.ts')).toHaveValue('original'))
+    confirm.mockRestore()
+  })
+  it('surfaces staging failures without claiming that a snapshot was staged', async () => {
+    vi.mocked(api.stage).mockRejectedValue(new Error('Workspace is busy; retry later'))
+    mount('stage-error'); await review()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Stage' })[0])
+    expect(await screen.findByRole('alert')).toHaveTextContent('Workspace is busy; retry later')
+    expect(screen.queryByRole('button', { name: 'Unstage' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Stage' })[0]).toBeEnabled()
+  })
+  it('preserves drafts across unmounts and protects browser navigation', async () => {
+    const first = mount('draft-remount'); await files()
+    fireEvent.click(await screen.findByRole('button', { name: /a.ts/ }))
+    fireEvent.change(await screen.findByLabelText('Edit a.ts'), { target: { value: 'keep me' } })
+    first.unmount()
+    const unload = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(unload)
+    expect(unload.defaultPrevented).toBe(true)
+    mount('draft-remount'); await files()
+    expect(await screen.findByLabelText('Edit a.ts')).toHaveValue('keep me')
+    fireEvent.click(screen.getByRole('button', { name: 'Save file' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save file' })).toBeDisabled())
+  })
+  it('hands focus from the global palette to the Files editor without changing the composer draft', async () => {
+    vi.mocked(api.search).mockResolvedValue({ paths: ['src/chosen.ts'], truncated: false })
+    function Session() {
+      const [open, setOpen] = useState(false)
+      return <><textarea aria-label="Composer" defaultValue="unfinished message" /><button onClick={() => setOpen(true)}>Open palette</button><SessionWorkspaceChanges sessionId="palette-session" /><CommandPalette open={open} onOpenChange={setOpen} /></>
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/projects/p/sessions/palette-session']}><Session /></MemoryRouter></QueryClientProvider>)
+    const composer = screen.getByLabelText('Composer')
+    composer.focus()
+    fireEvent.click(screen.getByRole('button', { name: 'Open palette' }))
+    await screen.findByRole('option', { name: /chosen.ts/ })
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search workspace files' }), { key: 'Enter' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    const editor = await screen.findByLabelText('Edit src/chosen.ts')
+    await waitFor(() => expect(editor).toHaveFocus())
+    expect(composer).toHaveValue('unfinished message')
+    expect(screen.getByRole('tab', { name: 'Files', exact: true })).toHaveAttribute('aria-selected', 'true')
+  })
+  it('quick open activates Files and existing tabs without losing drafts, and validates session events', async () => {
+    mount('quick-open')
+    await screen.findByRole('button', { name: 'Review' })
+    act(() => requestWorkspaceFile('another-session', 'ignored.ts'))
+    act(() => window.dispatchEvent(new CustomEvent(WORKSPACE_OPEN_FILE, { detail: { sessionId: 'quick-open', path: 42 } })))
+    expect(api.file).not.toHaveBeenCalled()
+    const receive = vi.fn()
+    window.addEventListener(WORKSPACE_QUICK_OPEN, receive)
+    fireEvent.click(screen.getByRole('button', { name: 'Quick open' }))
+    expect(receive.mock.calls[0][0].detail).toEqual({ sessionId: 'quick-open' })
+    window.removeEventListener(WORKSPACE_QUICK_OPEN, receive)
+    act(() => requestWorkspaceFile('quick-open', 'a.ts'))
+    const first = await screen.findByLabelText('Edit a.ts')
+    expect(screen.getByRole('tab', { name: 'Files', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() => expect(first).toHaveFocus())
+    fireEvent.change(first, { target: { value: 'keep draft' } })
+    fireEvent.click(screen.getByRole('tab', { name: 'Review', exact: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close workspace panel' }))
+    act(() => requestWorkspaceFile('quick-open', 'b.ts'))
+    await screen.findByLabelText('Edit b.ts')
+    expect(screen.getAllByRole('tab', { name: /[ab].ts/ })).toHaveLength(2)
+    act(() => requestWorkspaceFile('quick-open', 'a.ts'))
+    await waitFor(() => expect(screen.getByLabelText('Edit a.ts')).toHaveFocus())
+    expect(screen.getByLabelText('Edit a.ts')).toHaveValue('keep draft')
+    expect(api.file).toHaveBeenCalledTimes(2)
+  })
+  it('queues quick opens during saves and allows retrying the same failed filename', async () => {
+    let finishSave!: (value: { content: string }) => void
+    vi.mocked(api.save).mockImplementation(() => new Promise(resolve => { finishSave = resolve }))
+    mount('queued-open')
+    act(() => requestWorkspaceFile('queued-open', 'a.ts'))
+    fireEvent.change(await screen.findByLabelText('Edit a.ts'), { target: { value: 'save this draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save file' }))
+    act(() => requestWorkspaceFile('queued-open', 'b.ts'))
+    expect(api.file).not.toHaveBeenCalledWith('queued-open', 'b.ts')
+    await act(async () => finishSave({ content: 'save this draft' }))
+    await screen.findByLabelText('Edit b.ts')
+    act(() => requestWorkspaceFile('queued-open', 'a.ts'))
+    await waitFor(() => expect(screen.getByLabelText('Edit a.ts')).toHaveValue('save this draft'))
+    vi.mocked(api.file).mockRejectedValueOnce(new Error('Temporary file error'))
+    act(() => requestWorkspaceFile('queued-open', 'retry.ts'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Temporary file error')
+    act(() => requestWorkspaceFile('queued-open', 'retry.ts'))
+    expect(await screen.findByLabelText('Edit retry.ts')).toHaveValue('original')
+    expect(vi.mocked(api.file).mock.calls.filter(([, path]) => path === 'retry.ts')).toHaveLength(2)
+  })
+  it('polls while a session is active and refreshes when it returns to idle', async () => {
+    mount()
+    await screen.findByRole('button', { name: '2 files changed +7 −2' })
+    vi.useFakeTimers()
+    try {
+      await act(async () => { useSessionStatus.getState().setStatus('session', { type: 'busy' }) })
+      const before = vi.mocked(api.get).mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(4001) })
+      expect(api.get).toHaveBeenCalledTimes(before + 1)
+      const activeCalls = vi.mocked(api.get).mock.calls.length
+      await act(async () => { useSessionStatus.getState().setStatus('session', { type: 'idle' }) })
+      expect(api.get).toHaveBeenCalledTimes(activeCalls + 1)
+      const idleCalls = vi.mocked(api.get).mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(8000) })
+      expect(api.get).toHaveBeenCalledTimes(idleCalls)
+    } finally {
+      vi.useRealTimers()
+      useSessionStatus.getState().clearStatus('session')
+    }
+  })
+  it('surfaces file permission/binary errors and bounded status errors with retry', async () => {
+    vi.mocked(api.get).mockRejectedValueOnce(new Error('Unavailable'))
+    mount('file-error')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unavailable')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await screen.findByRole('button', { name: 'Commit' })
+    await files()
+    vi.mocked(api.file).mockRejectedValue(new FetchError('Binary files cannot be edited', 415, 'BINARY_FILE'))
+    fireEvent.click(await screen.findByRole('button', { name: /a.ts/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Binary files cannot be edited')
+    expect(screen.queryByLabelText('Edit a.ts')).not.toBeInTheDocument()
+  })
+})

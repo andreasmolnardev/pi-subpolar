@@ -34,6 +34,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useServerHealth } from '@/hooks/useServerHealth'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { CommandPalette } from '@/components/navigation/CommandPalette'
+import { WORKSPACE_QUICK_OPEN, sessionIdFromPath } from '@/components/workspace/quickOpen'
 import {
   CompletionSuggestionContext,
   unavailableCompletionSuggestionProvider,
@@ -91,6 +92,15 @@ function AppShell() {
     newSession: () => navigate('/new'),
     openSessions: () => navigate('/history'),
   })
+  useEffect(() => {
+    const quickOpen = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail
+      const sessionId = sessionIdFromPath(location.pathname)
+      if (sessionId && detail?.sessionId === sessionId) setCommandPaletteOpen(true)
+    }
+    window.addEventListener(WORKSPACE_QUICK_OPEN, quickOpen)
+    return () => window.removeEventListener(WORKSPACE_QUICK_OPEN, quickOpen)
+  }, [location.pathname])
   const swipeNav = useSwipeNavigation()
 
   const getRouteSwipeBackTarget = useCallback(

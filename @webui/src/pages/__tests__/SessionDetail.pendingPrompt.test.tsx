@@ -68,7 +68,10 @@ vi.mock('@/hooks/useKeyboardShortcuts', () => ({
 vi.mock('@/hooks/useAutoScroll', () => ({
   useAutoScroll: vi.fn(() => ({ scrollToBottom: vi.fn() })),
 }))
-vi.mock('@/hooks/useMobile', () => ({ useMobile: vi.fn(() => false) }))
+vi.mock('@/hooks/useMobile', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/hooks/useMobile')>(),
+  useMobile: vi.fn(() => false),
+}))
 vi.mock('@/hooks/useVisualViewport', () => ({ useVisualViewport: vi.fn(() => ({ keyboardHeight: 0 })) }))
 vi.mock('@/hooks/useSidebarAction', () => ({ useSidebarAction: vi.fn() }))
 

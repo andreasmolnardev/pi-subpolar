@@ -5,6 +5,7 @@ import type { ProjectRecord } from '../persistence/project-store.ts'
 import { GitServiceError, type GitMutationApproval, type GitMutationOperation } from './contracts.ts'
 
 export type OwnedProjectLookup = (userId: string, projectId: string) => Promise<ProjectRecord | null>
+export type OwnedWorktreeLookup = (userId: string, projectId: string, path: string) => Promise<boolean>
 export type GitMutationAuthorizer = (input: { userId: string; projectId: string; operation: GitMutationOperation; approval: GitMutationApproval }) => boolean | Promise<boolean>
 export type GitMutationPolicyOptions = { allowMutations?: boolean; approvalToken?: string; authorizeMutation?: GitMutationAuthorizer }
 
@@ -25,7 +26,7 @@ export function safeRef(value: string | undefined): string | undefined {
 }
 
 export class GitPathPolicy {
-  constructor(private readonly lookup: OwnedProjectLookup, private readonly workspaceRoot = configuredWorkspaceRoot(), private readonly mutations: GitMutationPolicyOptions = {}) {}
+  constructor(private readonly lookup: OwnedProjectLookup, private readonly workspaceRoot = configuredWorkspaceRoot(), private readonly mutations: GitMutationPolicyOptions = {}, private readonly lookupWorktree?: OwnedWorktreeLookup) {}
 
   async project(userId: string, projectId: string): Promise<{ project: ProjectRecord; root: string }> {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(projectId)) throw new GitServiceError('PROJECT_NOT_FOUND', 'Project not found')
@@ -54,6 +55,13 @@ export class GitPathPolicy {
     const canonical = canonicalProjectPath(value)
     if (!isPathWithin(this.workspaceRoot, canonical) || !isPathWithin(root, canonical)) throw new GitServiceError('PATH_DENIED', 'Worktree is not owned')
     return canonical
+  }
+
+  async ownedWorktreePath(userId: string, projectId: string, root: string, value: string): Promise<string> {
+    const canonical = canonicalProjectPath(value)
+    if (!isPathWithin(this.workspaceRoot, canonical)) throw new GitServiceError('PATH_DENIED', 'Worktree is not owned')
+    if (canonical === root || await this.lookupWorktree?.(userId, projectId, canonical)) return canonical
+    throw new GitServiceError('PATH_DENIED', 'Worktree is not owned')
   }
 
   async authorizeMutation(userId: string, projectId: string, operation: GitMutationOperation, approval: GitMutationApproval | undefined): Promise<void> {

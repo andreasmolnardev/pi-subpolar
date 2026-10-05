@@ -4,8 +4,8 @@ export const GIT_EXECUTABLE = '/usr/bin/git'
 export const DEFAULT_GIT_TIMEOUT_MS = 10_000
 export const DEFAULT_GIT_OUTPUT_BYTES = 2 * 1024 * 1024
 
-export type GitExecutorOptions = { cwd: string; signal?: AbortSignal; timeoutMs?: number; maxOutputBytes?: number; truncateOutput?: boolean }
-export type GitCommandResult = { stdout: string; stderr: string; code: number; truncated?: boolean }
+export type GitExecutorOptions = { cwd: string; signal?: AbortSignal; timeoutMs?: number; maxOutputBytes?: number; truncateOutput?: boolean; indexFile?: string; rawOutput?: boolean }
+export type GitCommandResult = { stdout: string; stderr: string; code: number; truncated?: boolean; stdoutBytes?: Buffer }
 export type GitExecutor = (args: readonly string[], options: GitExecutorOptions) => Promise<GitCommandResult>
 
 export class GitExecutionError extends Error {
@@ -29,6 +29,7 @@ export const executeGit: GitExecutor = (args, options) => new Promise((resolve, 
       GIT_CONFIG_SYSTEM: '/dev/null',
       GIT_TERMINAL_PROMPT: '0',
       GIT_OPTIONAL_LOCKS: '0',
+      ...(options.indexFile ? { GIT_INDEX_FILE: options.indexFile } : {}),
     },
   })
   let stdout = Buffer.alloc(0)
@@ -43,5 +44,5 @@ export const executeGit: GitExecutor = (args, options) => new Promise((resolve, 
   child.stdout.on('data', (chunk: Buffer) => { stdout = append(stdout, chunk); if (stdout.length + stderr.length > maxBytes) limit() })
   child.stderr.on('data', (chunk: Buffer) => { stderr = append(stderr, chunk); if (stdout.length + stderr.length > maxBytes) limit() })
   child.on('error', () => finish(new GitExecutionError('failed')))
-  child.on('close', (code) => code === 0 ? finish(undefined, { stdout: stdout.toString('utf8'), stderr: stderr.toString('utf8'), code }) : finish(new GitExecutionError('failed', 'Git operation failed', stdout.toString('utf8'), stderr.toString('utf8'), code ?? undefined)))
+  child.on('close', (code) => code === 0 ? finish(undefined, { stdout: stdout.toString('utf8'), ...(options.rawOutput ? { stdoutBytes: stdout } : {}), stderr: stderr.toString('utf8'), code }) : finish(new GitExecutionError('failed', 'Git operation failed', stdout.toString('utf8'), stderr.toString('utf8'), code ?? undefined)))
 })

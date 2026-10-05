@@ -1,10 +1,80 @@
 /* Domain route extracted from bridge-request-handler.ts. */
 // @ts-nocheck
 import type { BridgeRequestContext } from '../bridge-route-context.ts'
+import { GitReadService } from '../git/service.ts'
+import { GitPathPolicy } from '../git/policy.ts'
+import { configuredWorkspaceRoot } from '../core/project-filesystem.ts'
+import { GitServiceError } from '../git/contracts.ts'
+import { WorktreeController, PocketBaseWorktreeStore } from '../git/worktree-control.ts'
+import { TaskRepository } from '../application/task-control-plane.ts'
+import { assertUserWorkspacePath, ownerProjectDirectory } from '../persistence/project-store.ts'
 
 export async function handleProjectsRoute(context: BridgeRequestContext): Promise<Response | undefined> {
   const { request, url, path, correlationId, deps, gatewayCredential, internalRequest } = context
   let authenticatedUser = context.authenticatedUser
+  if (['projects', 'attachments'].includes(path[1]) && !authenticatedUser) return deps.json({ message: 'Unauthorized' }, 401)
+  // These literal routes must precede the numeric project selector.
+  if (request.method === 'GET' && path[1] === 'projects' && path[2] === 'default-directory') {
+    return deps.json({ directory: ownerProjectDirectory(authenticatedUser!.id, url.searchParams.get('projectName')?.trim() || 'project', deps.projectsRoot) })
+  }
+  if (request.method === 'GET' && path[1] === 'projects' && path[2] === 'directories') {
+    const repository = deps.createProjectSessionRepository(await deps.applicationDatabase())
+    const owned = await repository.listProjects(authenticatedUser!.id)
+    const requested = url.searchParams.get('path')
+    // The shared parent is a virtual picker, never a host directory listing.
+    if (!requested || deps.canonicalProjectPath(requested) === deps.canonicalProjectPath(deps.projectsRoot)) return deps.json({ currentPath: '', directories: owned.map(project => ({ name: project.name, path: project.path })) })
+    try {
+      const currentPath = deps.safeProjectPath(requested)
+      if (!owned.some(project => deps.isPathWithin(project.path, currentPath))) return deps.json({ error: 'Project path is not owned by the authenticated user' }, 403)
+      await repository.assertProjectPathAvailable(authenticatedUser!.id, currentPath)
+      const directories = []
+      for (const entry of deps.readdirSync(currentPath, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+        const path = deps.join(currentPath, entry.name)
+        try { await repository.assertProjectPathAvailable(authenticatedUser!.id, path); directories.push({ name: entry.name, path }) } catch { /* Do not expose denied child names or paths. */ }
+      }
+      return deps.json({ currentPath, directories })
+    } catch { return deps.json({ error: 'Unable to list project directories' }, 403) }
+  }
+  if (path[1] === 'projects' && path.length === 5 && path[3] === 'repository' && request.method === 'POST' && ['worktrees', 'refresh'].includes(path[4])) {
+    if (!authenticatedUser || gatewayCredential || internalRequest) return deps.json({ error: { code: 'MUTATION_DENIED', message: 'Worktree actions require an authenticated user request' } }, 403)
+    try {
+      const client = await deps.applicationDatabase()
+      const repository = deps.createProjectSessionRepository(client)
+      const policy = new GitPathPolicy((owner, id) => repository.getProject(owner, id))
+      const projectId = decodeURIComponent(path[2])
+      const { project, root } = await policy.project(authenticatedUser!.id, projectId)
+      const input = await deps.body(request)
+      if (path[4] === 'refresh') {
+        // Git subprocess fetch cannot enforce HTTP policy, redirects, DNS pinning or credential isolation.
+        // Do not turn a configured remote (including helpers/local paths) into an unrestricted network capability.
+        throw new GitServiceError('UNSUPPORTED', 'Remote fetch is unavailable: a policy-aware authenticated Git transport is required. Refresh local references instead.')
+      }
+      if (input.approved !== true) throw new GitServiceError('APPROVAL_REQUIRED', 'Explicit worktree creation approval is required')
+      if (typeof input.branch !== 'string' || typeof input.sourceRef !== 'string' || typeof input.expectedSha !== 'string') throw new GitServiceError('INVALID_REQUEST', 'Branch, source reference and displayed SHA are required')
+      const inspected = await new GitReadService(policy).branches(authenticatedUser!.id, projectId, request.signal)
+      if (input.sourceRef !== 'HEAD' && !inspected.branches.some(branch => branch.ref === input.sourceRef && !branch.symbolic)) throw new GitServiceError('REF_DENIED', 'Select a displayed branch reference')
+      const tasks = new TaskRepository(client)
+      const task = await tasks.create({ owner_id: authenticatedUser!.id, project_id: projectId, state: 'draft', kind: 'task', title: `Worktree: ${input.branch}`, base_ref: input.sourceRef })
+      const controller = new WorktreeController(new PocketBaseWorktreeStore(client))
+      let worktree
+      try {
+        worktree = await controller.create({ ownerId: authenticatedUser!.id, projectId, repository: root, taskId: task.id, baseRef: input.sourceRef, branch: input.branch, expectedSha: input.expectedSha })
+        // Register the actual checkout as an owned repository. Existing runtime cwd isolation stays intact.
+        const linked = await repository.createProject(authenticatedUser!.id, { name: `${project.name} · ${worktree.branch} · ${worktree.id}`, path: worktree.path, ...(project.hasAgentOverride ? { agentNames: project.agentNames ?? [] } : {}) })
+        const projects = await repository.listProjects(authenticatedUser!.id)
+        return deps.json({ worktree, repositoryId: linked.id, projectId: projects.findIndex(item => item.id === linked.id) + 1 }, 201)
+      } catch (error) {
+        if (worktree) await controller.remove(worktree).catch(() => undefined)
+        await tasks.transition(authenticatedUser!.id, task.id, 'cancelled', { error_code: 'WORKTREE_CREATE_FAILED' }).catch(() => undefined)
+        throw error
+      }
+    } catch (error) {
+      if (error instanceof GitServiceError) return deps.json({ error: { code: error.code, message: error.message } }, error.status)
+      console.warn(`Worktree creation failed: ${deps.redactedDiagnostic(error)}`)
+      return deps.json({ error: { code: 'GIT_FAILED', message: 'Worktree creation failed; inspect activity before retrying' } }, 400)
+    }
+  }
   if (request.method === 'GET' && url.pathname === '/api/projects') {
     const client = await deps.applicationDatabase()
     return deps.json({ projects: await deps.ownedProjectResponses(authenticatedUser!.id, client) })
@@ -14,7 +84,11 @@ export async function handleProjectsRoute(context: BridgeRequestContext): Promis
     try {
       const client = await deps.applicationDatabase()
       const projectRepository = deps.createProjectSessionRepository(client)
-      const service = new deps.GitReadService(new deps.GitPathPolicy((owner, id) => projectRepository.getProject(owner, id)))
+      const policy = new GitPathPolicy((owner, id) => projectRepository.getProject(owner, id), configuredWorkspaceRoot(), {}, async (owner, id, worktreePath) => {
+        const record = await client.collection('task_worktrees').getFirstListItem(`owner_id = "${deps.escapeFilter(owner)}" && project_id = "${deps.escapeFilter(id)}" && path = "${deps.escapeFilter(worktreePath)}" && state = "active"`).catch(() => null)
+        return record?.owner_id === owner && record.project_id === id && record.path === worktreePath && record.state === 'active'
+      })
+      const service = new GitReadService(policy)
       const action = path[4]
       const result = action === undefined ? await service.discover(authenticatedUser!.id, projectId, request.signal)
         : action === 'status' && path.length === 5 ? await service.status(authenticatedUser!.id, projectId, request.signal)
@@ -47,7 +121,7 @@ export async function handleProjectsRoute(context: BridgeRequestContext): Promis
     if (!name || name.toLocaleLowerCase() === 'general chat') return deps.json({ error: 'A unique project name is required' }, 400)
     const directory = deps.safeProjectPath(typeof input.directory === 'string' && input.directory.trim()
       ? input.directory
-      : deps.join(deps.projectsRoot, 'projects', name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-')))
+      : ownerProjectDirectory(authenticatedUser!.id, name, deps.projectsRoot))
     const client = await deps.applicationDatabase()
     await deps.ensureUserMetadata(authenticatedUser!.id)
     const repository = deps.createProjectSessionRepository(client)
@@ -116,7 +190,8 @@ export async function handleProjectsRoute(context: BridgeRequestContext): Promis
     const owned = await deps.createProjectSessionRepository(client).listProjects(authenticatedUser!.id)
     const project = owned.find((item) => deps.canonicalProjectPath(item.path) === deps.canonicalProjectPath(directory))
     if (!project) return deps.json({ error: 'Project path is not owned by the authenticated user' }, 403)
-    const file = deps.assertPathWithinWorkspace(requestedPath, project.path)
+    await deps.createProjectSessionRepository(client).assertProjectPathAvailable(authenticatedUser!.id, project.path)
+    const file = assertUserWorkspacePath(deps.assertPathWithinWorkspace(requestedPath, project.path))
     const info = deps.statSync(file)
     if (!info.isFile()) return deps.json({ error: 'Attachment is not a file' }, 400)
     if (!/\.(md|mdx|txt|deps.json|csv|xml|ya?ml|js|jsx|ts|tsx|css|html|pdf|png|jpe?g|gif|webp)$/i.test(file)) return deps.json({ error: 'File type is not supported' }, 415)
@@ -134,7 +209,8 @@ export async function handleProjectsRoute(context: BridgeRequestContext): Promis
     const owned = await deps.createProjectSessionRepository(client).listProjects(authenticatedUser!.id)
     const project = owned.find((item) => deps.canonicalProjectPath(item.path) === deps.canonicalProjectPath(directory))
     if (!project) return deps.json({ error: 'Project path is not owned by the authenticated user' }, 403)
-    const file = deps.assertPathWithinWorkspace(deps.join(project.path, name), project.path)
+    await deps.createProjectSessionRepository(client).assertProjectPathAvailable(authenticatedUser!.id, project.path)
+    const file = assertUserWorkspacePath(deps.assertPathWithinWorkspace(deps.join(project.path, name), project.path))
     deps.writeFileSync(file, content, 'utf8')
     return deps.json({ path: file, name }, 201)
   }
@@ -147,30 +223,7 @@ export async function handleProjectsRoute(context: BridgeRequestContext): Promis
     const content = await deps.readBoundedResponse(response, 1024 * 1024)
     return deps.json({ url: target.href, content, size: new TextEncoder().encode(content).byteLength })
   }
-  if (request.method === 'GET' && path[1] === 'projects' && path[2] === 'default-directory') {
-    const name = url.searchParams.get('projectName')?.trim() || 'project'
-    const directory = deps.join(deps.projectsRoot, 'projects', name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-'))
-    return deps.json({ directory })
-  }
-  if (request.method === 'GET' && path[1] === 'projects' && path[2] === 'directories') {
-    const requested = url.searchParams.get('path')
-    const currentPath = requested ? deps.safeProjectPath(requested) : deps.canonicalProjectPath(deps.projectsRoot)
-    try {
-      const client = await deps.applicationDatabase()
-      const ownedRoots = (await deps.createProjectSessionRepository(client).listProjects(authenticatedUser!.id))
-        .map((project) => deps.canonicalProjectPath(project.path))
-      if (currentPath !== deps.canonicalProjectPath(deps.projectsRoot) && !ownedRoots.some((projectRoot) => deps.isPathWithin(projectRoot, currentPath))) {
-        return deps.json({ error: 'Project path is not owned by the authenticated user' }, 403)
-      }
-      const directories = deps.readdirSync(currentPath, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-        .map((entry) => ({ name: entry.name, path: deps.join(currentPath, entry.name) }))
-      return deps.json({ currentPath, directories })
-    } catch (error) {
-      console.warn(`Directory listing failed: ${deps.redactedDiagnostic(error)}`)
-      return deps.json({ error: 'Unable to list project directories' }, 400)
-    }
-  }
+
 
   if (request.method === 'GET' && url.pathname === '/api/new-session/resolve') {
     const client = await deps.applicationDatabase()

@@ -4,6 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { getProject, hasProjectId, listProjects } from "@/api/projects";
 import { MessageThread } from "@/components/message/MessageThread";
 import { ChatInputBar, type ChatInputBarHandle } from "@/components/chat/ChatInputBar";
+import { SessionWorkspaceChanges } from '@/components/workspace';
+import { CreateWorktreeDialog } from '@/components/worktree/CreateWorktreeDialog';
 import { ChevronDown, CornerUpLeft } from "lucide-react";
 import { Header } from "@/components/ui/header";
 import { SessionList } from "@/components/session/SessionList";
@@ -790,6 +792,8 @@ export function SessionDetail() {
                   </div>
                 </div>
               )}
+              {sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} />}
+              {sessionId && !isGeneralChatProject && <div className="pb-2"><CreateWorktreeDialog key={sessionId} sessionId={sessionId} agent={sessionAgent.agent} /></div>}
               <ChatInputBar
                 ref={promptInputRef}
                 directory={repoDirectory}

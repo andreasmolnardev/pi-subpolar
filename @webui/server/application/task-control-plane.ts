@@ -479,6 +479,7 @@ export async function ensureTaskCollections(client: PocketBase): Promise<void> {
       { name: "task_id", type: "text", required: true },
       { name: "path", type: "text", required: true },
       { name: "base_ref", type: "text", required: true },
+      { name: "base_sha", type: "text" },
       { name: "branch", type: "text", required: true },
       {
         name: "state",

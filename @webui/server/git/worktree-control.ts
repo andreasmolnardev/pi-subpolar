@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from "../core/project-filesystem.ts";
 import { assertSafeIdentifier } from "../application/task-control-plane.ts";
 import { safeRef } from "./policy.ts";
+import { GitServiceError } from "./contracts.ts";
 import type { GitExecutor } from "./executor.ts";
 import { executeGit } from "./executor.ts";
 import type PocketBase from "pocketbase";
@@ -14,6 +15,7 @@ export type WorktreeRecord = {
   path: string;
   baseRef: string;
   branch: string;
+  baseSha?: string;
   state: "active" | "removed";
   taskId?: string;
   errorCode?: string;
@@ -42,6 +44,7 @@ export class PocketBaseWorktreeStore implements WorktreeStore {
         task_id: record.taskId,
         path: record.path,
         base_ref: record.baseRef,
+        base_sha: record.baseSha,
         branch: record.branch,
         state: record.state,
         error_code: record.errorCode,
@@ -64,8 +67,8 @@ export class PocketBaseWorktreeStore implements WorktreeStore {
       .collection("task_worktrees")
       .update(id, {
         ...(update.state ? { state: update.state } : {}),
-        ...(update.errorCode === undefined ? {} : { error_code: update.errorCode }),
-        ...(update.errorMessage === undefined ? {} : { error_message: update.errorMessage }),
+        ...(Object.hasOwn(update, 'errorCode') ? { error_code: update.errorCode ?? '' } : {}),
+        ...(Object.hasOwn(update, 'errorMessage') ? { error_message: update.errorMessage ?? '' } : {}),
         updated_at: Date.now(),
       });
   }
@@ -110,6 +113,8 @@ export class WorktreeController {
     repository: string;
     baseRef: string;
     taskId: string;
+    branch?: string;
+    expectedSha?: string;
   }): Promise<WorktreeRecord> {
     assertSafeIdentifier(input.ownerId, "owner id");
     assertSafeIdentifier(input.projectId, "project id");
@@ -122,7 +127,16 @@ export class WorktreeController {
     if (!isPathWithin(workspace, repository) || !isPathWithin(workspace, root))
       throw new Error("Worktree path is outside the configured workspace");
     const id = crypto.randomUUID().replaceAll("-", "").slice(0, 15);
-    const branch = `subpolar/${id}`;
+    const branch = input.branch === undefined ? `subpolar/${id}` : safeRef(input.branch);
+    if (!branch || branch.startsWith('refs/')) throw new GitServiceError('REF_DENIED', 'Invalid new branch name');
+    const checkedBranch = await this.run(['check-ref-format', '--branch', branch], { cwd: repository });
+    if (checkedBranch.code !== 0) throw new GitServiceError('REF_DENIED', 'Invalid new branch name');
+    if (input.expectedSha !== undefined && !/^[0-9a-f]{40,64}$/.test(input.expectedSha)) throw new GitServiceError('INVALID_REQUEST', 'A displayed commit SHA is required');
+    if (input.expectedSha !== undefined && baseRef !== 'HEAD' && !baseRef.startsWith('refs/heads/') && !baseRef.startsWith('refs/remotes/')) throw new GitServiceError('REF_DENIED', 'Select HEAD or a full branch reference');
+    const resolved = await this.run(['rev-parse', '--verify', `${baseRef}^{commit}`], { cwd: repository });
+    const baseSha = resolved.stdout.trim();
+    if (resolved.code !== 0 || !/^[0-9a-f]{40,64}$/.test(baseSha)) throw new GitServiceError('REF_DENIED', 'Source does not resolve to a commit');
+    if (input.expectedSha !== undefined && baseSha !== input.expectedSha) throw new GitServiceError('CONFLICT', 'Source reference moved; refresh and select its new commit');
     const taskRoot = join(root, input.ownerId, input.taskId);
     const path = join(taskRoot, id);
     if (!isPathWithin(workspace, root) || !isPathWithin(root, taskRoot) || !isPathWithin(root, path))
@@ -130,7 +144,7 @@ export class WorktreeController {
     mkdirSync(taskRoot, { recursive: true });
     if (!isPathWithin(root, canonicalProjectPath(taskRoot)) || canonicalProjectPath(path) !== path)
       throw new Error("Worktree path is not owned");
-    const result = await this.run(["worktree", "add", "-b", branch, path, baseRef], {
+    const result = await this.run(["-c", "core.hooksPath=/dev/null", "worktree", "add", "--no-track", "-b", branch, path, baseSha], {
       cwd: repository,
     });
     if (result.code !== 0) throw new Error(result.stderr || "Git worktree creation failed");
@@ -140,6 +154,7 @@ export class WorktreeController {
       projectId: input.projectId,
       path,
       baseRef,
+      baseSha,
       branch,
       state: "active" as const,
       taskId: input.taskId,
@@ -151,7 +166,7 @@ export class WorktreeController {
       const message = error instanceof Error ? error.message : String(error);
       let cleaned = false;
       try {
-        const cleanup = await this.run(["worktree", "remove", "--force", path], { cwd: path });
+        const cleanup = await this.run(["worktree", "remove", path], { cwd: repository });
         cleaned = cleanup.code === 0;
       } catch { /* audit below records the orphan when cleanup fails */ }
       await this.store.update(record.id, { state: cleaned ? "removed" : "active", errorCode: "WORKTREE_PERSISTENCE_FAILED", errorMessage: message }).catch(() => undefined);
@@ -169,9 +184,9 @@ export class WorktreeController {
     const root = canonicalProjectPath(this.root);
     const path = canonicalProjectPath(record.path);
     const expectedPath = join(root, record.ownerId, ...(record.taskId ? [record.taskId] : []), record.id);
-    if (!isPathWithin(root, path) || path !== canonicalProjectPath(expectedPath)) throw new Error("Worktree path is not owned");
+    if (!isPathWithin(this.workspaceRoot, root) || !isPathWithin(root, path) || path !== expectedPath) throw new Error("Worktree path is not owned");
     try {
-      const result = await this.run(["worktree", "remove", "--force", path], { cwd: path });
+      const result = await this.run(["worktree", "remove", path], { cwd: path });
       if (result.code !== 0) throw new Error(result.stderr || "Git worktree removal failed");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

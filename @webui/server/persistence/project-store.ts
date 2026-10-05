@@ -1,8 +1,46 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync, lstatSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { join, relative, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import PocketBase, { type RecordModel } from 'pocketbase'
-import { assertPathWithinWorkspace, isPathWithin } from '../core/project-filesystem.ts'
+import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from '../core/project-filesystem.ts'
+
+export function ownerProjectDirectory(ownerId: string, name: string, root = configuredWorkspaceRoot()): string {
+  assertOwner(ownerId)
+  return join(root, 'projects', createHash('sha256').update(ownerId).digest('hex'), name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-') || 'project')
+}
+
+/** Storage namespaces are not user workspaces, even if no project has claimed them. */
+export function assertUserWorkspacePath(path: string): string {
+  const candidate = assertPathWithinWorkspace(path)
+  const root = canonicalProjectPath(configuredWorkspaceRoot())
+  const parts = relative(root, candidate).split('/')
+  const reserved = [join(root, 'general-chat'), process.env.SUBPOLAR_WORKSPACE_REVIEW_DIR ?? join(homedir(), '.subpolar', 'workspace-review')]
+  if (candidate === root || parts.some(part => /^(?:\..*|auth\.json|secrets?|credentials?(?:\..*)?|.*\.(?:pem|key|p12|pfx))$/i.test(part) || /(^|[._-])(env|secret|secrets|token|password|passwd|credential|credentials|cookie|private[._-]?key|session[._-]?key)([._-]|$)/i.test(part)) || reserved.some(directory => isPathWithin(directory, candidate) || isPathWithin(candidate, directory))) throw new ProjectPathConflictError()
+  return candidate
+}
+
+function linkedGitDirectories(path: string): string[] {
+  const marker = join(path, '.git')
+  let gitdir: string
+  try {
+    const stat = lstatSync(marker)
+    if (stat.isSymbolicLink()) gitdir = canonicalProjectPath(marker)
+    else if (stat.isFile()) {
+      const match = /^gitdir:\s*(.+)\s*$/m.exec(readFileSync(marker, 'utf8'))
+      if (!match) throw new ProjectPathConflictError()
+      gitdir = canonicalProjectPath(resolve(path, match[1]!.trim()))
+    } else if (stat.isDirectory()) {
+      const common = join(marker, 'commondir')
+      return existsSync(common) ? [canonicalProjectPath(resolve(marker, readFileSync(common, 'utf8').trim()))] : []
+    } else throw new ProjectPathConflictError()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+  try { return [gitdir, canonicalProjectPath(resolve(gitdir, readFileSync(join(gitdir, 'commondir'), 'utf8').trim()))] }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return [gitdir] }
+}
 
 /** The two collections owned by this repository. */
 export const PROJECTS_COLLECTION = 'projects'
@@ -452,28 +490,49 @@ export class ProjectSessionRepository {
   }
 
   /** Reject paths that overlap a project owned by a different user. */
-  async assertProjectPathAvailable(userId: string, path: string, excludedProjectId?: string): Promise<void> {
+  async assertProjectPathAvailable(userId: string, path: string, _excludedProjectId?: string): Promise<void> {
     assertOwner(userId)
-    const candidate = assertPathWithinWorkspace(path)
     const records = await collection(this.client, PROJECTS_COLLECTION).getFullList()
+    this.assertProjectPathRecords(userId, path, records)
+  }
+
+  private assertProjectPathRecords(userId: string, path: string, records: Record<string, unknown>[]): void {
+    const candidate = assertUserWorkspacePath(path)
+    const projects = canonicalProjectPath(join(configuredWorkspaceRoot(), 'projects'))
+    const worktrees = canonicalProjectPath(join(configuredWorkspaceRoot(), 'worktrees'))
+    if (candidate === projects || candidate === worktrees) throw new ProjectPathConflictError()
+    if (isPathWithin(projects, candidate)) {
+      const namespace = relative(projects, candidate).split('/')[0]!
+      if (/^[a-f0-9]{64}$/.test(namespace) && namespace !== createHash('sha256').update(userId).digest('hex')) throw new ProjectPathConflictError()
+    }
+    if (isPathWithin(worktrees, candidate) && relative(worktrees, candidate).split('/')[0] !== userId) throw new ProjectPathConflictError()
+    const linked = linkedGitDirectories(candidate)
+    if (linked.some(directory => !records.some(record => record.user_id === userId && isPathWithin(String(record.path), directory)))) throw new ProjectPathConflictError()
     for (const record of records) {
       const owner = String(record.user_id ?? '')
-      if (!owner || owner === userId || String(record.id ?? '') === excludedProjectId) continue
+      if (owner === userId) continue
       const other = assertPathWithinWorkspace(requiredString(record.path, 'project path'))
-      if (isPathWithin(other, candidate) || isPathWithin(candidate, other)) throw new ProjectPathConflictError()
+      if (isPathWithin(other, candidate) || isPathWithin(candidate, other) || linked.some(directory => isPathWithin(other, directory))) throw new ProjectPathConflictError()
     }
   }
 
   async getProject(userId: string, projectId: string): Promise<ProjectRecord | null> {
     assertOwner(userId)
     const record = await firstOrNull(() => collection(this.client, PROJECTS_COLLECTION).getFirstListItem(ownedRecordFilter(userId, 'id', projectId)))
-    return record ? projectFromRecord(record) : null
+    if (record?.user_id !== userId || record.id !== projectId) return null
+    try { await this.assertProjectPathAvailable(userId, String(record.path)) } catch { return null }
+    return projectFromRecord(record)
   }
 
   async listProjects(userId: string): Promise<ProjectRecord[]> {
     assertOwner(userId)
-    const records = await collection(this.client, PROJECTS_COLLECTION).getFullList({ filter: ownerFilter(userId), sort: 'name' })
-    return records.map(projectFromRecord)
+    // The admin transport needs the full claim set to reject overlapping roots.
+    const records = await collection(this.client, PROJECTS_COLLECTION).getFullList({ sort: 'name' })
+    const owned = []
+    for (const record of records.filter(record => record.user_id === userId)) {
+      try { this.assertProjectPathRecords(userId, String(record.path), records); owned.push(projectFromRecord(record)) } catch { /* Do not project stale or conflicting host paths. */ }
+    }
+    return owned
   }
 
   async findProjectByName(userId: string, name: string): Promise<ProjectRecord | null> {
@@ -481,7 +540,9 @@ export class ProjectSessionRepository {
     const normalized = name.trim()
     if (!normalized) return null
     const record = await firstOrNull(() => collection(this.client, PROJECTS_COLLECTION).getFirstListItem(ownedRecordFilter(userId, 'name', normalized)))
-    return record ? projectFromRecord(record) : null
+    if (record?.user_id !== userId || record.name !== normalized) return null
+    try { await this.assertProjectPathAvailable(userId, String(record.path)) } catch { return null }
+    return projectFromRecord(record)
   }
 
   async updateProject(userId: string, projectId: string, input: UpdateProjectInput): Promise<ProjectRecord | null> {
@@ -520,10 +581,10 @@ export class ProjectSessionRepository {
       }
     }
     if (typeof data.directory === 'string' && data.directory) {
-      const directory = assertPathWithinWorkspace(data.directory)
+      const directory = await this.ownedDirectory(userId, data.directory, String(data.session_id))
       if (String(data.project_name).toLocaleLowerCase() !== GENERAL_CHAT_NAME.toLocaleLowerCase()) {
         const project = await this.findProjectByName(userId, String(data.project_name))
-        if (project && !isPathWithin(project.path, directory)) throw new Error('Session directory is outside its project')
+        if (!project || !isPathWithin(project.path, directory)) throw new Error('Session directory is outside its project')
       }
       data.directory = directory
     }
@@ -534,14 +595,20 @@ export class ProjectSessionRepository {
     assertOwner(userId)
     if (!sessionId.trim()) return null
     const record = await firstOrNull(() => collection(this.client, SESSIONS_COLLECTION).getFirstListItem(ownedRecordFilter(userId, 'session_id', sessionId)))
-    return record ? sessionFromRecord(record) : null
+    if (record?.user_id !== userId || record.session_id !== sessionId) return null
+    if (typeof record.directory === 'string' && record.directory) {
+      try { await this.ownedDirectory(userId, record.directory, String(record.session_id)) } catch { return null }
+    }
+    return sessionFromRecord(record)
   }
 
   /** Look up the durable owner before accepting a caller-supplied identity. */
   async getSessionById(sessionId: string): Promise<StoredSessionRecord | null> {
     if (!sessionId.trim()) return null
-    const record = await firstOrNull(() => collection(this.client, SESSIONS_COLLECTION).getFirstListItem(pocketBaseEquals('session_id', sessionId)))
-    return record ? sessionFromRecord(record) : null
+    const records = await collection(this.client, SESSIONS_COLLECTION).getFullList({ filter: pocketBaseEquals('session_id', sessionId) })
+    const matches = records.filter(record => record.session_id === sessionId && typeof record.user_id === 'string' && record.user_id.trim())
+    // Owner-free lookups cannot choose an identity for an ambiguous session id.
+    return matches.length === 1 ? sessionFromRecord(matches[0]!) : null
   }
 
   async listSessions(userId: string, options: ListSessionsOptions = {}): Promise<StoredSessionRecord[]> {
@@ -551,13 +618,21 @@ export class ProjectSessionRepository {
     if (options.project) filters.push(pocketBaseEquals('project_name', options.project === '0' ? GENERAL_CHAT_NAME : options.project))
     if (options.includeArchived === false) filters.push('archived = false')
     const records = await collection(this.client, SESSIONS_COLLECTION).getFullList({ filter: filters.join(' && '), sort: '-updated_at' })
-    return records.map(sessionFromRecord)
+    const owned = []
+    for (const record of records.filter(record => record.user_id === userId && (!options.projectId || record.project_id === options.projectId) && (!options.project || record.project_name === (options.project === '0' ? GENERAL_CHAT_NAME : options.project)) && (options.includeArchived !== false || record.archived !== true))) {
+      if (typeof record.directory === 'string' && record.directory) {
+        try { await this.ownedDirectory(userId, record.directory, String(record.session_id)) } catch { continue }
+      }
+      owned.push(sessionFromRecord(record))
+    }
+    return owned
   }
 
   async updateSession(userId: string, sessionId: string, input: UpdateSessionInput): Promise<StoredSessionRecord | null> {
     const existing = await this.getSession(userId, sessionId)
     if (!existing) return null
     const data = sessionUpdateData(input)
+    if (data.directory === undefined && (input.project !== undefined || input.projectId !== undefined) && existing.directory) data.directory = existing.directory
     if (input.projectId !== undefined && input.projectId) {
       const project = await this.getProject(userId, input.projectId)
       if (!project) throw new Error('Project not found')
@@ -572,10 +647,10 @@ export class ProjectSessionRepository {
     }
     if (typeof data.directory === 'string' && data.directory) {
       const projectName = String(data.project_name ?? existing.project)
-      const directory = assertPathWithinWorkspace(data.directory)
+      const directory = await this.ownedDirectory(userId, data.directory, existing.id)
       if (projectName.toLocaleLowerCase() !== GENERAL_CHAT_NAME.toLocaleLowerCase()) {
         const project = await this.findProjectByName(userId, projectName)
-        if (project && !isPathWithin(project.path, directory)) throw new Error('Session directory is outside its project')
+        if (!project || !isPathWithin(project.path, directory)) throw new Error('Session directory is outside its project')
       }
       data.directory = directory
     }
@@ -597,13 +672,30 @@ export class ProjectSessionRepository {
    * through the same owner. This prevents a session id or project id from being
    * used to cross an ownership boundary.
    */
+  private async ownedDirectory(userId: string, path: string, sessionId?: string): Promise<string> {
+    const canonical = assertPathWithinWorkspace(path)
+    const generalChat = canonicalProjectPath(join(configuredWorkspaceRoot(), 'general-chat'))
+    if (isPathWithin(generalChat, canonical)) {
+      // The bridge allocates General Chat as <root>/<server-generated session id>.
+      // Keep that feature, but never accept its parent or another session's root.
+      if (!sessionId || !/^[a-zA-Z0-9_-]+$/.test(sessionId) || canonical !== join(generalChat, sessionId)) throw new ProjectPathConflictError()
+      const records = await collection(this.client, SESSIONS_COLLECTION).getFullList()
+      if (records.some(record => record.user_id !== userId && (record.session_id === sessionId || (typeof record.directory === 'string' && record.directory && (isPathWithin(record.directory, canonical) || isPathWithin(canonical, record.directory)))))) throw new ProjectPathConflictError()
+      return canonical
+    }
+    const directory = assertUserWorkspacePath(path)
+    await this.assertProjectPathAvailable(userId, directory)
+    if (!(await this.listProjects(userId)).some(project => isPathWithin(project.path, directory))) throw new ProjectPathConflictError()
+    return directory
+  }
+
   async getSessionContext(userId: string, sessionId: string): Promise<SessionContext | null> {
     const session = await this.getSession(userId, sessionId)
     if (!session) return null
     if (!session.projectId) {
       if (session.project.toLocaleLowerCase() !== GENERAL_CHAT_NAME.toLocaleLowerCase()) return null
       if (session.directory) {
-        try { assertPathWithinWorkspace(session.directory) } catch { return null }
+        try { await this.ownedDirectory(userId, session.directory, session.id) } catch { return null }
       }
       return { session, project: null, isGeneralChat: true }
     }
@@ -611,7 +703,7 @@ export class ProjectSessionRepository {
     if (!project) return null
     if (session.directory) {
       try {
-        if (!isPathWithin(project.path, assertPathWithinWorkspace(session.directory))) return null
+        if (!isPathWithin(project.path, await this.ownedDirectory(userId, session.directory, session.id))) return null
       } catch { return null }
     }
     return { session, project, isGeneralChat: false }

@@ -4,7 +4,7 @@ export type GitRepository = { root: '.'; gitDir: '.git' | string; bare: boolean;
 export type GitStatusEntry = { path: string; originalPath?: string; index: string; worktree: string; untracked: boolean; renamed: boolean }
 export type GitStatusOmission = { path: string; reason: 'PATH_DENIED' }
 export type GitStatus = { branch: string | null; ahead: number; behind: number; entries: GitStatusEntry[]; omitted: GitStatusOmission[]; truncated: boolean }
-export type GitBranch = { name: string; ref: string; current: boolean; remote: boolean; target?: string }
+export type GitBranch = { name: string; ref: string; current: boolean; remote: boolean; target?: string; sha?: string; symbolic?: string }
 export type GitDiff = { ref?: string; path?: string; text: string; truncated: boolean; binary: boolean; bytes: number }
 export type GitWorktree = { path: string; head: string | null; branch: string | null; detached: boolean; locked: boolean; prunable: boolean }
 

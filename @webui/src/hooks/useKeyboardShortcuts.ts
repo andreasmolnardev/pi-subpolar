@@ -135,6 +135,20 @@ export function useKeyboardShortcuts(actions: ShortcutActions = {}) {
       ? [...new Set([...prefs.directShortcuts, ...(prefs.keyboardShortcuts?.commandPalette ? [] : ['commandPalette'])])]
       : [...DEFAULT_DIRECT_SHORTCUTS, 'commandPalette']
     
+    // The global shell owns the palette. Other hook instances must not consume it.
+    const paletteShortcut = shortcuts.commandPalette
+    const defaultPalette = prefs?.keyboardShortcuts?.commandPalette === undefined || paletteShortcut === 'Cmd+K'
+    const paletteMatches = defaultPalette
+      ? shortcut === 'Ctrl+K' || shortcut === 'Cmd+K'
+      : normalizeShortcut(paletteShortcut) === shortcut
+    if (e.defaultPrevented && paletteMatches) return
+    if (actionsRef.current.openCommandPalette && paletteMatches && (defaultPalette || directShortcuts.includes('commandPalette') || leaderActive)) {
+      clearLeaderTimeout()
+      setLeaderActive(false)
+      executeAction('commandPalette', e)
+      return
+    }
+
     const activeFileEditor = document.querySelector('[data-file-editor="true"]')
     if (activeFileEditor && document.activeElement === activeFileEditor) {
       return
@@ -151,6 +165,7 @@ export function useKeyboardShortcuts(actions: ShortcutActions = {}) {
       setLeaderActive(false)
       
       const action = Object.entries(shortcuts).find(([actionName, keys]) => {
+        if (actionName === 'commandPalette' && !actionsRef.current.openCommandPalette) return false
         if (directShortcuts.includes(actionName)) return false
         if (!keys) return false
         return normalizeShortcut(keys) === shortcut
@@ -173,13 +188,14 @@ export function useKeyboardShortcuts(actions: ShortcutActions = {}) {
     }
 
     const directAction = Object.entries(shortcuts).find(([actionName, keys]) => {
+      if (actionName === 'commandPalette' && !actionsRef.current.openCommandPalette) return false
       if (!directShortcuts.includes(actionName)) return false
       if (!keys) return false
       return normalizeShortcut(keys) === shortcut
     })?.[0]
     
     if (directAction) {
-      if (isInInput && directAction !== 'submit' && directAction !== 'abort') {
+      if (isInInput && directAction !== 'submit' && directAction !== 'abort' && directAction !== 'commandPalette') {
         return
       }
       executeAction(directAction, e)
