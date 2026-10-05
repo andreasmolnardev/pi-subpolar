@@ -112,6 +112,50 @@ function makeApprovalStore() {
 }
 
 describe("StatelessSubpolarRuntime", () => {
+  const gateway = () => createPolicyGateway({ tools: [], resolvePolicy: () => ({ deny: true }), execute: async () => ({ ok: true, value: null }) });
+
+  test("does not claim recoverability without both successfully written durable ports", async () => {
+    for (const failure of ["missing-replay", "save", "append"] as const) {
+      const ports = makeRecoveryPorts();
+      if (failure === "save") ports.runStore.save = async () => { throw new Error("offline"); };
+      if (failure === "append") ports.eventReplayPort.append = async () => { throw new Error("offline"); };
+      const runtime = createStatelessSubpolarRuntime({ context: makeContextPort(), gateway: gateway(), executor: () => null, runStore: ports.runStore, eventReplayPort: failure === "missing-replay" ? undefined : ports.eventReplayPort });
+      expect(await runtime.run(request)).toMatchObject({ state: "completed", output: null, recoverable: false });
+    }
+  });
+
+  test("replays a terminal outcome without re-executing but does not overclaim absent replay", async () => {
+    const ports = makeRecoveryPorts();
+    let executions = 0;
+    const options = { context: makeContextPort(), gateway: gateway(), executor: () => { executions++; return "done"; }, ...ports };
+    expect(await createStatelessSubpolarRuntime(options).run(request)).toMatchObject({ recoverable: true });
+    expect(await createStatelessSubpolarRuntime({ ...options, eventReplayPort: undefined }).run(request)).toMatchObject({ resumed: true, recoverable: false, output: "done" });
+    expect(executions).toBe(1);
+  });
+
+  test("classifies cancellation rejection as interrupted without exposing executor secrets", async () => {
+    const controller = new AbortController();
+    const events: RunEvent[] = [];
+    const runtime = createStatelessSubpolarRuntime({ context: makeContextPort(), gateway: gateway(), executor: () => { controller.abort(); throw new Error("token=secret"); }, eventSink: (event) => { events.push(event); } });
+    expect(await runtime.run({ ...request, signal: controller.signal })).toMatchObject({ state: "interrupted", error: { code: "RUN_INTERRUPTED" }, recoverable: false });
+    expect(events.map((event) => event.type)).toEqual(["run.started", "run.interrupted"]);
+    expect(JSON.stringify(events)).not.toContain("secret");
+  });
+
+  test("does not claim a known cancellation outcome if executor settles after abort without recovery", async () => {
+    const controller = new AbortController();
+    const runtime = createStatelessSubpolarRuntime({ context: makeContextPort(), gateway: gateway(), executor: () => { controller.abort(); return { ok: false, status: "approval_required", approvalId: "late-approval" }; } });
+    expect(await runtime.run({ ...request, signal: controller.signal })).toMatchObject({ state: "unknown", error: { code: "UNSUPPORTED_RECOVERY" }, recoverable: false });
+  });
+
+  test("pre-cancellation does not invoke executor", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let executions = 0;
+    const runtime = createStatelessSubpolarRuntime({ context: makeContextPort(), gateway: gateway(), executor: () => { executions++; } });
+    expect(await runtime.run({ ...request, signal: controller.signal })).toMatchObject({ state: "interrupted", recoverable: false });
+    expect(executions).toBe(0);
+  });
   test("loads context and emits a durable lifecycle on each run", async () => {
     const contextLoads: RuntimeContext[] = [];
     const ports = makeRecoveryPorts();

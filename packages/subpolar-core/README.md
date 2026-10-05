@@ -20,6 +20,15 @@ The runtime depends on shared contracts and injected ports. It does not import P
 - `createStatelessSubpolarRuntime`
 - `redactAuditValue`
 
+## Workspace setup
+
+From the repository root, use Bun 1.3.14 and `bun install --frozen-lockfile`.
+The hoisted workspace shares compatible dependencies, but incompatible versions
+may still require nested copies. Do not install separately in this package.
+Policy and context checks are application boundaries, not an OS sandbox.
+See [Bun and multi-user operations](../../docs/bun-and-multi-user.md) for current
+shared-host restrictions and the outstanding live two-user verification.
+
 ## Testing
 
 ```sh

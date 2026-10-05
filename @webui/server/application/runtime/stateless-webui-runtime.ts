@@ -86,6 +86,7 @@ function createClientPort(client: PocketBaseSdkClient): PocketBaseClientPort {
  * authenticated PocketBase client and are recreated for each invocation.
  */
 export function createStatelessWebUiRuntime(options: StatelessWebUiRuntimeOptions) {
+  if (!options.ownerId.trim()) throw new Error('Runtime owner is required')
   const adapter = createPocketBaseAdapter({
     client: createClientPort(options.client),
     eventReplay: true,
@@ -99,6 +100,8 @@ export function createStatelessWebUiRuntime(options: StatelessWebUiRuntimeOption
 
   return {
     async runPrompt(input: StatelessWebUiRunInput): Promise<StatelessRunResult> {
+      if (input.ownerId !== options.ownerId) throw new Error('Runtime owner mismatch')
+      if (!input.sessionId.trim()) throw new Error('Runtime session is required')
       const request: StatelessRunRequest = {
         runId: input.runId,
         requestId: input.requestId,
@@ -107,8 +110,17 @@ export function createStatelessWebUiRuntime(options: StatelessWebUiRuntimeOption
         principal: { id: options.ownerId, kind: 'user' } satisfies Principal,
         signal: input.signal,
       }
+      const resolveContext: typeof options.resolveContext = async (contextRequest) => {
+        const context = await options.resolveContext(contextRequest)
+        if (context.principal.id !== options.ownerId || context.principal.kind !== 'user'
+          || context.sessionId !== input.sessionId || context.requestId !== input.requestId
+          || (context.runId !== undefined && context.runId !== input.runId)) {
+          throw new Error('Resolved runtime tenant or run mismatch')
+        }
+        return context
+      }
       const runtime = createStatelessSubpolarRuntime({
-        context: { load: options.resolveContext },
+        context: { load: resolveContext },
         gateway: options.gateway,
         runStore,
         eventReplayPort: eventReplay,

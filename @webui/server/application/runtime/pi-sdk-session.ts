@@ -2,6 +2,7 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
+  SettingsManager,
   SessionManager,
   buildContextEntries,
 } from '@earendil-works/pi-coding-agent'
@@ -11,6 +12,7 @@ import type {
   ExtensionFactory,
   SessionEntry,
 } from '@earendil-works/pi-coding-agent'
+import { assertTenantSession } from './tenant-runtime.ts'
 import type { ProviderRuntime } from './provider-runtime.ts'
 import type { AgentRuntime } from './agent-runtime.ts'
 import type { ApprovalRecord } from '../../../../packages/subpolar-contracts/src/index.ts'
@@ -129,6 +131,7 @@ export class PiSdkSession<TClient = unknown> {
   private generationStatus: 'busy' | 'idle' = 'idle'
   private session!: AgentSession
   private modelRuntime!: ProviderRuntime
+  private closed = false
 
   constructor(
     readonly record: SessionRecord,
@@ -138,6 +141,13 @@ export class PiSdkSession<TClient = unknown> {
       capabilities?: readonly string[]
     },
   ) {
+    assertTenantSession(record.userId ?? '', record.id, record)
+    // Keep mutable metadata local, but never let a caller retarget a live session.
+    this.record = { ...record, tags: [...record.tags] }
+    Object.defineProperties(this.record, {
+      id: { value: record.id, writable: false },
+      userId: { value: record.userId, writable: false },
+    })
     this.runtimeAgentName = record.profile ?? 'master'
     this.runtimePermissionOverride = record.permissionOverride
     this.ready = this.initialize()
@@ -159,10 +169,17 @@ export class PiSdkSession<TClient = unknown> {
     const sessionCwd = this.record.directory ?? this.project.path
     const sessionManager = SessionManager.inMemory(sessionCwd, { id: this.record.id })
     hydrateSessionManager(sessionManager, persistedTranscript)
+    const settingsManager = SettingsManager.inMemory()
     const resourceLoader = new DefaultResourceLoader({
       cwd: sessionCwd,
       agentDir: getAgentDir(),
       systemPrompt: runtime.systemPrompt,
+      settingsManager,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      appendSystemPromptOverride: () => [],
       // The WebUI owns its extension set. Do not load user/global Pi extension
       // directories because those extensions may reintroduce file-backed state
       // or bypass the Subpolar application boundary.
@@ -201,6 +218,7 @@ export class PiSdkSession<TClient = unknown> {
     const result = await createAgentSession({
       cwd: sessionCwd,
       modelRuntime: this.modelRuntime,
+      settingsManager,
       model,
       sessionManager,
       resourceLoader,
@@ -211,6 +229,10 @@ export class PiSdkSession<TClient = unknown> {
       noTools: 'builtin',
     })
     this.session = result.session
+    if (this.closed) {
+      this.session.dispose()
+      throw new Error('Session is closed')
+    }
     this.session.subscribe((event) => this.handle(event))
   }
 
@@ -259,6 +281,7 @@ export class PiSdkSession<TClient = unknown> {
 
   async send(command: RpcCommand): Promise<unknown> {
     await this.ready
+    if (this.closed) throw new Error('Session is closed')
     const type = command.type
     let data: unknown
     switch (type) {
@@ -320,6 +343,8 @@ export class PiSdkSession<TClient = unknown> {
   getLastAssistantText() { return this.session.getLastAssistantText() }
 
   close(): void {
+    this.closed = true
+    this.listeners.clear()
     this.session?.dispose()
   }
 }

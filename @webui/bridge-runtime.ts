@@ -3,10 +3,11 @@ import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, statSy
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { join, resolve } from 'node:path'
-import {
-  ModelRuntime,
-} from '@earendil-works/pi-coding-agent'
+import { SettingsManager } from '@earendil-works/pi-coding-agent'
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent'
+import { createProviderLoginRuntime, createSharedProviderCatalogRuntime } from './server/application/runtime/provider-runtime.ts'
+import { assertTenantSession, tenantSessionKey } from './server/application/runtime/tenant-runtime.ts'
+import { authenticateProxyRuntime, proxyModel } from './server/application/runtime/owner-bound-proxy.ts'
 
 
 import { entriesPayload, projectEntries, redactTranscriptPayload, type TranscriptMessage } from './transcript/projector'
@@ -136,7 +137,7 @@ import { permissionAskedProperties } from './server/application/tools/approval-e
 import { escapeFilter } from './server/persistence/pocketbase.ts'
 import { proposeTools, registerToolDraft } from './server/application/tools/tools-teach.ts'
 import { InvalidSessionTagsError, normalizeSessionTags } from './server/persistence/project-store.ts'
-import { createSuggestionService, type SuggestionProvider } from './server/application/suggestions.ts'
+import { createSuggestionService } from './server/application/suggestions.ts'
 import { createBridgeRequestHandler } from './server/bridge-request-handler.ts'
 
 import {
@@ -209,23 +210,10 @@ let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | u
 const migratedUsers = new Set<string>()
 
 const requestRateLimiter = new InProcessRateLimiter()
-const suggestionProviderModule = process.env.SUBPOLAR_SUGGESTION_PROVIDER_MODULE?.trim()
-let suggestionServicePromise: Promise<ReturnType<typeof createSuggestionService>> | undefined
-
 async function configuredSuggestionService() {
-  if (!suggestionServicePromise) {
-    suggestionServicePromise = (async () => {
-      if (!suggestionProviderModule) return createSuggestionService()
-      const loaded = await import(suggestionProviderModule) as { default?: SuggestionProvider; provider?: SuggestionProvider }
-      const provider = loaded.default ?? loaded.provider
-      return createSuggestionService(typeof provider === 'function' ? provider : undefined)
-    })().catch((error) => {
-      suggestionServicePromise = undefined
-      console.warn(`Suggestion provider unavailable: ${redactedDiagnostic(error)}`)
-      return createSuggestionService()
-    })
-  }
-  return suggestionServicePromise
+  // The legacy module contract has no owner/credential context and caches message
+  // ids globally. Fail closed until suggestions use an owned inference runtime.
+  return createSuggestionService()
 }
 const voiceBackends: VoiceBackends = localVoiceBackends({
   sttExecutable: process.env.SUBPOLAR_VOICE_STT_EXECUTABLE,
@@ -413,7 +401,6 @@ async function userProviderRuntime(
     userId,
     accountService,
     accounts: selectedAccounts,
-    baseRuntime: await modelRuntimePromise,
     refreshOnCreate: options.refreshOnCreate ?? false,
     allowModelNetwork: options.allowModelNetwork ?? false,
   })
@@ -425,8 +412,10 @@ async function providerLoginFlowController(): Promise<ProviderLoginFlowControlle
       const client = await applicationDatabase()
       const accountService = await providerAccountService()
       const baseRuntime = await modelRuntimePromise
+      const loginSettings = SettingsManager.create(process.cwd())
       return new ProviderLoginFlowController({
         storage: new PocketBaseProviderLoginFlowStorage(client),
+        loginOptions: { getDeviceId: () => loginSettings.getOrCreateDeviceId() },
         resolveProviderInstance: async (providerInstanceId, ownerId) => {
           const parsed = parseProviderRuntimeId(providerInstanceId)
           if (parsed) {
@@ -437,7 +426,11 @@ async function providerLoginFlowController(): Promise<ProviderLoginFlowControlle
         },
         runtimeFactory: async (context) => {
           const parsed = parseProviderRuntimeId(context.providerInstanceId)
-          if (!parsed) return baseRuntime
+          if (!parsed) {
+            const provider = baseRuntime.getProvider(context.runtimeProviderId)
+            if (!provider) throw new Error('Provider not found')
+            return createProviderLoginRuntime(provider)
+          }
           const account = await accountService.getAccount(context.ownerId, parsed.instanceId)
           if (!account || account.providerType !== parsed.providerType) throw new Error('Provider account not found')
           return userProviderRuntime(context.ownerId, [account])
@@ -492,7 +485,7 @@ const applicationExtensionPaths = [
 ].map((file) => join(webuiDir, 'subpolar', 'extensions', file))
 
 const applicationExtensionFactories = [listToolsExtension, openapiTools]
-const modelRuntimePromise = ModelRuntime.create({ refreshOnCreate: true })
+const modelRuntimePromise = createSharedProviderCatalogRuntime()
 
 const DEFAULT_SETTINGS = {
   theme: 'dark', mode: 'build', autoScroll: true, expandDiffs: true,
@@ -609,7 +602,9 @@ async function ensureUserMetadata(userId: string): Promise<void> {
   await repository.ensureCollections()
   const migrationName = 'legacy_metadata_v1'
   const marker = await client.collection('metadata_migrations').getFirstListItem(`user_id = "${escapeFilter(userId)}" && migration_name = "${migrationName}"`).catch(() => null)
-  if (!marker) {
+  // Legacy files have no tenant ownership. Never copy them to every new user.
+  // Operators must name the sole migration recipient explicitly.
+  if (!marker && process.env.SUBPOLAR_LEGACY_METADATA_OWNER_ID === userId) {
     await repository.migrateLegacyMetadata(userId, {
       projects: loadProjectDefinitions(),
       sessions: loadLegacySessions(),
@@ -1257,7 +1252,7 @@ async function deliverNextQueuedFollowUp(session: PiSdkSession<BridgeClient>): P
 const active = new Map<string, PiSdkSession<BridgeClient>>()
 
 function activeKey(userId: string, id: string): string {
-  return `${userId}:${id}`
+  return tenantSessionKey(userId, id)
 }
 
 function shutdown(): void {
@@ -1305,7 +1300,8 @@ function rpcSession(
   requiredAgent?: string,
   requiredPermission?: PermissionOverride,
 ): PiSdkSession<BridgeClient> {
-  if (!userId.trim()) throw new Error('Session owner is unavailable')
+  if (!suppliedRecord) throw new Error('An owned session record is required')
+  assertTenantSession(userId, id, suppliedRecord)
   const key = activeKey(userId, id)
   const existing = active.get(key)
   if (existing) {
@@ -1313,7 +1309,7 @@ function rpcSession(
       throw new Error('Session project mismatch')
     }
     const agentMatches = requiredAgent === undefined || existing.agentName === requiredAgent
-    const permissionMatches = requiredPermission === undefined || existing.permissionOverride === requiredPermission
+    const permissionMatches = existing.permissionOverride === requiredPermission
     if (agentMatches && permissionMatches) return existing
     existing.close()
     active.delete(key)
@@ -1340,7 +1336,10 @@ async function sendRpc(id: string, command: RpcCommand, owner: SessionRecord): P
   if (!allowedRpcCommands.has(command.type)) throw new Error(`Unsupported RPC command: ${command.type}`)
   const userId = owner.userId
   if (!userId) throw new Error('Session owner is unavailable')
+  assertTenantSession(userId, id, owner)
   const client = await applicationDatabase()
+  const owned = await ownedSessionRecord(client, userId, id)
+  if (!owned) throw new Error('Session not found')
   const context = await resolveToolSessionContext(client, userId, id)
   owner.profile = context.agentName
   owner.permissionOverride = context.session?.permissionOverride
@@ -1377,7 +1376,10 @@ function runtimeJson(value: unknown, seen = new WeakSet<object>()): import('../p
 async function runStatelessPrompt(input: StatelessWebUiRunInput, owner: SessionRecord, project: Project): Promise<unknown> {
   const ownerId = owner.userId
   if (!ownerId) throw new Error('Session owner is unavailable')
+  if (input.ownerId !== ownerId) throw new Error('Runtime owner mismatch')
+  assertTenantSession(ownerId, input.sessionId, owner)
   const client = await applicationDatabase()
+  if (!await ownedSessionRecord(client, ownerId, input.sessionId)) throw new Error('Session not found')
   const coreGateway = await createCoreToolGateway(client, ownerId, {
     onApproval: (approval) => {
       const request = approval.request && typeof approval.request === 'object' ? approval.request as Record<string, unknown> : {}
@@ -1596,12 +1598,16 @@ async function handleProxy(request: Request): Promise<Response> {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type' } })
   const authorization = request.headers.get('authorization') ?? ''
   const secret = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : ''
-  if (!await new PocketBaseProxyCredentialStore(await applicationDatabase()).authenticate(secret)) {
+  const client = await applicationDatabase()
+  const runtime = await authenticateProxyRuntime(secret, {
+    authenticate: (value) => new PocketBaseProxyCredentialStore(client).authenticate(value),
+    runtimeForOwner: userProviderRuntime,
+  })
+  if (!runtime) {
     return proxyJson({ error: { message: 'Valid bearer credentials are required', type: 'authentication_error' } }, 401)
   }
 
   if (request.method === 'GET' && request.url.endsWith('/v1/models')) {
-    const runtime = await modelRuntimePromise
     return proxyJson({ object: 'list', data: runtime.getModels().map((model) => ({ id: `${model.provider}/${model.id}`, object: 'model', owned_by: model.provider })) })
   }
   if (request.method !== 'POST' || !request.url.endsWith('/v1/chat/completions')) return proxyJson({ error: { message: 'Not found', type: 'invalid_request_error' } }, 404)
@@ -1609,12 +1615,9 @@ async function handleProxy(request: Request): Promise<Response> {
   try {
     const input = await body(request)
     if (!Array.isArray(input.messages)) throw new Error('Request must contain a messages array')
-    const runtime = await modelRuntimePromise
     const requested = typeof input.model === 'string' ? input.model.trim() : ''
     const selected = requested.includes('/') ? parseModelSelection(requested) : undefined
-    const model = selected
-      ? runtime.getModel(selected.providerID, selected.modelID)
-      : runtime.getModels().find((candidate) => candidate.id === requested) ?? runtime.getAvailableSnapshot()[0]
+    const model = proxyModel(runtime, selected)
     if (!model) return proxyJson({ error: { message: `Unknown or unavailable model: ${requested || '(none selected)'}`, type: 'invalid_request_error' } }, 404)
     // Deliberately exclude system and developer messages. The proxy is a model
     // endpoint, not a way to expose Pi's coding-agent harness prompt.
