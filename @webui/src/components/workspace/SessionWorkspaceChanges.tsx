@@ -5,7 +5,7 @@ import { sessionWorkspaceApi as api } from '@/api/session-workspace'
 import { useSessionStatusForSession } from '@/stores/sessionStatusStore'
 import { WorkspaceReview } from './WorkspaceReview'
 import { WorkspaceFiles } from './WorkspaceFiles'
-import { RepositoryContext } from './RepositoryContext'
+import { ProviderBrowserPanel, RepositoryContext } from './RepositoryContext'
 import { WORKSPACE_OPEN_FILE, isWorkspaceOpenFileDetail, requestQuickOpen, type FileOpenRequest } from './quickOpen'
 import { control, WorkspaceError } from './shared'
 import { useAuthGeneration, useAuthOwner } from '@/stores/authIdentityStore'
@@ -106,7 +106,9 @@ function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChanges
       <div id={`${panelId}-Files-content`} role="tabpanel" aria-labelledby={`${panelId}-Files`} hidden={tab !== 'Files'} className="min-h-0 flex-1 overflow-auto" style={tab === 'Files' ? { display: 'flex', flexDirection: 'column' } : undefined}>
         {filesVisited && <WorkspaceFiles sessionId={sessionId} refresh={refresh} openRequest={openRequest} />}
       </div>
-      <div id={`${panelId}-Browser-content`} role="tabpanel" aria-labelledby={`${panelId}-Browser`} hidden={tab !== 'Browser'} className="p-4 text-sm text-muted-foreground">Browser preview is not available yet. Use Files to browse the workspace.</div>
+      <div id={`${panelId}-Browser-content`} role="tabpanel" aria-labelledby={`${panelId}-Browser`} hidden={tab !== 'Browser'} className="min-h-0 flex-1 overflow-auto">
+        <ProviderBrowserPanel sessionId={sessionId} projectRouteId={projectRouteId} enabled={open && tab === 'Browser'} />
+      </div>
       <div id={`${panelId}-Repository-content`} role="tabpanel" aria-labelledby={`${panelId}-Repository`} hidden={tab !== 'Repository'} className="min-h-0 flex-1 overflow-auto">
         <RepositoryContext sessionId={sessionId} projectRouteId={projectRouteId} enabled={open && tab === 'Repository'} />
       </div>

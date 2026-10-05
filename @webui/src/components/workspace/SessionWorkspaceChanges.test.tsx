@@ -30,7 +30,7 @@ vi.mock('@/api/session-workspace', () => ({ sessionWorkspaceApi: {
 let workspace: SessionWorkspace
 function mount(sessionId = 'session', projectRouteId?: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
-  const view = render(<QueryClientProvider client={client}><SessionWorkspaceChanges sessionId={sessionId} projectRouteId={projectRouteId} /></QueryClientProvider>)
+  const view = render(<MemoryRouter><QueryClientProvider client={client}><SessionWorkspaceChanges sessionId={sessionId} projectRouteId={projectRouteId} /></QueryClientProvider></MemoryRouter>)
   return { ...view, client }
 }
 async function review() { fireEvent.click(await screen.findByRole('button', { name: 'Review' })) }
@@ -85,7 +85,7 @@ describe('SessionWorkspaceChanges', () => {
     const view = mount('unlinked-session', '0')
     await review()
     fireEvent.click(screen.getByRole('tab', { name: 'Repository' }))
-    expect(await screen.findByText('This session is not linked to a project repository.')).toBeInTheDocument()
+    expect(await within(screen.getByRole('tabpanel', { name: 'Repository' })).findByText('This session is not linked to a project repository.')).toBeInTheDocument()
     expect(repositoryMetadataMock.sources).not.toHaveBeenCalled()
     expect(gitMocks.status).not.toHaveBeenCalled()
     expect(gitMocks.branches).not.toHaveBeenCalled()
@@ -185,7 +185,7 @@ describe('SessionWorkspaceChanges', () => {
     fireEvent.click(screen.getByRole('button', { name: 'b.ts' }))
     await waitFor(() => expect(api.diff).toHaveBeenCalledWith('session', 'b.ts'))
     fireEvent.click(screen.getByRole('tab', { name: 'Browser' }))
-    expect(screen.getByText(/Browser preview is not available yet/)).toBeVisible()
+    expect(within(screen.getByRole('tabpanel', { name: 'Browser' })).getByText(/This session is not linked to a project repository/)).toBeVisible()
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Browser' }), { key: 'Home' })
     expect(screen.getByRole('tab', { name: 'Review' })).toHaveAttribute('aria-selected', 'true')
   })

@@ -13,7 +13,7 @@ The only prop is `sessionId: string`. The component handles fetching, the launch
 and a portal-rendered, nonmodal right-hand panel. No parent callbacks or layout
 changes are required. The panel is full-width on small screens and bounded on desktop;
 Escape inside the panel or its close button closes it and restores launcher focus.
-Tabs support arrow keys, Home, and End. Browser is an explicit placeholder.
+Tabs support arrow keys, Home, and End. The Browser tab is currently a GitHub/Gitee provider context view: it can browse bounded, read-only repository branches, issues, issue comments, pull requests, and checks through an explicitly mapped repository and connected owner account. It can add issue text to the current composer or start an `ask`-permission session from an issue. It does not provide interactive website browsing; the server-side browser and persistent website profiles remain future work.
 
 Workspace polling uses `useSessionStatusForSession`: every 4 seconds while busy,
 compacting, or retrying; every 10 seconds while the panel is open and idle. Status
@@ -71,10 +71,12 @@ the payload and session ID, opens its existing panel, and selects Files.
 saves/loads, reselects existing tabs without fetching over drafts, and permits
 retries of the same filename. Selection never navigates or changes composer drafts.
 
+Provider context is added to the composer through a typed window event; issue content is bounded and treated as untrusted prompt context. Starting an issue session creates a project session and queues the issue prompt. It does not select/create a worktree or perform provider mutations.
+
 Tests are colocated here, including API contract checks:
 
 ```sh
-npx vitest run src/components/workspace
-npx vitest run src
-npx tsc --noEmit -p tsconfig.app.json
+bun x --no-install vitest run src/components/workspace
+bun x --no-install vitest run src --maxWorkers=4
+bun run --bun tsc --noEmit -p tsconfig.app.json
 ```

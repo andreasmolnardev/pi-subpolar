@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, GitBranch, Loader2, RefreshCw } from 'lucide-react'
 import { fetchRepositoryBranches, fetchRepositoryStatus, fetchRepositoryWorktrees, getApiErrorMessage } from '@/api/git'
@@ -10,6 +11,10 @@ import type { GitProviderAccount } from '@/api/git-provider-accounts'
 import type { WorktreeProviderRepository } from '@/api/worktrees'
 import { Button } from '@/components/ui/button'
 import { useAuthGeneration, useAuthOwner } from '@/stores/authIdentityStore'
+import { SUBPOLAR_API_BASE_URL } from '@/config'
+import { useCreateSession } from '@/hooks/usePiHarness'
+import { savePendingSessionPrompt } from '@/lib/pending-session-prompt'
+import { addProviderContext, formatProviderContext } from './provider-context'
 
 export interface RepositoryContextProps {
   sessionId: string
@@ -114,7 +119,24 @@ export function matchingProviderAccounts(accounts: GitProviderAccount[], provide
   return provider ? accounts.filter(account => account.provider === provider && account.status === 'connected') : []
 }
 
-function ProviderBrowser({ identity, owner, generation }: { identity?: WorktreeProviderRepository; owner: string | null; generation: number }) {
+export function ProviderBrowserPanel({ sessionId, projectRouteId, enabled }: { sessionId: string; projectRouteId?: string; enabled: boolean }) {
+  const owner = useAuthOwner()
+  const generation = useAuthGeneration()
+  const source = useQuery({
+    queryKey: ['session-repository-context', owner, generation, sessionId, projectRouteId, 'source'],
+    queryFn: () => worktreesApi.sources(sessionId),
+    enabled: enabled && Boolean(projectRouteId) && projectRouteId !== '0',
+    retry: false,
+    gcTime: 0,
+  })
+  if (!projectRouteId || projectRouteId === '0') return <StateMessage label="This session is not linked to a project repository." />
+  if (!enabled) return <StateMessage label="Open Browser to browse provider issues and pull requests." />
+  if (source.isPending) return <StateMessage label="Resolving owned repository…" loading />
+  if (source.isError || !source.data) return <StateMessage label={source.isError ? getApiErrorMessage(source.error) : 'This session is not linked to an owned repository.'} onRetry={() => void source.refetch()} />
+  return <div className="p-4"><ProviderBrowser identity={source.data.providerRepository} owner={owner} generation={generation} projectRouteId={projectRouteId} /></div>
+}
+
+function ProviderBrowser({ identity, owner, generation, projectRouteId }: { identity?: WorktreeProviderRepository; owner: string | null; generation: number; projectRouteId?: string }) {
   const [view, setView] = useState<'branches' | 'issues' | 'pulls'>('issues')
   const [selection, setSelection] = useState<{ identityKey: string; accountId: string }>()
   const accounts = useQuery({
@@ -143,6 +165,32 @@ function ProviderBrowser({ identity, owner, generation }: { identity?: WorktreeP
   const selectedPull = pullItems.find(item => item.number === selectedPullNumber) ?? pullItems[0]
   const pullHead = selectedPull?.headSha ?? undefined
   const checks = useQuery({ queryKey: [...scopedKey, 'checks', pullHead], queryFn: () => gitProviderDataApi.statuses(mapping!, pullHead!), enabled: active && view === 'pulls' && Boolean(pullHead), retry: false, gcTime: 0 })
+  const navigate = useNavigate()
+  const createSession = useCreateSession(SUBPOLAR_API_BASE_URL)
+  function addIssueContext(issue: { number: number; title: string; body?: string | null; htmlUrl?: string }) {
+    addProviderContext({
+      title: `Issue #${issue.number}: ${issue.title}`,
+      body: issue.body ?? 'No issue description.',
+      ...(issue.htmlUrl ? { url: issue.htmlUrl } : {}),
+    })
+  }
+  async function startSessionFromIssue(issue: { number: number; title: string; body?: string | null; htmlUrl?: string }) {
+    if (!projectRouteId || projectRouteId === '0') return
+    const prompt = `Please help me work on this issue.\n\n${formatProviderContext({
+      title: `Issue #${issue.number}: ${issue.title}`,
+      body: issue.body ?? 'No issue description.',
+      ...(issue.htmlUrl ? { url: issue.htmlUrl } : {}),
+    })}`
+    try {
+      const project = /^\d+$/.test(projectRouteId) ? Number(projectRouteId) : projectRouteId
+      const session = await createSession.mutateAsync({ project, title: `Issue #${issue.number}: ${issue.title}`, permission: 'ask' })
+      const pendingPrompt = { prompt, messageID: crypto.randomUUID(), permission: 'ask' }
+      savePendingSessionPrompt(session.id, pendingPrompt)
+      navigate(`/projects/${encodeURIComponent(projectRouteId)}/sessions/${encodeURIComponent(session.id)}`, { state: { pendingPrompt } })
+    } catch {
+      // useCreateSession reports the request error through the shared toast path.
+    }
+  }
 
   if (!identity?.owner || !identity.repo) return <section aria-label="Provider repository" className="space-y-2"><h3 className="text-sm font-medium">Provider issues and pull requests</h3><p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">Unavailable: no supported GitHub or Gitee remote identity was found. Workspace display paths are not used to infer a repository.</p></section>
   if (accounts.isPending) return <p className="text-sm text-muted-foreground">Checking connected provider account…</p>
@@ -159,7 +207,7 @@ function ProviderBrowser({ identity, owner, generation }: { identity?: WorktreeP
     {repository.data?.repository && <p className="text-xs text-muted-foreground">{typeof repository.data.repository.description === 'string' ? `${repository.data.repository.description.slice(0, CONTENT_LIMIT)}${repository.data.repository.description.length > CONTENT_LIMIT ? '… (content truncated)' : ''}` : 'Provider repository details loaded.'}</p>}
     <div className="flex flex-wrap gap-2">{tabs.map(tab => <Button key={tab.id} size="sm" variant={view === tab.id ? 'default' : 'outline'} onClick={() => setView(tab.id)}>{tab.label}</Button>)}</div>
     {listError && <InlineError label={getApiErrorMessage(listError)} onRetry={() => { if (view === 'branches') void branches.refetch(); else if (view === 'issues') void issues.refetch(); else void pulls.refetch() }} />}
-    {listPending ? <p className="text-sm text-muted-foreground">Loading provider {view}…</p> : view === 'branches' ? <ProviderBranches items={branches.data?.branches ?? []} /> : view === 'issues' ? <ProviderIssues items={issues.data?.issues ?? []} selected={selectedIssue} onSelect={setSelectedIssue} comments={comments.data?.comments ?? []} commentsLoading={comments.isPending} commentsError={comments.isError ? getApiErrorMessage(comments.error) : undefined} /> : <ProviderPulls items={pullItems} selected={selectedPull?.number} onSelect={setSelectedPullNumber} checks={checks.data?.statuses} checksError={checks.isError ? getApiErrorMessage(checks.error) : undefined} checksLoading={checks.isPending && Boolean(pullHead)} />}
+    {listPending ? <p className="text-sm text-muted-foreground">Loading provider {view}…</p> : view === 'branches' ? <ProviderBranches items={branches.data?.branches ?? []} /> : view === 'issues' ? <ProviderIssues items={issues.data?.issues ?? []} selected={selectedIssue} onSelect={setSelectedIssue} comments={comments.data?.comments ?? []} commentsLoading={comments.isPending} commentsError={comments.isError ? getApiErrorMessage(comments.error) : undefined} onAddContext={addIssueContext} onStartSession={startSessionFromIssue} startPending={createSession.isPending} /> : <ProviderPulls items={pullItems} selected={selectedPull?.number} onSelect={setSelectedPullNumber} checks={checks.data?.statuses} checksError={checks.isError ? getApiErrorMessage(checks.error) : undefined} checksLoading={checks.isPending && Boolean(pullHead)} />}
   </section>
 }
 
@@ -169,9 +217,9 @@ function CappedText({ value }: { value?: string | null }) { return <p className=
 function ProviderBranches({ items }: { items: Readonly<Record<string, unknown>>[] }) {
   return items.length ? <ul className="max-h-80 divide-y overflow-auto rounded-md border">{items.slice(0, PREVIEW_LIMIT).map((item, index) => <li key={String(item.name ?? item.ref ?? index)} className="break-all px-3 py-2 text-xs">{String(item.name ?? item.ref ?? 'Unnamed branch')}{typeof item.sha === 'string' ? ` · ${item.sha}` : ''}</li>)}</ul> : <p className="text-sm text-muted-foreground">No provider branches.</p>
 }
-function ProviderIssues({ items, selected, onSelect, comments, commentsLoading, commentsError }: { items: { number: number; title: string; state: string; body?: string | null }[]; selected?: number; onSelect: (number: number) => void; comments: { body?: string | null; user?: { login?: string } | string; createdAt?: string }[]; commentsLoading: boolean; commentsError?: string }) {
+function ProviderIssues({ items, selected, onSelect, comments, commentsLoading, commentsError, onAddContext, onStartSession, startPending }: { items: { number: number; title: string; state: string; body?: string | null; htmlUrl?: string }[]; selected?: number; onSelect: (number: number) => void; comments: { body?: string | null; user?: { login?: string } | string; createdAt?: string }[]; commentsLoading: boolean; commentsError?: string; onAddContext: (issue: { number: number; title: string; body?: string | null; htmlUrl?: string }) => void; onStartSession: (issue: { number: number; title: string; body?: string | null; htmlUrl?: string }) => void; startPending: boolean }) {
   if (!items.length) return <p className="text-sm text-muted-foreground">No provider issues.</p>
-  return <ul className="max-h-[32rem] divide-y overflow-auto rounded-md border">{items.slice(0, PREVIEW_LIMIT).map(issue => <li key={issue.number} className="space-y-2 p-3"><button className="text-left text-sm font-medium hover:underline" onClick={() => onSelect(issue.number)}>#{issue.number} {issue.title} <span className="text-xs font-normal text-muted-foreground">· {issue.state}</span></button><CappedText value={issue.body} />{selected === issue.number && <div className="space-y-2 border-t pt-2"><p className="text-xs font-medium">Comments</p>{commentsLoading ? <p className="text-xs text-muted-foreground">Loading comments…</p> : commentsError ? <p role="alert" className="text-xs text-destructive">Comments unavailable: {commentsError}</p> : comments.length ? comments.slice(0, PREVIEW_LIMIT).map((comment, index) => <div key={index} className="rounded bg-muted/40 p-2"><p className="text-xs font-medium">{typeof comment.user === 'string' ? comment.user : comment.user?.login ?? 'Provider user'}{comment.createdAt ? ` · ${comment.createdAt}` : ''}</p><CappedText value={comment.body} /></div>) : <p className="text-xs text-muted-foreground">No comments.</p>}</div>}</li>)}</ul>
+  return <ul className="max-h-[32rem] divide-y overflow-auto rounded-md border">{items.slice(0, PREVIEW_LIMIT).map(issue => <li key={issue.number} className="space-y-2 p-3"><button className="text-left text-sm font-medium hover:underline" onClick={() => onSelect(issue.number)}>#{issue.number} {issue.title} <span className="text-xs font-normal text-muted-foreground">· {issue.state}</span></button><CappedText value={issue.body} /><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => onAddContext(issue)}>Add to context</Button><Button size="sm" variant="outline" disabled={startPending} onClick={() => onStartSession(issue)}>{startPending ? 'Starting session…' : 'Start session from issue'}</Button></div>{selected === issue.number && <div className="space-y-2 border-t pt-2"><p className="text-xs font-medium">Comments</p>{commentsLoading ? <p className="text-xs text-muted-foreground">Loading comments…</p> : commentsError ? <p role="alert" className="text-xs text-destructive">Comments unavailable: {commentsError}</p> : comments.length ? comments.slice(0, PREVIEW_LIMIT).map((comment, index) => <div key={index} className="rounded bg-muted/40 p-2"><p className="text-xs font-medium">{typeof comment.user === 'string' ? comment.user : comment.user?.login ?? 'Provider user'}{comment.createdAt ? ` · ${comment.createdAt}` : ''}</p><CappedText value={comment.body} /></div>) : <p className="text-xs text-muted-foreground">No comments.</p>}</div>}</li>)}</ul>
 }
 function ProviderPulls({ items, selected, onSelect, checks, checksError, checksLoading }: { items: { number: number; title: string; state: string; body?: string | null; base?: string | { ref?: string }; head?: string | { ref?: string; sha?: string }; headSha?: string | null }[]; selected?: number; onSelect: (number: number) => void; checks?: Readonly<Record<string, unknown>>[]; checksError?: string; checksLoading: boolean }) {
   if (!items.length) return <p className="text-sm text-muted-foreground">No provider pull requests.</p>

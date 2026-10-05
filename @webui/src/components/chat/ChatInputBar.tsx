@@ -34,6 +34,7 @@ import { useCommands } from "@/hooks/useCommands";
 import { useCommandHandler } from "@/hooks/useCommandHandler";
 import { useUIState } from "@/stores/uiStateStore";
 import type { components } from "@/api/opencode-types";
+import { ADD_PROVIDER_CONTEXT_EVENT, formatProviderContext, type ProviderContext } from "@/components/workspace/provider-context";
 
 export interface ChatInputBarHandle {
   setPromptValue: (value: string) => void;
@@ -145,6 +146,24 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const creatingSessionRef = useRef(false);
   const pendingCommand = useUIState((state) => state.pendingPromptCommand);
   const clearPendingCommand = useUIState((state) => state.clearPendingPromptCommand);
+
+  useEffect(() => {
+    const receiveProviderContext = (event: Event) => {
+      const context = (event as CustomEvent<ProviderContext>).detail;
+      if (!context || typeof context.title !== 'string' || typeof context.body !== 'string') return;
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      const existing = textarea.value.trimEnd();
+      const addition = formatProviderContext(context);
+      textarea.value = existing ? `${existing}\n\n${addition}` : addition;
+      textarea.style.height = 'auto';
+      textarea.style.height = `${textarea.scrollHeight}px`;
+      setHasPromptContent(true);
+      onPromptChange?.(true);
+    };
+    window.addEventListener(ADD_PROVIDER_CONTEXT_EVENT, receiveProviderContext);
+    return () => window.removeEventListener(ADD_PROVIDER_CONTEXT_EVENT, receiveProviderContext);
+  }, [onPromptChange]);
 
   const apiUrl = SUBPOLAR_API_BASE_URL;
   const { commands, filterCommands, error: commandsError } = useCommands(apiUrl);

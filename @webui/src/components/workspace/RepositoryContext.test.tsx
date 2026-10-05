@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { RepositoryContext } from './RepositoryContext'
+import { ADD_PROVIDER_CONTEXT_EVENT } from './provider-context'
 import { changeAuthOwner } from '@/stores/authIdentityStore'
 
 const mocks = vi.hoisted(() => ({ sources: vi.fn(), status: vi.fn(), branches: vi.fn(), worktrees: vi.fn(), accounts: vi.fn(), repository: vi.fn(), providerBranches: vi.fn(), issues: vi.fn(), pulls: vi.fn(), comments: vi.fn(), statuses: vi.fn() }))
@@ -14,7 +16,7 @@ const identity = { remote: 'origin', provider: 'github' as const, owner: 'octo',
 const mapping = { accountId: 'provider-account', owner: 'octo', repo: 'demo' }
 function mount(session = 'session') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
-  const view = render(<QueryClientProvider client={client}><RepositoryContext sessionId={session} projectRouteId="7" enabled /></QueryClientProvider>)
+  const view = render(<MemoryRouter><QueryClientProvider client={client}><RepositoryContext sessionId={session} projectRouteId="7" enabled /></QueryClientProvider></MemoryRouter>)
   return { ...view, client }
 }
 beforeEach(() => {
@@ -49,6 +51,11 @@ describe('RepositoryContext provider browsing', () => {
     expect(await screen.findByRole('button', { name: /#1 Issue 1/ })).toBeInTheDocument()
     expect(mocks.issues).toHaveBeenCalledWith(mapping)
     expect(screen.queryByRole('button', { name: /#21 Issue 21/ })).not.toBeInTheDocument()
+    const contextListener = vi.fn()
+    window.addEventListener(ADD_PROVIDER_CONTEXT_EVENT, contextListener)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add to context' })[0])
+    expect(contextListener).toHaveBeenCalledWith(expect.objectContaining({ detail: { title: 'Issue #1: Issue 1', body: 'issue body' } }))
+    window.removeEventListener(ADD_PROVIDER_CONTEXT_EVENT, contextListener)
     fireEvent.click(screen.getByRole('button', { name: /#1 Issue 1/ }))
     expect(await screen.findByText('Comment body')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Pull requests' }))
