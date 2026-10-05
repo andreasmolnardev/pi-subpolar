@@ -109,8 +109,18 @@ function openApiEntries(spec: Record<string, unknown>): Array<{ method: string; 
   return entries
 }
 
+function openApiParameters(operation: Record<string, unknown>, pathItem: Record<string, unknown>): Record<string, unknown>[] {
+  const parameters = new Map<string, Record<string, unknown>>()
+  for (const raw of [...(Array.isArray(pathItem.parameters) ? pathItem.parameters : []), ...(Array.isArray(operation.parameters) ? operation.parameters : [])]) {
+    const item = record(raw)
+    if (typeof item.name !== 'string' || !['path', 'query', 'header'].includes(String(item.in)) || SECRET_KEY.test(item.name)) continue
+    parameters.set(`${item.in}:${item.name}`, item)
+  }
+  return [...parameters.values()]
+}
+
 function schemaForOpenApi(operation: Record<string, unknown>, pathItem: Record<string, unknown>): Record<string, unknown> {
-  const parameters = [...(Array.isArray(pathItem.parameters) ? pathItem.parameters : []), ...(Array.isArray(operation.parameters) ? operation.parameters : [])]
+  const parameters = openApiParameters(operation, pathItem)
   const properties: Record<string, unknown> = {}
   const required: string[] = []
   for (const raw of parameters.slice(0, 50)) {
@@ -174,15 +184,21 @@ export async function proposeTools(input: unknown, generateDrafts?: TeachDraftGe
     const parsedUrl = new URL(target)
     if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('OpenAPI URL must be HTTP(S)')
     assertNoUrlSecrets(target, 'OpenAPI URL')
-    const entries = openApiEntries(spec)
+    let entries = openApiEntries(spec)
     if (!entries.length) throw new Error('OpenAPI document contains no supported operations')
+    if (config.operations !== undefined) {
+      if (!Array.isArray(config.operations) || config.operations.some((id) => typeof id !== 'string' || !id.trim())) throw new Error('OpenAPI operations must be an array of operation IDs')
+      const ids = new Set(config.operations as string[])
+      if ([...ids].some((id) => !entries.some((entry) => entry.operation.operationId === id))) throw new Error('OpenAPI selection contains an unknown operation ID')
+      entries = entries.filter((entry) => ids.has(String(entry.operation.operationId)))
+    }
     observations.push(`Inspected ${entries.length} operation schema(s) from the supplied OpenAPI document; no request was sent.`)
     const selected = entries.filter((entry) => `${entry.method} ${entry.path} ${String(entry.operation.summary ?? '')}`.toLowerCase().includes(goal.toLowerCase())).slice(0, 5)
     for (const entry of (selected.length ? selected : entries).slice(0, 100)) {
       const tag = Array.isArray(entry.operation.tags) && typeof entry.operation.tags[0] === 'string' ? entry.operation.tags[0] : 'openapi'
       const op = typeof entry.operation.operationId === 'string' ? entry.operation.operationId : `${entry.method}_${entry.path}`
       const operation = makeId(op)
-      drafts.push(draftBase({ goal, namespace: makeId(tag), name: operation, description: redactSensitiveText(String(entry.operation.summary ?? entry.operation.description ?? `${entry.method.toUpperCase()} ${entry.path}`)), adapter: 'openapi', target, operation, inputSchema: schemaForOpenApi(entry.operation, entry.pathItem), outputSchema: record(scrub(record(record(entry.operation.responses)['200']).content && record(record(record(record(entry.operation.responses)['200']).content)['application/json']).schema)), risk: entry.method === 'get' ? 'read' : 'write', metadata: { url: target.replace(/\/$/, '') + entry.path, method: entry.method.toUpperCase(), path: entry.path, parameters: [...(Array.isArray(entry.pathItem.parameters) ? entry.pathItem.parameters : []), ...(Array.isArray(entry.operation.parameters) ? entry.operation.parameters : [])].map((parameter) => { const value = record(parameter); return { name: value.name, in: value.in, required: value.required === true } }).filter((parameter) => typeof parameter.name === 'string' && !SECRET_KEY.test(parameter.name) && ['path', 'query', 'header'].includes(String(parameter.in))), requestBody: Object.keys(record(entry.operation.requestBody)).length > 0 } }))
+      drafts.push(draftBase({ goal, namespace: makeId(tag), name: operation, description: redactSensitiveText(String(entry.operation.summary ?? entry.operation.description ?? `${entry.method.toUpperCase()} ${entry.path}`)), adapter: 'openapi', target, operation, inputSchema: schemaForOpenApi(entry.operation, entry.pathItem), outputSchema: record(scrub(record(record(entry.operation.responses)['200']).content && record(record(record(record(entry.operation.responses)['200']).content)['application/json']).schema)), risk: entry.method === 'get' ? 'read' : 'write', metadata: { url: target.replace(/\/$/, '') + entry.path, method: entry.method.toUpperCase(), path: entry.path, parameters: openApiParameters(entry.operation, entry.pathItem).map((value) => ({ name: value.name, in: value.in, required: value.required === true })), requestBody: Object.keys(record(entry.operation.requestBody)).length > 0 } }))
     }
   }
   const safeObservations = observations.map((item) => redactSensitiveText(item).slice(0, 4000))

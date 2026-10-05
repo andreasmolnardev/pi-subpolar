@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import { fetchWithNetworkPolicy, networkPolicyFromMetadata, NetworkPolicyError, validateHttpUrl, type NetworkPolicyOptions } from '../../core/network-policy.ts'
 import { redactSensitiveText } from '../../core/security-redaction.ts'
 
@@ -34,6 +35,8 @@ export type McpLimits = {
 }
 
 export type McpServerConfig = {
+  /** Trusted composition scope, never taken from tool metadata. Unscoped connections are not reused. */
+  ownerId?: string
   transport: McpTransportKind
   /** URL for HTTP/SSE transports. */
   url?: string
@@ -79,6 +82,7 @@ export type McpCallResult = {
 }
 
 export type McpToolReference = {
+  owner_id?: string
   tool_id: string
   namespace: string
   description?: string
@@ -806,12 +810,29 @@ export class DefaultMcpAdapter implements McpAdapter {
   private readonly options: CreateMcpAdapterOptions
   private readonly clients = new Map<string, McpClient>()
   private readonly connections = new Map<string, Promise<McpClient>>()
+  private closing?: Promise<void>
 
   constructor(options: CreateMcpAdapterOptions = {}) { this.options = options }
 
   async connect(config: McpServerConfig): Promise<McpClient> {
-    const effective = { ...this.options.defaults, ...config, limits: { ...this.options.defaults?.limits, ...config.limits, ...this.options.limits } }
-    const key = serverKeyFor(effective)
+    if (this.closing) throw new McpAdapterError('MCP_CONNECTION_ERROR', 'MCP adapter is closing')
+    // Freeze the effective credentials before keying and opening the transport.
+    // serverKey is a display label, not an authentication/context identity.
+    const effective = structuredClone({ ...this.options.defaults, ...config, limits: { ...this.options.defaults?.limits, ...config.limits, ...this.options.limits } })
+    if (effective.env) effective.env = Object.fromEntries(Object.entries(effective.env).flatMap(([key, value]) => {
+      const resolved = resolveEnvValue(value)
+      return resolved === undefined ? [] : [[key, resolved]]
+    }))
+    if (effective.transport === 'stdio') {
+      effective.cwd ??= process.cwd()
+      effective.env = { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), ...effective.env }
+    }
+    if (effective.headers) effective.headers = resolveHeaders(effective.headers)
+    const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value
+    const key = effective.ownerId?.trim()
+      ? createHash('sha256').update(JSON.stringify(canonical(effective))).digest('hex')
+      : randomUUID()
     const existing = this.clients.get(key)
     if (existing) return existing
     const connecting = this.connections.get(key)
@@ -826,6 +847,7 @@ export class DefaultMcpAdapter implements McpAdapter {
     const client = new McpClient(transport, config, this.options)
     try {
       await client.initialize()
+      if (this.closing) throw new McpAdapterError('MCP_CONNECTION_ERROR', 'MCP adapter closed during initialization', { serverKey: key })
       this.clients.set(key, client)
       return client
     } catch (error) {
@@ -834,8 +856,15 @@ export class DefaultMcpAdapter implements McpAdapter {
     }
   }
 
+  private async releaseUnscoped(client: McpClient, config: McpServerConfig): Promise<void> {
+    if ((config.ownerId ?? this.options.defaults?.ownerId)?.trim()) return
+    for (const [key, cached] of this.clients) if (cached === client) this.clients.delete(key)
+    await client.close()
+  }
+
   async discover(config: McpServerConfig): Promise<McpTool[]> {
-    return (await this.connect(config)).listTools()
+    const client = await this.connect(config)
+    try { return await client.listTools() } finally { await this.releaseUnscoped(client, config) }
   }
 
   async discoverForTool(tool: McpToolReference): Promise<McpTool[]> {
@@ -846,13 +875,20 @@ export class DefaultMcpAdapter implements McpAdapter {
   async invoke(tool: McpToolReference, input: unknown, options: { timeoutMs?: number } = {}): Promise<McpCallResult> {
     const resolved = resolveMcpToolReference(tool, this.options.defaults)
     const client = await this.connect(resolved.config)
-    return client.callTool(resolved.toolName, input, options.timeoutMs ?? resolved.config.timeoutMs)
+    try { return await client.callTool(resolved.toolName, input, options.timeoutMs ?? resolved.config.timeoutMs) } finally { await this.releaseUnscoped(client, resolved.config) }
   }
 
   async close(): Promise<void> {
+    if (this.closing) return this.closing
     const clients = [...this.clients.values()]
+    const connections = [...this.connections.values()]
     this.clients.clear()
-    await Promise.all(clients.map((client) => client.close().catch(() => undefined)))
+    const closing = Promise.all([
+      ...clients.map((client) => client.close().catch(() => undefined)),
+      ...connections.map((connection) => connection.catch(() => undefined)),
+    ]).then(() => undefined)
+    this.closing = closing
+    try { await closing } finally { if (this.closing === closing) this.closing = undefined }
   }
 }
 
@@ -938,6 +974,7 @@ export function resolveMcpToolReference(tool: McpToolReference, defaults: Partia
   const namespace = nonEmptyString(value('namespace')) ?? nonEmptyString(tool.namespace)
   const config: McpServerConfig = {
     ...defaults,
+    ...(tool.owner_id?.trim() ? { ownerId: tool.owner_id } : {}),
     transport,
     ...(command ? { command } : {}),
     ...(url ? { url } : {}),

@@ -1,18 +1,22 @@
 import type PocketBase from 'pocketbase'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { constants } from 'node:fs'
+import { access, lstat, mkdir, open, readdir } from 'node:fs/promises'
+import { relative } from 'node:path'
+import { ProjectSessionRepository } from '../../persistence/project-store.ts'
+import { assertToolWorkspacePath, canonicalProjectPath } from '../../core/project-filesystem.ts'
 import {
-  createBashToolDefinition,
+
   createEditToolDefinition,
-  createFindToolDefinition,
-  createGrepToolDefinition,
+
   createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
 } from '@earendil-works/pi-coding-agent'
 import { escapeFilter } from '../../persistence/pocketbase.ts'
 import { createApprovalFlow } from './approval-flow.ts'
-import { createMcpAdapter, type McpToolReference } from './mcp-adapter.ts'
+import { createMcpAdapter, resolveMcpToolReference, type McpToolReference } from './mcp-adapter.ts'
 import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse } from '../../core/network-policy.ts'
 import { redactSensitive, redactSensitiveText } from '../../core/security-redaction.ts'
 import { decryptApprovalInput, encryptApprovalInput, takePendingApprovalInput } from './approval-execution.ts'
@@ -145,6 +149,12 @@ export type AgentDefinition = {
 
 export function agentProfileToolEffect(agent: AgentDefinition, toolId: string): ToolEffect | undefined {
   const canonical = canonicalToolId(toolId)
+  // Capability ceilings precede legacy grants and stored wildcard allowances.
+  if (!agent.enabled || agent.approval_mode === 'deny' || toolContextMode(agent, canonical) === 'disabled') return 'deny'
+  if (agent.policies.builtin[canonical] === false || agent.policies.registered[canonical] === false) return 'deny'
+  if (canonical.startsWith('memory/') && !memoryPolicyAllows(agent, canonical)) return 'deny'
+  if (canonical.startsWith('browser/') && agent.policies.browser !== true) return 'deny'
+  if (canonical === 'subagent' && agent.policies.subagent !== true) return 'deny'
   const configuredTool = agent.toolAccess?.find((entry) => typeof entry.id === 'string' && canonicalToolId(entry.id === 'other-bash' ? 'bash' : entry.id) === canonical)
   const configured = configuredTool?.permission
   if (configured === 'allow' || configured === 'auto') return 'allow'
@@ -159,6 +169,7 @@ export function agentProfileToolEffect(agent: AgentDefinition, toolId: string): 
   if (legacyValue === 'allow') return 'allow'
   if (legacyValue === 'ask') return 'approval'
   if (legacyValue === 'deny') return 'deny'
+  if (agent.policies.builtin[canonical] === true || agent.policies.registered[canonical] === true) return 'allow'
   return undefined
 }
 
@@ -187,7 +198,7 @@ const piToolIds: Record<string, string> = {
   'web.search': 'web_search',
 }
 
-const mcpAdapter = createMcpAdapter()
+
 type SubagentToolRunner = (input: unknown, context: ToolExecutionContext) => Promise<unknown>
 let subagentToolRunner: SubagentToolRunner | undefined
 
@@ -308,7 +319,19 @@ function normalizeProjectOverrides(value: unknown): Record<string, AgentProjectO
   const result: Record<string, AgentProjectOverride> = {}
   for (const [project, raw] of Object.entries(recordObject(value))) {
     const item = recordObject(raw)
-    result[project] = { tools: normalizeToolModes(item.tools), skills: normalizeSkillModes(item.skills), policies: normalizePolicies(item.policies) }
+    const rawPolicies = recordObject(item.policies)
+    const normalized = normalizePolicies(rawPolicies)
+    const policies: Partial<AgentPolicySet> = {}
+    for (const capability of ['memory', 'browser', 'subagent'] as const) {
+      if (typeof rawPolicies[capability] === 'boolean') policies[capability] = normalized[capability]
+    }
+    if (rawPolicies.builtin !== undefined) policies.builtin = normalized.builtin
+    if (rawPolicies.registered !== undefined) policies.registered = normalized.registered
+    result[project] = {
+      ...(item.tools !== undefined ? { tools: normalizeToolModes(item.tools) } : {}),
+      ...(item.skills !== undefined ? { skills: normalizeSkillModes(item.skills) } : {}),
+      ...(item.policies !== undefined ? { policies } : {}),
+    }
   }
   return result
 }
@@ -441,9 +464,6 @@ export function validateToolDefinition(definition: Omit<ToolDefinition, 'id' | '
   }
 }
 
-function generatedSkillName(toolId: string): string {
-  return `tool-${toolId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`
-}
 
 async function findAgent(client: PocketBase, userId: string, nameOrId: string): Promise<AgentDefinition | null> {
   const safeUser = escapeFilter(userId)
@@ -568,7 +588,23 @@ export function effectiveAgentConfiguration(agent: AgentDefinition, projectId?: 
     const current = skills[id] ?? 'always-loaded'
     skills[id] = skillOrder[mode] < skillOrder[current] ? mode : current
   }
-  return { ...agent, tool_context_modes: tools, skill_context_modes: skills, policies: { ...agent.policies, ...override.policies, builtin: { ...agent.policies.builtin, ...(override.policies?.builtin ?? {}) }, registered: { ...agent.policies.registered, ...(override.policies?.registered ?? {}) } }, effective_source: { ...agent.effective_source, tools: 'project', skills: 'project' } }
+  const intersectMap = (base: Record<string, boolean>, next: Record<string, boolean> = {}) => {
+    const result = { ...base }
+    for (const [id, allowed] of Object.entries(next)) {
+      if (!allowed) result[id] = false
+      // An absent grant remains absent, preserving legacy defaults without adding privileges.
+      else if (base[id] !== undefined) result[id] = base[id]
+    }
+    return result
+  }
+  const policies: AgentPolicySet = {
+    builtin: intersectMap(agent.policies.builtin, override.policies?.builtin),
+    registered: intersectMap(agent.policies.registered, override.policies?.registered),
+    memory: agent.policies.memory && override.policies?.memory !== false,
+    browser: agent.policies.browser && override.policies?.browser !== false,
+    subagent: agent.policies.subagent && override.policies?.subagent !== false,
+  }
+  return { ...agent, tool_context_modes: tools, skill_context_modes: skills, policies, effective_source: { ...agent.effective_source, ...(override.tools || override.policies ? { tools: 'project' as const } : {}), ...(override.skills ? { skills: 'project' as const } : {}) } }
 }
 
 export function agentToolContextMode(agent: AgentDefinition, toolId: string): ToolContextMode {
@@ -677,34 +713,72 @@ function toolContextMode(agent: AgentDefinition, toolId: string): ToolContextMod
   return agent.template ? 'disabled' : 'always'
 }
 
-export async function listToolsForAgent(client: PocketBase, userId: string, agentName = 'master', projectId?: string, includeOnDemand = false): Promise<Array<{ id: string; description: string; inputSchema: Record<string, unknown>; requiresApproval: boolean; contextMode: ToolContextMode }>> {
+// Discovery and execution use the same decision; adapters never grant permissions.
+export function evaluateAgentToolPolicy(
+  agent: AgentDefinition,
+  tool: ToolDefinition,
+  policies: readonly Record<string, unknown>[],
+  override?: PermissionOverride,
+): { allow?: boolean; deny?: boolean; requiresApproval?: boolean; reason?: string } {
+  const id = tool.tool_id
+  const matching = policies.filter((item) => item.tool_id === id || item.tool_id === '*')
+  const profileEffect = agentProfileToolEffect(agent, id)
+  const mode = toolContextMode(agent, id)
+  if (!agent.enabled || !tool.enabled || mode === 'disabled' || matching.some((item) => item.effect === 'deny') || profileEffect === 'deny' || override === 'none' || agent.approval_mode === 'deny') return { deny: true, reason: `Agent is not allowed to use ${id}` }
+  if (profileManagementTools.has(id) && agent.name !== 'master') return { deny: true, reason: 'Agent profile management requires the master agent' }
+  if (toolManagementTools.has(id) && agent.name !== 'master') return { deny: true, reason: 'Registered tool management requires the master agent' }
+  if (cliManagementTools.has(id) && agent.name !== 'master') return { deny: true, reason: 'CLI tool management requires the master agent' }
+  if (id.startsWith('memory/') && !memoryPolicyAllows(agent, id)) return { deny: true, reason: 'Memory is disabled for this agent' }
+  if (id.startsWith('browser/') && (agent.policies.browser !== true || (browserMutationGroups.has(String(tool.metadata.policyGroup)) && !browserProfileAllows(String(tool.metadata.policyGroup), agent.template === 'plan' || agent.template === 'reviewer')))) return { deny: true, reason: 'Browser capability is not allowed for this agent' }
+  if (memoryMutationTools.has(id) && (agent.template === 'plan' || agent.template === 'reviewer')) return { deny: true, reason: 'This agent profile is query-only for memory' }
+  const explicitlyAllowed = matching.some((item) => item.effect === 'allow') || profileEffect === 'allow'
+  const explicitlyRequiresApproval = matching.some((item) => item.effect === 'approval') || profileEffect === 'approval'
+  if (override !== 'allow_all' && !explicitlyAllowed && !explicitlyRequiresApproval && agent.name !== 'master') return { deny: true, reason: `Agent is not allowed to use ${id}` }
+  const masterWebSearch = agent.name === 'master' && id === 'web.search'
+  const needsApproval = !masterWebSearch && shouldRequireAgentToolApproval({
+    manualApproval: requiresManualApproval(id, tool.target),
+    toolRequiresApproval: tool.requires_approval,
+    explicitlyAllowed,
+    explicitlyRequiresApproval,
+    approvalMode: agent.approval_mode,
+    permissionOverride: override,
+  })
+  return needsApproval ? { requiresApproval: true, allow: true, reason: `${id} requires approval` } : { allow: true }
+}
+
+function toolRegistryFilter(userId: string): string {
+  return `enabled = true && (owner_id = "" || owner_id = "${escapeFilter(userId)}")`
+}
+
+async function accessibleToolRecords(client: PocketBase, userId: string) {
+  const records = await client.collection('tool_registry').getFullList({ filter: toolRegistryFilter(userId), sort: 'namespace,tool_id' })
+  return records.filter((record) => !record.owner_id || record.owner_id === userId)
+}
+
+export async function listToolsForAgent(client: PocketBase, userId: string, agentName = 'master', projectId?: string, includeOnDemand = false, permissionOverride?: PermissionOverride): Promise<Array<{ id: string; description: string; inputSchema: Record<string, unknown>; requiresApproval: boolean; contextMode: ToolContextMode }>> {
   const agentRecord = agentName === 'master'
     ? await findAgent(client, userId, agentName) ?? await ensureUserDefaults(client, userId)
     : await findAgent(client, userId, agentName)
   if (!agentRecord || !agentRecord.enabled) return []
-  let agent = effectiveAgentConfiguration(agentRecord, projectId)
+  const agent = effectiveAgentConfiguration(agentRecord, projectId)
   const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(userId)}" && agent_id = "${escapeFilter(agent.id)}"` })
-  const policyMap = new Map(policies.map((item) => [String(item.tool_id), String(item.effect) as ToolEffect]))
-  const tools = await client.collection('tool_registry').getFullList({ filter: 'enabled = true', sort: 'namespace,tool_id' })
+  const tools = await accessibleToolRecords(client, userId)
   return tools.flatMap((record) => {
     const tool = toTool(record)
-    if (tool.tool_id.startsWith('memory/') && !memoryPolicyAllows(agent, tool.tool_id)) return []
-    if (tool.tool_id.startsWith('browser/') && agent.policies.browser !== true) return []
     const contextMode = toolContextMode(agent, tool.tool_id)
-    const effect = policyMap.get(tool.tool_id)
-    const profileEffect = agentProfileToolEffect(agent, tool.tool_id)
-    if (contextMode === 'disabled' || (!includeOnDemand && contextMode === 'on-demand') || effect === 'deny' || profileEffect === 'deny' || (!effect && !profileEffect && agent.name !== 'master')) return []
-    return [{ id: tool.tool_id, description: tool.description, inputSchema: tool.input_schema, requiresApproval: tool.requires_approval || effect === 'approval' || profileEffect === 'approval', contextMode: tool.context_mode ?? contextMode }]
+    const policy = evaluateAgentToolPolicy(agent, tool, policies, permissionOverride)
+    if (executionUnavailable(tool) || policy.deny || (!includeOnDemand && contextMode === 'on-demand')) return []
+    return [{ id: tool.tool_id, description: tool.description, inputSchema: tool.input_schema, requiresApproval: policy.requiresApproval === true, contextMode }]
   })
 }
 
-export async function describeToolForAgent(client: PocketBase, userId: string, agentName: string, toolId: string) {
+export async function describeToolForAgent(client: PocketBase, userId: string, agentName: string, toolId: string, projectId?: string, permissionOverride?: PermissionOverride) {
   const canonicalId = canonicalToolId(toolId)
-  const tools = await listToolsForAgent(client, userId, agentName)
+  const tools = await listToolsForAgent(client, userId, agentName, projectId, true, permissionOverride)
   const tool = tools.find((item) => item.id === canonicalId)
   if (!tool) return null
-  const record = await client.collection('tool_registry').getFirstListItem(`tool_id = "${escapeFilter(canonicalId)}" && enabled = true`).catch(() => null)
-  if (!record) return null
+  const record = await client.collection('tool_registry').getFirstListItem(`tool_id = "${escapeFilter(canonicalId)}" && ${toolRegistryFilter(userId)}`).catch(() => null)
+  if (!record || (record.owner_id && record.owner_id !== userId)) return null
   const definition = toTool(record)
   return { ...tool, outputSchema: definition.output_schema, risk: definition.risk, examples: definition.metadata.examples ?? [] }
 }
@@ -824,12 +898,76 @@ function cliMetadata(value: unknown): { executable: string; fixedArgs: string[];
   return { executable, fixedArgs: [...fixedArgs] as string[], maxArgs, timeoutMs, maxOutputBytes }
 }
 
+function trustedHostExecution(): boolean {
+  return process.env.SUBPOLAR_TRUSTED_HOST_EXECUTION === 'true'
+}
+
+function trustedSubprocessEnvironment(cwd: string): NodeJS.ProcessEnv {
+  // No inheritance of PB/provider credentials, runtime flags, loader hooks or HOME.
+  return { PATH: '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin', HOME: cwd, TMPDIR: cwd, LANG: 'en_US.UTF-8' }
+}
+
+function executionUnavailable(tool: ToolDefinition): string | undefined {
+  if (tool.adapter === 'mcp') {
+    try {
+      if (resolveMcpToolReference(tool, { networkPolicy: networkPolicyFromMetadata(tool.metadata) }).config.transport === 'stdio') return 'MCP stdio requires an isolated tenant worker; host stdio is disabled'
+    } catch { return 'Invalid MCP execution configuration' }
+  }
+  if (tool.adapter !== 'internal') return undefined
+  if (tool.target === 'cli' && !trustedHostExecution()) return 'Local CLI execution requires a trusted sandbox capability; host execution is disabled'
+  if (tool.target === 'pi' && !['read', 'write', 'edit', 'ls'].includes(tool.operation)) return 'Shell and subprocess search tools require an isolated tenant worker; host execution is disabled'
+  if (tool.target === 'browser' && !['open', 'navigate', 'back', 'forward', 'tabs', 'read', 'find', 'screenshot', 'wait'].includes(tool.operation)) return 'Browser file transfer and program execution are disabled'
+  return undefined
+}
+
+async function ownedToolWorkspace(client: PocketBase, cwd: string, context?: ToolExecutionContext): Promise<string> {
+  if (!context?.userId || !context.sessionId || !context.cwd || context.cwd !== cwd) throw new Error('File execution requires an owned session and explicit cwd')
+  const owned = await new ProjectSessionRepository(client).getSessionContext(context.userId, context.sessionId)
+  if (!owned || (context.projectId && context.projectId !== owned.project?.id)) throw new Error('Tool workspace ownership could not be verified')
+  const directory = owned.session.directory || owned.project?.path
+  if (!directory || canonicalProjectPath(cwd) !== canonicalProjectPath(directory)) throw new Error('Tool cwd must exactly match the owned workspace')
+  const root = canonicalProjectPath(directory)
+  assertToolWorkspacePath(root, '.')
+  return root
+}
+
+function guardedFileOperations(root: string) {
+  const guard = (path: string) => assertToolWorkspacePath(root, relative(root, path) || '.')
+  const readFile = async (path: string) => {
+    const file = await open(guard(path), constants.O_RDONLY | constants.O_NOFOLLOW)
+    try {
+      const stat = await file.stat()
+      if (!stat.isFile() || stat.nlink !== 1) throw new Error('Only unlinked regular workspace files are allowed')
+      return await file.readFile()
+    } finally { await file.close() }
+  }
+  const writeFile = async (path: string, content: string) => {
+    const file = await open(guard(path), constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
+    try {
+      const stat = await file.stat()
+      if (!stat.isFile() || stat.nlink !== 1) throw new Error('Only unlinked regular workspace files are allowed')
+      await file.truncate(0)
+      await file.writeFile(content, 'utf8')
+    } finally { await file.close() }
+  }
+  return {
+    readFile, writeFile,
+    access: async (path: string) => access(guard(path)),
+    mkdir: async (path: string) => { await mkdir(guard(path), { recursive: true }); guard(path) },
+    exists: async (path: string) => { const checked = guard(path); try { await access(checked); return true } catch { return false } },
+    stat: async (path: string) => lstat(guard(path)),
+    readdir: async (path: string) => readdir(guard(path)),
+  }
+}
+
 export async function executeCliTool(tool: ToolDefinition, input: unknown, cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const spec = cliMetadata(recordObject(tool.metadata).cli)
   const args = recordObject(input).args
   if (!Array.isArray(args) || args.length > spec.maxArgs || args.some((arg) => !safeCliArgument(arg))) throw new Error('CLI arguments are invalid or exceed the configured limit')
+  if (!trustedHostExecution()) throw new Error('Local CLI execution requires a trusted sandbox capability; host execution is disabled')
   try {
-    const result = await execFileAsync(spec.executable, [...spec.fixedArgs, ...args as string[]], { cwd, shell: false, timeout: spec.timeoutMs, maxBuffer: spec.maxOutputBytes, windowsHide: true })
+    const executable = spec.executable === 'bun' && process.versions.bun ? process.execPath : spec.executable
+    const result = await execFileAsync(executable, [...spec.fixedArgs, ...args as string[]], { cwd, env: trustedSubprocessEnvironment(cwd), shell: false, timeout: spec.timeoutMs, maxBuffer: spec.maxOutputBytes, windowsHide: true })
     return { stdout: String(result.stdout), stderr: String(result.stderr), exitCode: 0 }
   } catch (error) {
     const failure = error as { stdout?: string; stderr?: string; code?: number | string; killed?: boolean }
@@ -947,9 +1085,9 @@ function coreToolDefinition(tool: ToolDefinition): CoreToolDefinition {
   }
 }
 
-async function coreToolDefinitions(client: PocketBase): Promise<CoreToolDefinition[]> {
-  const records = await client.collection('tool_registry').getFullList({ filter: 'enabled = true', sort: 'namespace,tool_id' })
-  return records.map((record) => coreToolDefinition(toTool(record)))
+async function coreToolDefinitions(client: PocketBase, ownerId: string): Promise<CoreToolDefinition[]> {
+  const records = await accessibleToolRecords(client, ownerId)
+  return records.map((record) => toTool(record)).filter((tool) => !executionUnavailable(tool)).map(coreToolDefinition)
 }
 
 export function validateToolInput(input: unknown, definition: CoreToolDefinition): { valid: true } | { valid: false; errors: string[] } {
@@ -1044,7 +1182,7 @@ export type CoreGatewayOptions = {
 }
 
 export async function createCoreToolGateway(client: PocketBase, ownerId: string, options: CoreGatewayOptions = {}): Promise<CoreToolGateway> {
-  const definitions = await coreToolDefinitions(client)
+  const definitions = await coreToolDefinitions(client, ownerId)
   const adapter = createPocketBaseAdapter({
     client: pocketBaseClientPort(client),
     collections: { audits: 'subpolar_tool_audits', callClaims: 'subpolar_call_claims' },
@@ -1062,35 +1200,13 @@ export async function createCoreToolGateway(client: PocketBase, ownerId: string,
     const webTool = coreDefinitionTool(definition)
     const override = context.metadata?.permissionOverride as PermissionOverride | undefined
     const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(ownerId)}" && agent_id = "${escapeFilter(agent.id)}"` })
-    const matching = policies.filter((item) => item.tool_id === definition.id || item.tool_id === '*')
-    const profileEffect = agentProfileToolEffect(agent, definition.id)
-    const mode = toolContextMode(effective, definition.id)
-    if (mode === 'disabled' || matching.some((item) => item.effect === 'deny') || profileEffect === 'deny' || override === 'none' || effective.approval_mode === 'deny') return { deny: true, reason: `Agent is not allowed to use ${definition.id}` }
-    if (profileManagementTools.has(definition.id) && agent.name !== 'master') return { deny: true, reason: 'Agent profile management requires the master agent' }
-    if (toolManagementTools.has(definition.id) && agent.name !== 'master') return { deny: true, reason: 'Registered tool management requires the master agent' }
-    if (cliManagementTools.has(definition.id) && agent.name !== 'master') return { deny: true, reason: 'CLI tool management requires the master agent' }
-    if (definition.id.startsWith('memory/') && !memoryPolicyAllows(effective, definition.id)) return { deny: true, reason: 'Memory is disabled for this agent' }
-    if (definition.id.startsWith('browser/') && (effective.policies.browser !== true || (browserMutationGroups.has(String(webTool.metadata.policyGroup)) && !browserProfileAllows(String(webTool.metadata.policyGroup), agent.template === 'plan' || agent.template === 'reviewer')))) return { deny: true, reason: 'Browser capability is not allowed for this agent' }
-    if (memoryMutationTools.has(definition.id) && (agent.template === 'plan' || agent.template === 'reviewer')) return { deny: true, reason: 'This agent profile is query-only for memory' }
-    const explicitlyPermitted = matching.some((item) => item.effect === 'allow' || item.effect === 'approval') || profileEffect === 'allow' || profileEffect === 'approval'
-    if (override !== 'allow_all' && !explicitlyPermitted && agent.name !== 'master' && !matching.some((item) => item.tool_id === generatedSkillName(definition.id))) return { deny: true, reason: `Agent is not allowed to use ${definition.id}` }
-    const masterWebSearch = agent.name === 'master' && definition.id === 'web.search'
-    const explicitlyAllowed = matching.some((item) => item.effect === 'allow') || profileEffect === 'allow'
-    const explicitlyRequiresApproval = matching.some((item) => item.effect === 'approval') || profileEffect === 'approval'
-    const needsApproval = !masterWebSearch && shouldRequireAgentToolApproval({
-      manualApproval: requiresManualApproval(definition.id, webTool.target),
-      toolRequiresApproval: webTool.requires_approval,
-      explicitlyAllowed,
-      explicitlyRequiresApproval,
-      approvalMode: effective.approval_mode,
-      permissionOverride: override,
-    })
-    return needsApproval ? { requiresApproval: true, allow: true, reason: `${definition.id} requires approval` } : { allow: true }
+    return evaluateAgentToolPolicy(effective, webTool, policies, override)
   }
   const execute: ToolExecutor = async (call, definition, context) => {
     const tool = coreDefinitionTool(definition)
     try {
-      const value = await invokeExternalTool(client, tool, call.input, context.cwd ?? process.cwd(), call.callId, {
+      if (context.principal.id !== ownerId) throw new Error('Tool gateway principal does not match its owner')
+      const value = await invokeExternalTool(client, tool, call.input, context.cwd ?? '', call.callId, {
         userId: context.principal.id,
         agentName: context.metadata?.agentName ?? context.agentId ?? 'master',
         agentId: context.agentId,
@@ -1139,7 +1255,7 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     if (context?.agentName !== 'master' || !context.userId) throw new Error('Registered tool management requires the master agent')
     return manageRegisteredTool(client, tool.operation, input, context.userId)
   }
-  if (tool.target === 'cli' && tool.operation === 'run') return executeCliTool(tool, input, cwd)
+  if (tool.target === 'cli' && tool.operation === 'run') return executeCliTool(tool, input, await ownedToolWorkspace(client, cwd, context))
   if (tool.target === 'web' && tool.operation === 'search') {
     const preferences = context?.userId
       ? await client.collection('user_preferences').getFirstListItem(`user_id = "${escapeFilter(context.userId)}"`).catch(() => null)
@@ -1156,27 +1272,32 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     return webSearch(input as WebSearchInput, { networkPolicy, providers: configuredProviders })
   }
   if (tool.target === 'web' && tool.operation === 'fetch') return webFetch(input as WebFetchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
+  const root = await ownedToolWorkspace(client, cwd, context)
+  const args = recordObject(input)
+  const path = args.path ?? (tool.operation === 'ls' ? '.' : undefined)
+  const checked = assertToolWorkspacePath(root, path)
+  const operations = guardedFileOperations(root)
   const definitions = {
-    read: createReadToolDefinition(cwd),
-    write: createWriteToolDefinition(cwd),
-    edit: createEditToolDefinition(cwd),
-    bash: createBashToolDefinition(cwd),
-    grep: createGrepToolDefinition(cwd),
-    find: createFindToolDefinition(cwd),
-    ls: createLsToolDefinition(cwd),
+    read: createReadToolDefinition(root, { operations }),
+    write: createWriteToolDefinition(root, { operations }),
+    edit: createEditToolDefinition(root, { operations }),
+    ls: createLsToolDefinition(root, { operations }),
   } as const
   const definition = definitions[tool.operation as keyof typeof definitions]
   if (!definition) throw new Error(`Unknown internal tool operation: ${tool.operation}`)
-  return definition.execute(callId, input as never, undefined, undefined, undefined as never)
+  return definition.execute(callId, { ...args, path: checked } as never, undefined, undefined, undefined as never)
 }
 
 export async function invokeExternalTool(client: PocketBase, tool: ToolDefinition, input: unknown, cwd: string, callId: string, context?: ToolExecutionContext): Promise<unknown> {
+  const unavailable = executionUnavailable(tool)
+  if (unavailable) throw new Error(unavailable)
   if (tool.adapter === 'internal') {
     if (['pi', 'memory', 'browser', 'web', 'web-search', 'subagent', 'agent-profiles', 'tool-registry', 'cli'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
     return { routed: true, toolId: tool.tool_id, operation: tool.operation, input }
   }
   if (tool.adapter === 'mcp') {
     const reference: McpToolReference = {
+      owner_id: context?.userId,
       tool_id: tool.tool_id,
       namespace: tool.namespace,
       description: tool.description,
@@ -1184,8 +1305,12 @@ export async function invokeExternalTool(client: PocketBase, tool: ToolDefinitio
       operation: tool.operation,
       metadata: tool.metadata,
     }
+    const defaults = { networkPolicy: networkPolicyFromMetadata(tool.metadata) }
+    const config = resolveMcpToolReference(reference, defaults).config
+    if (Object.values(config.headers ?? {}).some((value) => typeof value !== 'string')) throw new Error('MCP headers cannot reference server environment secrets')
     const timeoutMs = typeof tool.metadata.timeoutMs === 'number' ? tool.metadata.timeoutMs : undefined
-    const result = await mcpAdapter.invoke(reference, input, { timeoutMs })
+    const adapter = createMcpAdapter({ defaults })
+    const result = await adapter.invoke(reference, input, { timeoutMs }).finally(() => adapter.close())
     return {
       content: result.content,
       details: {
@@ -1204,8 +1329,7 @@ export async function invokeExternalTool(client: PocketBase, tool: ToolDefinitio
   for (const [key, value] of Object.entries(headers)) {
     if (typeof value === 'string') requestHeaders[key] = value
     else if (recordObject(value).env && typeof recordObject(value).env === 'string') {
-      const resolved = process.env[String(recordObject(value).env)]
-      if (resolved !== undefined) requestHeaders[key] = resolved
+      throw new Error('Tool headers cannot reference server environment secrets')
     }
   }
   const args = recordObject(input)
@@ -1259,11 +1383,11 @@ function toolUsage(tool: ToolDefinition): string {
   return `subpolar-tools({action: "call", toolId: "${tool.tool_id}", input: {${args}}})`
 }
 
-export async function searchToolsForAgent(client: PocketBase, userId: string, agentName: string, query: string): Promise<Array<{ tool: string; description: string; usage: string }>> {
+export async function searchToolsForAgent(client: PocketBase, userId: string, agentName: string, query: string, projectId?: string, permissionOverride?: PermissionOverride, includeOnDemand = false): Promise<Array<{ tool: string; description: string; usage: string }>> {
   const normalized = query.trim().toLocaleLowerCase()
   if (!normalized) throw new Error('A non-empty query is required')
-  const visible = await listToolsForAgent(client, userId, agentName)
-  const records = await client.collection('tool_registry').getFullList({ filter: 'enabled = true' })
+  const visible = await listToolsForAgent(client, userId, agentName, projectId, includeOnDemand, permissionOverride)
+  const records = await accessibleToolRecords(client, userId)
   const definitions = new Map(records.map((record) => [canonicalToolId(String(record.tool_id), String(record.adapter) as ToolAdapter, String(record.namespace ?? '')), toTool(record)]))
   return visible
     .map((item) => definitions.get(item.id))

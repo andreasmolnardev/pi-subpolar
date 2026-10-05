@@ -17,6 +17,19 @@ function collection(client: PocketBase, name: string) {
   }
 }
 
+function scopedCollection(client: PocketBase, name: string, scope: Record<string, string>) {
+  const records = collection(client, name)
+  const matches = (record: Record<string, unknown>) => Object.entries(scope).every(([key, value]) => record[key] === value)
+  return {
+    async getFirstListItem(query: string, options?: Record<string, unknown>) {
+      const record = await records.getFirstListItem(query, options)
+      if (!matches(record)) throw new Error('Stored record is outside the requested tenant scope')
+      return record
+    },
+    async getFullList(options?: Record<string, unknown>) { return (await records.getFullList(options)).filter(matches) },
+  }
+}
+
 function filter(value: string): string {
   return escapeFilter(value)
 }
@@ -79,12 +92,12 @@ export class PocketBaseRuntimeStore {
   }
 
   async getMessageDelivery(ownerId: string, sessionId: string, messageId: string): Promise<MessageDelivery | null> {
-    const record = await firstOrNull(() => collection(this.client, 'message_deliveries').getFirstListItem(this.deliveryFilter(ownerId, sessionId, messageId)))
+    const record = await firstOrNull(() => scopedCollection(this.client, 'message_deliveries', { owner_id: ownerId, session_id: sessionId, message_id: messageId }).getFirstListItem(this.deliveryFilter(ownerId, sessionId, messageId)))
     return record ? deliveryFromRecord(record) : null
   }
 
   async getLatestPendingMessageDelivery(ownerId: string, sessionId: string): Promise<MessageDelivery | null> {
-    const records = await collection(this.client, 'message_deliveries').getFullList({ filter: `owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}" && state = "pending"`, sort: '-updated_at', batch: 1 })
+    const records = await scopedCollection(this.client, 'message_deliveries', { owner_id: ownerId, session_id: sessionId, state: "pending" }).getFullList({ filter: `owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}" && state = "pending"`, sort: '-updated_at', batch: 1 })
     return records[0] ? deliveryFromRecord(records[0]) : null
   }
 
@@ -109,19 +122,19 @@ export class PocketBaseRuntimeStore {
   async claimMessageDelivery(delivery: MessageDelivery): Promise<MessageDelivery | null> {
     const current = await this.getMessageDelivery(delivery.ownerId, delivery.sessionId, delivery.messageId)
     if (!current || current.state !== 'pending') return null
-    const record = await collection(this.client, 'message_deliveries').getFirstListItem(this.deliveryFilter(delivery.ownerId, delivery.sessionId, delivery.messageId))
+    const record = await scopedCollection(this.client, 'message_deliveries', { owner_id: delivery.ownerId, session_id: delivery.sessionId, message_id: delivery.messageId }).getFirstListItem(this.deliveryFilter(delivery.ownerId, delivery.sessionId, delivery.messageId))
     const updated = await collection(this.client, 'message_deliveries').update(record.id, { state: 'running', updated_at: Date.now() })
     return deliveryFromRecord(updated)
   }
 
   async completeMessageDelivery(delivery: MessageDelivery, response: unknown): Promise<void> {
-    const record = await firstOrNull(() => collection(this.client, 'message_deliveries').getFirstListItem(this.deliveryFilter(delivery.ownerId, delivery.sessionId, delivery.messageId)))
+    const record = await firstOrNull(() => scopedCollection(this.client, 'message_deliveries', { owner_id: delivery.ownerId, session_id: delivery.sessionId, message_id: delivery.messageId }).getFirstListItem(this.deliveryFilter(delivery.ownerId, delivery.sessionId, delivery.messageId)))
     if (!record) return
     await collection(this.client, 'message_deliveries').update(record.id, { state: 'completed', response: redactSensitive(response), updated_at: Date.now() })
   }
 
   async interruptMessageDelivery(delivery: MessageDelivery): Promise<void> {
-    const record = await firstOrNull(() => collection(this.client, 'message_deliveries').getFirstListItem(this.deliveryFilter(delivery.ownerId, delivery.sessionId, delivery.messageId)))
+    const record = await firstOrNull(() => scopedCollection(this.client, 'message_deliveries', { owner_id: delivery.ownerId, session_id: delivery.sessionId, message_id: delivery.messageId }).getFirstListItem(this.deliveryFilter(delivery.ownerId, delivery.sessionId, delivery.messageId)))
     if (!record) return
     await collection(this.client, 'message_deliveries').update(record.id, { state: 'interrupted', updated_at: Date.now() })
   }
@@ -131,19 +144,19 @@ export class PocketBaseRuntimeStore {
   }
 
   async reserveQueueEntry(ownerId: string, sessionId: string, clientId: string, content: string, kind: QueueEntryKind): Promise<{ entry: QueueEntry; created: boolean }> {
-    const existing = await firstOrNull(() => collection(this.client, 'message_queue').getFirstListItem(this.queueFilter(ownerId, sessionId, clientId)))
+    const existing = await firstOrNull(() => scopedCollection(this.client, 'message_queue', { owner_id: ownerId, session_id: sessionId, client_id: clientId }).getFirstListItem(this.queueFilter(ownerId, sessionId, clientId)))
     if (existing) {
       const entry = queueFromRecord(existing)
       if (entry.content !== content || entry.kind !== kind) throw new Error('QUEUE_ID_REUSED')
       return { entry, created: false }
     }
-    const current = await collection(this.client, 'message_queue').getFullList({ filter: `owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}"`, sort: '-position', batch: 1 })
+    const current = await scopedCollection(this.client, 'message_queue', { owner_id: ownerId, session_id: sessionId }).getFullList({ filter: `owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}"`, sort: '-position', batch: 1 })
     const position = current[0] ? Number(current[0].position) + 1 : 0
     try {
       const record = await collection(this.client, 'message_queue').create({ owner_id: ownerId, session_id: sessionId, client_id: clientId, content, kind, state: kind === 'steering' ? 'steering' : 'enqueued', position, created_at: Date.now(), updated_at: Date.now() })
       return { entry: queueFromRecord(record), created: true }
     } catch {
-      const raced = await collection(this.client, 'message_queue').getFirstListItem(this.queueFilter(ownerId, sessionId, clientId))
+      const raced = await scopedCollection(this.client, 'message_queue', { owner_id: ownerId, session_id: sessionId, client_id: clientId }).getFirstListItem(this.queueFilter(ownerId, sessionId, clientId))
       const entry = queueFromRecord(raced)
       if (entry.content !== content || entry.kind !== kind) throw new Error('QUEUE_ID_REUSED')
       return { entry, created: false }
@@ -151,12 +164,12 @@ export class PocketBaseRuntimeStore {
   }
 
   async listQueueEntries(ownerId: string, sessionId: string): Promise<QueueEntry[]> {
-    const records = await collection(this.client, 'message_queue').getFullList({ filter: `owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}" && (state = "steering" || state = "enqueued" || state = "failed")`, sort: 'position,created_at' })
+    const records = await scopedCollection(this.client, 'message_queue', { owner_id: ownerId, session_id: sessionId }).getFullList({ filter: `owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}" && (state = "steering" || state = "enqueued" || state = "failed")`, sort: 'position,created_at' })
     return records.map(queueFromRecord)
   }
 
   async updateQueueEntry(ownerId: string, sessionId: string, clientId: string, state: QueueEntryState, error?: string): Promise<QueueEntry | null> {
-    const record = await firstOrNull(() => collection(this.client, 'message_queue').getFirstListItem(this.queueFilter(ownerId, sessionId, clientId)))
+    const record = await firstOrNull(() => scopedCollection(this.client, 'message_queue', { owner_id: ownerId, session_id: sessionId, client_id: clientId }).getFirstListItem(this.queueFilter(ownerId, sessionId, clientId)))
     if (!record) return null
     const current = queueFromRecord(record)
     if (!queueTransitionAllowed(current.kind, current.state, state)) throw new QueueEntryTransitionError(current.kind, current.state, state)
@@ -165,37 +178,37 @@ export class PocketBaseRuntimeStore {
   }
 
   async claimQueueEntry(ownerId: string, sessionId: string, clientId: string): Promise<QueueEntry | null> {
-    const record = await firstOrNull(() => collection(this.client, 'message_queue').getFirstListItem(`${this.queueFilter(ownerId, sessionId, clientId)} && kind = "follow_up" && state = "enqueued"`))
+    const record = await firstOrNull(() => scopedCollection(this.client, 'message_queue', { owner_id: ownerId, session_id: sessionId, client_id: clientId }).getFirstListItem(`${this.queueFilter(ownerId, sessionId, clientId)} && kind = "follow_up" && state = "enqueued"`))
     if (!record) return null
     return queueFromRecord(await collection(this.client, 'message_queue').update(record.id, { state: 'steering', error: '', updated_at: Date.now() }))
   }
 
   async reorderQueueEntry(ownerId: string, sessionId: string, clientId: string, position: number): Promise<QueueEntry | null> {
-    const record = await firstOrNull(() => collection(this.client, 'message_queue').getFirstListItem(`${this.queueFilter(ownerId, sessionId, clientId)} && state = "enqueued"`))
+    const record = await firstOrNull(() => scopedCollection(this.client, 'message_queue', { owner_id: ownerId, session_id: sessionId, client_id: clientId }).getFirstListItem(`${this.queueFilter(ownerId, sessionId, clientId)} && state = "enqueued"`))
     if (!record) return null
     return queueFromRecord(await collection(this.client, 'message_queue').update(record.id, { position: Math.max(0, Math.floor(position)), updated_at: Date.now() }))
   }
 
   async clearQueue(ownerId: string, sessionId: string): Promise<void> {
-    const records = await collection(this.client, 'message_queue').getFullList({ filter: `owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}" && (state = "enqueued" || state = "failed")` })
+    const records = await scopedCollection(this.client, 'message_queue', { owner_id: ownerId, session_id: sessionId }).getFullList({ filter: `owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}" && (state = "enqueued" || state = "failed")` })
     await Promise.all(records.map((record) => collection(this.client, 'message_queue').update(record.id, { state: 'cancelled', updated_at: Date.now() })))
   }
 
   async reserveRuntimeRun(ownerId: string, sessionId: string, runId: string, requestId?: string): Promise<{ run: RuntimeRun; created: boolean }> {
     const runFilter = `owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}" && run_id = "${filter(runId)}"`
-    const existing = await firstOrNull(() => collection(this.client, 'runtime_runs').getFirstListItem(runFilter))
+    const existing = await firstOrNull(() => scopedCollection(this.client, 'runtime_runs', { owner_id: ownerId, session_id: sessionId, run_id: runId }).getFirstListItem(runFilter))
     if (existing) return { run: runtimeFromRecord(existing), created: false }
     try {
       const created = await collection(this.client, 'runtime_runs').create({ owner_id: ownerId, session_id: sessionId, run_id: runId, request_id: requestId ?? '', state: 'starting', created_at: Date.now(), updated_at: Date.now() })
       return { run: runtimeFromRecord(created), created: true }
     } catch {
-      const raced = await collection(this.client, 'runtime_runs').getFirstListItem(runFilter)
+      const raced = await scopedCollection(this.client, 'runtime_runs', { owner_id: ownerId, session_id: sessionId, run_id: runId }).getFirstListItem(runFilter)
       return { run: runtimeFromRecord(raced), created: false }
     }
   }
 
   async updateRuntimeRun(ownerId: string, sessionId: string, runId: string, state: RuntimeRunState, error?: unknown): Promise<RuntimeRun | null> {
-    const record = await firstOrNull(() => collection(this.client, 'runtime_runs').getFirstListItem(`owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}" && run_id = "${filter(runId)}"`))
+    const record = await firstOrNull(() => scopedCollection(this.client, 'runtime_runs', { owner_id: ownerId, session_id: sessionId, run_id: runId }).getFirstListItem(`owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}" && run_id = "${filter(runId)}"`))
     if (!record) return null
     return runtimeFromRecord(await collection(this.client, 'runtime_runs').update(record.id, { state, error: error instanceof Error ? error.message.slice(0, 1000) : '', updated_at: Date.now() }))
   }
@@ -227,7 +240,7 @@ export class PocketBaseRuntimeStore {
     const safe = redactSensitive(value)
     let payload = JSON.stringify(safe)
     if (payload.length > 64 * 1024) payload = JSON.stringify({ type: 'event.redacted', properties: { reason: 'payload_too_large' } })
-    const latest = await collection(this.client, 'durable_events').getFullList({ filter: `owner_id = "${filter(ownerId)}"`, sort: '-cursor', batch: 1 })
+    const latest = await scopedCollection(this.client, 'durable_events', { owner_id: ownerId }).getFullList({ filter: `owner_id = "${filter(ownerId)}"`, sort: '-cursor', batch: 1 })
     const cursor = latest[0] ? Number(latest[0].cursor) + 1 : 1
     const record = await collection(this.client, 'durable_events').create({ owner_id: ownerId, cursor, session_id: sessionId ?? '', type: typeof (safe as { type?: unknown })?.type === 'string' ? (safe as { type: string }).type : 'event', payload: JSON.parse(payload), occurred_at: Date.now(), payload_bytes: payload.length })
     await this.pruneEvents(ownerId)
@@ -236,8 +249,8 @@ export class PocketBaseRuntimeStore {
 
   async replayEvents(ownerId: string, afterValue: string | null | undefined): Promise<{ events: DurableEventRecord[]; reset: boolean; resetCursor: number | null }> {
     const after = afterValue && /^\d+$/.test(afterValue) ? Number(afterValue) : 0
-    const records = await collection(this.client, 'durable_events').getFullList({ filter: `owner_id = "${filter(ownerId)}" && cursor > ${after}`, sort: 'cursor' })
-    const oldest = await collection(this.client, 'durable_events').getFullList({ filter: `owner_id = "${filter(ownerId)}"`, sort: 'cursor', batch: 1 })
+    const records = await scopedCollection(this.client, 'durable_events', { owner_id: ownerId }).getFullList({ filter: `owner_id = "${filter(ownerId)}" && cursor > ${after}`, sort: 'cursor' })
+    const oldest = await scopedCollection(this.client, 'durable_events', { owner_id: ownerId }).getFullList({ filter: `owner_id = "${filter(ownerId)}"`, sort: 'cursor', batch: 1 })
     const oldestCursor = oldest[0] ? Number(oldest[0].cursor) : null
     const reset = Boolean(afterValue && oldestCursor !== null && after < oldestCursor - 1)
     const from = reset && oldestCursor !== null ? oldestCursor - 1 : after
@@ -246,7 +259,7 @@ export class PocketBaseRuntimeStore {
   }
 
   private async pruneEvents(ownerId: string): Promise<void> {
-    const records = await collection(this.client, 'durable_events').getFullList({ filter: `owner_id = "${filter(ownerId)}"`, sort: '-cursor' })
+    const records = await scopedCollection(this.client, 'durable_events', { owner_id: ownerId }).getFullList({ filter: `owner_id = "${filter(ownerId)}"`, sort: '-cursor' })
     for (const record of records.slice(5000)) await collection(this.client, 'durable_events').delete(record.id)
   }
 }

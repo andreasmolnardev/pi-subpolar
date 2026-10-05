@@ -1,7 +1,10 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useEffect, useMemo, useState, useCallback, type ReactNode } from 'react'
+import { createContext, useEffect, useMemo, useState, useCallback, useRef, Fragment, type ReactNode } from 'react'
 import { signUp, signIn, signOut, fetchSession, onAuthChange, getCurrentUser, type AuthUser } from '@/lib/auth-client'
 import { useNavigate, useLocation } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
+import { onIdentityCleanup, useAuthGeneration } from '@/stores/authIdentityStore'
+
 
 interface AuthConfig {
   enabledProviders: string[]
@@ -34,8 +37,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [isConfigLoading, setIsConfigLoading] = useState(true)
   const [config, setConfig] = useState<AuthConfig | null>(null)
+  const generation = useAuthGeneration()
+  const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
+  const locationRef = useRef(location)
+  locationRef.current = location
+  const ownerRef = useRef(user?.id ?? null)
 
   const refreshSession = useCallback(async () => {
     const result = await fetchSession()
@@ -71,17 +79,37 @@ export function AuthProvider({ children }: AuthProviderProps) {
       if (mounted) setIsLoading(false)
     }
 
+    const stopCleanup = onIdentityCleanup(() => {
+      void queryClient.cancelQueries()
+      // Clearing the mutation cache alone does not stop its pending callbacks.
+      for (const mutation of queryClient.getMutationCache().getAll()) {
+        mutation.setOptions({ ...mutation.options, onSuccess: undefined, onError: undefined, onSettled: undefined })
+      }
+      queryClient.clear()
+    })
     void initialize()
 
     const unsubscribe = onAuthChange((newUser) => {
-      if (mounted) setUser(newUser)
+      if (!mounted) return
+      const nextOwner = newUser?.id ?? null
+      if (ownerRef.current !== nextOwner) {
+        const current = locationRef.current
+        const state = current.state as Record<string, unknown> | null
+        if (state && 'pendingPrompt' in state) {
+          const { pendingPrompt: _pendingPrompt, ...rest } = state
+          navigate(current.pathname + current.search, { replace: true, state: rest })
+        }
+      }
+      ownerRef.current = nextOwner
+      setUser(newUser)
     })
 
     return () => {
       mounted = false
       unsubscribe?.()
+      stopCleanup()
     }
-  }, [refreshSession])
+  }, [refreshSession, queryClient, navigate])
 
   const signInWithEmail = useCallback(async (email: string, password: string) => {
     try {
@@ -107,10 +135,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, [navigate])
 
   const logout = useCallback(async () => {
-    await signOut()
-    setUser(null)
-    window.location.href = '/login'
-  }, [])
+    try {
+      await signOut()
+    } finally {
+      setUser(null)
+      navigate('/login', { replace: true })
+    }
+  }, [navigate])
 
   const value = useMemo<AuthContextValue>(() => ({
     user,
@@ -134,7 +165,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   return (
     <AuthContext.Provider value={value}>
-      {children}
+      <Fragment key={generation}>{children}</Fragment>
     </AuthContext.Provider>
   )
 }

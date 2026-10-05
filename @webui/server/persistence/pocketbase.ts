@@ -571,7 +571,8 @@ function escapeFilter(value: string): string {
 
 export async function getUserPreferences(client: PocketBase, userId: string): Promise<UserPreferencesRecord | null> {
   const safe = escapeFilter(userId)
-  return await client.collection('user_preferences').getFirstListItem(`user_id = "${safe}"`).catch(() => null) as UserPreferencesRecord | null
+  const record = await client.collection('user_preferences').getFirstListItem(`user_id = "${safe}"`).catch(() => null) as UserPreferencesRecord | null
+  return record?.user_id === userId ? record : null
 }
 
 export async function saveUserPreferences(client: PocketBase, userId: string, preferences: Record<string, unknown>): Promise<UserPreferencesRecord> {

@@ -1,5 +1,31 @@
-import { dirname, relative, resolve, sep } from 'node:path'
-import { realpathSync } from 'node:fs'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { lstatSync, realpathSync } from 'node:fs'
+
+// Application guard, not an OS sandbox: parent-directory replacement still needs
+// worker-level isolation when another process can mutate the workspace.
+export function assertToolWorkspacePath(root: string, value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value.includes('\0') || isAbsolute(value) || /^[a-zA-Z]:|^[~@\\\\]/.test(value)) {
+    throw new Error('Tool paths must be relative to the owned workspace')
+  }
+  const absoluteRoot = resolve(root)
+  const candidate = resolve(absoluteRoot, value)
+  const child = relative(absoluteRoot, candidate)
+  if (child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)) throw new Error('Tool path is outside the owned workspace')
+  let current = absoluteRoot
+  for (const component of ['', ...child.split(sep).filter(Boolean)]) {
+    if (component) current = resolve(current, component)
+    try {
+      const stat = lstatSync(current)
+      if (stat.isSymbolicLink()) throw new Error('Symbolic links are not allowed in tool paths')
+      if (!stat.isDirectory() && !stat.isFile()) throw new Error('Only regular files and directories are allowed')
+      if (stat.isFile() && stat.nlink > 1) throw new Error('Hard-linked files are not allowed in tool paths')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  }
+  if (!isPathWithin(absoluteRoot, candidate)) throw new Error('Tool path is outside the owned workspace')
+  return candidate
+}
 
 export function configuredWorkspaceRoot(): string {
   return resolve(process.env.SUBPOLAR_PROJECTS_ROOT ?? `${process.env.HOME ?? '.'}/.subpolar`)

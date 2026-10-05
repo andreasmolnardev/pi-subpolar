@@ -55,8 +55,9 @@ function recordToCredential(record: GatewayRecord): GatewayCredential {
 }
 
 export function publicGatewayCredential(credential: GatewayCredential): Omit<GatewayCredential, 'revokedAt'> & { revoked: boolean } {
-  const { revokedAt, ...safe } = credential
-  return { ...safe, revoked: revokedAt !== undefined }
+  // Whitelist fields: callers must not be able to project a stored hash/token.
+  const safe = recordToCredential({ id: credential.id, owner_id: credential.ownerId, principal: credential.principal, prefix: credential.prefix, permissions: credential.permissions, project_ids: credential.scope.projectIds, agent_names: credential.scope.agentNames, session_ids: credential.scope.sessionIds, created_at: credential.createdAt, expires_at: credential.expiresAt, last_used_at: credential.lastUsedAt })
+  return { ...safe, revoked: credential.revokedAt !== undefined }
 }
 
 export function hashGatewaySecret(secret: string): string { return hash(secret) }
@@ -74,7 +75,7 @@ export async function createGatewayCredential(client: PocketBase, input: { owner
 
 export async function listGatewayCredentials(client: PocketBase, ownerId: string): Promise<GatewayCredential[]> {
   const records = await client.collection(collectionName).getFullList({ filter: `owner_id = "${ownerId.replaceAll('"', '\\"')}"`, sort: '-created_at' }) as unknown as GatewayRecord[]
-  return records.map(recordToCredential)
+  return records.filter(record => record.owner_id === ownerId).map(recordToCredential)
 }
 
 export async function revokeGatewayCredential(client: PocketBase, ownerId: string, id: string): Promise<boolean> {
@@ -98,7 +99,7 @@ export async function authenticateGatewayCredential(client: PocketBase, token: s
   if (!value.startsWith(tokenPrefix)) throw new GatewayAuthError('GATEWAY_TOKEN_INVALID', 'Invalid scoped gateway token')
   const prefix = value.slice(0, 22)
   const record = await client.collection(collectionName).getFirstListItem(`prefix = "${prefix}"`).catch(() => null) as unknown as GatewayRecord | null
-  if (!record) throw new GatewayAuthError('GATEWAY_TOKEN_INVALID', 'Invalid scoped gateway token')
+  if (!record || record.prefix !== prefix || typeof record.owner_id !== 'string' || !record.owner_id.trim()) throw new GatewayAuthError('GATEWAY_TOKEN_INVALID', 'Invalid scoped gateway token')
   const expected = Buffer.from(String(record.secret_hash), 'hex')
   const actual = Buffer.from(hash(value), 'hex')
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw new GatewayAuthError('GATEWAY_TOKEN_INVALID', 'Invalid scoped gateway token')

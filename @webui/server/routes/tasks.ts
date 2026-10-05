@@ -10,7 +10,7 @@ export async function handleTasksRoute(context: BridgeRequestContext): Promise<R
     try {
       if (path.length === 2 && request.method === 'GET') {
         const states = url.searchParams.getAll('state').filter((value): value is TaskState => ['draft', 'queued', 'running', 'waiting_for_input', 'waiting_for_approval', 'review_required', 'failed', 'completed', 'cancelled'].includes(value))
-        return deps.json({ tasks: await tasks.listOwned(authenticatedUser.id, states) })
+        return deps.json({ tasks: (await tasks.listOwned(authenticatedUser.id, states)).filter(task => task.owner_id === authenticatedUser.id && (!states.length || states.includes(task.state))) })
       }
       if (path.length === 2 && request.method === 'POST') {
         const input = deps.object(await deps.body(request)); const title = typeof input.title === 'string' ? input.title.trim() : ''
@@ -65,11 +65,11 @@ export async function handleTasksRoute(context: BridgeRequestContext): Promise<R
       if (path.length === 3 && request.method === 'GET') {
         return deps.json({ task: ownedTask })
       }
-      if (path.length === 4 && path[3] === 'activity' && request.method === 'GET') return deps.json({ activity: await tasks.listActivity(authenticatedUser.id, taskId) })
-      if (path.length === 4 && path[3] === 'audit' && request.method === 'GET') return deps.json({ audit: await tasks.listAudit(authenticatedUser.id, taskId) })
+      if (path.length === 4 && path[3] === 'activity' && request.method === 'GET') return deps.json({ activity: (await tasks.listActivity(authenticatedUser.id, taskId)).filter(row => row.owner_id === authenticatedUser.id && row.task_id === taskId) })
+      if (path.length === 4 && path[3] === 'audit' && request.method === 'GET') return deps.json({ audit: (await tasks.listAudit(authenticatedUser.id, taskId)).filter(row => row.owner_id === authenticatedUser.id && row.task_id === taskId) })
       if (path.length === 4 && path[3] === 'worktree' && request.method === 'GET') {
         const worktree = await (await deps.applicationDatabase()).collection('task_worktrees').getFirstListItem(`owner_id = "${deps.escapeFilter(authenticatedUser.id)}" && task_id = "${deps.escapeFilter(taskId)}"`).catch(() => null)
-        return worktree ? deps.json({ worktree }) : deps.json({ error: { code: 'WORKTREE_NOT_FOUND', message: 'Worktree not found' } }, 404)
+        return worktree?.owner_id === authenticatedUser.id && worktree.task_id === taskId ? deps.json({ worktree }) : deps.json({ error: { code: 'WORKTREE_NOT_FOUND', message: 'Worktree not found' } }, 404)
       }
       if (path.length === 4 && path[3] === 'cancel' && request.method === 'POST') {
         if (deps.subagentController) return deps.json({ task: await deps.subagentController.cancel(authenticatedUser.id, taskId) })

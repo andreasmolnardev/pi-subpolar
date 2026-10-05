@@ -20,6 +20,8 @@ export type SessionRecord = {
 export type ProjectRecord = {
   name: string
   path: string
+  /** Owner-bound stores may omit this for synthetic projects such as General Chat. */
+  userId?: string
 }
 
 export type AgentRecord = {
@@ -94,6 +96,7 @@ export type SessionContextErrorCode =
   | 'SESSION_PROJECT_MISMATCH'
   | 'SESSION_CWD_MISMATCH'
   | 'PROJECT_NOT_FOUND'
+  | 'PROJECT_NOT_OWNED'
   | 'PROJECT_DIRECTORY_MISMATCH'
   | 'INVALID_PROJECT_DIRECTORY'
   | 'INVALID_SESSION_DIRECTORY'
@@ -184,6 +187,9 @@ export class SessionContextResolver {
     if (!storedProject || storedProject.name !== projectName || !nonBlank(storedProject.path)) {
       throw new SessionContextError('PROJECT_NOT_FOUND', 'Project was not found')
     }
+    if (storedProject.userId !== undefined && storedProject.userId !== userId) {
+      throw new SessionContextError('PROJECT_NOT_OWNED', 'Project was not found')
+    }
     const projectDirectory = await this.path(storedProject.path, 'INVALID_PROJECT_DIRECTORY')
 
     const requestedProjectDirectory = oneStringAlias(request, ['projectDirectory', 'projectPath'], 'projectDirectory')
@@ -218,6 +224,9 @@ export class SessionContextResolver {
     }
     if (!nonBlank(agent.id) || !nonBlank(agent.name)) {
       throw new SessionContextError('INVALID_AGENT', 'Agent record is invalid')
+    }
+    if (!matchesAgentSelector(agentSelector, agent.name, agent)) {
+      throw new SessionContextError(session?.profile ? 'SESSION_AGENT_MISMATCH' : 'INVALID_AGENT', 'Resolved agent does not match the selected agent')
     }
     if (agent.enabled === false) {
       throw new SessionContextError('AGENT_DISABLED', 'Agent is disabled')

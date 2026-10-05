@@ -62,10 +62,12 @@ export async function handleExtensionsRoute(context: BridgeRequestContext): Prom
       const sessionId = url.searchParams.get('sessionId')
       const session = sessionId ? await deps.ownedSessionRecord(client, authenticatedUser.id, sessionId) : null
       if (sessionId && !session) return deps.json({ message: 'Session not found' }, 404)
-      const agentName = sessionId && session
-        ? (await deps.resolveToolSessionContext(client, authenticatedUser.id, sessionId)).agentName
-        : 'master'
-      const tools = await deps.listToolsForAgent(client, authenticatedUser.id, agentName)
+      const toolContext = sessionId && session
+        ? await deps.resolveToolSessionContext(client, authenticatedUser.id, sessionId)
+        : undefined
+      const projectId = toolContext?.project?.id ?? session?.projectId
+      const permissionOverride = toolContext?.permission?.source === 'default' ? undefined : toolContext?.permissionOverride
+      const tools = await deps.listToolsForAgent(client, authenticatedUser.id, toolContext?.agentName ?? 'master', projectId, true, permissionOverride)
       return deps.json({ tools, ...(sessionId && session ? { commands: await deps.sendRpc(sessionId, { type: 'get_commands' }, session) } : {}) })
     } catch (error) { console.warn(`Tool registry request failed: ${deps.redactedDiagnostic(error)}`); return deps.json({ message: 'Tool registry unavailable' }, 503) }
   }
@@ -143,6 +145,9 @@ export async function handleExtensionsRoute(context: BridgeRequestContext): Prom
     }
   }
 
-  if (path[1] === 'extensions' && path[2] === 'openapi-tools' && request.method === 'GET') return deps.json({ providers: deps.openApiProviders() })
+  if (path[1] === 'extensions' && path[2] === 'openapi-tools' && request.method === 'GET') {
+    if (!authenticatedUser) return deps.json({ message: 'Unauthorized' }, 401)
+    return deps.json({ providers: deps.openApiProviders() })
+  }
   return undefined
 }

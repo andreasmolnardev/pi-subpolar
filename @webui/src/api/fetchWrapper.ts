@@ -1,3 +1,5 @@
+import { assertAuthGeneration, getAuthGeneration, onIdentityCleanup } from '@/stores/authIdentityStore'
+
 export class FetchError extends Error {
   readonly statusCode?: number
   readonly code?: string
@@ -102,33 +104,43 @@ async function fetchWithTimeout(
   const { timeout = 30000, params, ...fetchOptions } = options
   const urlObj = buildUrl(url, params)
 
+  const generation = getAuthGeneration()
   const controller = new AbortController()
+  const stopCleanup = onIdentityCleanup(() => controller.abort())
   const timeoutId = timeout > 0 ? setTimeout(() => controller.abort(), timeout) : null
   const onAbort = () => controller.abort()
+  if (fetchOptions.signal?.aborted) controller.abort()
   fetchOptions.signal?.addEventListener('abort', onAbort, { once: true })
 
   try {
     const response = await fetch(urlObj.toString(), {
       credentials: 'include',
       ...fetchOptions,
+      cache: 'no-store',
       signal: controller.signal,
     })
 
     if (timeoutId) clearTimeout(timeoutId)
     fetchOptions.signal?.removeEventListener('abort', onAbort)
 
+    assertAuthGeneration(generation)
     if (!response.ok) {
       await handleResponse(response)
     }
 
     return response
   } catch (error) {
+    assertAuthGeneration(generation)
     if (timeoutId) clearTimeout(timeoutId)
     fetchOptions.signal?.removeEventListener('abort', onAbort)
     if (error instanceof Error && error.name === 'AbortError') {
       throw new FetchError('Request timeout', 408, 'TIMEOUT')
     }
     throw error
+  } finally {
+    stopCleanup()
+    if (timeoutId) clearTimeout(timeoutId)
+    fetchOptions.signal?.removeEventListener('abort', onAbort)
   }
 }
 
@@ -136,28 +148,37 @@ async function fetchWrapper<T = unknown>(
   url: string,
   options: FetchWrapperOptions = {}
 ): Promise<T> {
+  const generation = getAuthGeneration()
   const response = await fetchWithTimeout(url, options)
-
+  let data: T
   try {
-    return await response.json()
+    data = await response.json()
   } catch {
+    assertAuthGeneration(generation)
     throw new FetchError('Invalid JSON response', response.status, 'INVALID_JSON')
   }
+  assertAuthGeneration(generation)
+  return data
 }
 
 async function fetchWrapperVoid(
   url: string,
   options: FetchWrapperOptions = {}
 ): Promise<void> {
+  const generation = getAuthGeneration()
   await fetchWithTimeout(url, options)
+  assertAuthGeneration(generation)
 }
 
 async function fetchWrapperBlob(
   url: string,
   options: FetchWrapperOptions = {}
 ): Promise<Blob> {
+  const generation = getAuthGeneration()
   const response = await fetchWithTimeout(url, options)
-  return response.blob()
+  const blob = await response.blob()
+  assertAuthGeneration(generation)
+  return blob
 }
 
 export { fetchWrapper, fetchWrapperVoid, fetchWrapperBlob }

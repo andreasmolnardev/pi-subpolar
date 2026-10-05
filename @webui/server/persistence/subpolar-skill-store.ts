@@ -10,7 +10,7 @@ import type {
   SkillRepository,
   UpdateSkillInput,
 } from '../../../packages/subpolar-contracts/src/index.ts'
-import { SkillNotFoundError } from '../../../packages/subpolar-contracts/src/index.ts'
+import { SkillConflictError, SkillNotFoundError } from '../../../packages/subpolar-contracts/src/index.ts'
 
 function collection(client: PocketBase, name: string): PocketBaseCollectionPort {
   const records = client.collection(name)
@@ -52,13 +52,17 @@ export function createOwnerBoundSkillStore(client: PocketBase, ownerId: string):
     resolve: async (owner, input) => repository.resolve(scoped(owner), input),
     async delete(id, input = {}) {
       const records = await heads.getFullList() as unknown as Array<RecordModel & Record<string, unknown>>
-      const head = records.find((record) => record.ownerId === ownerId && record.skillId === id &&
-        (input.scope === undefined || record.scope === input.scope) &&
-        (input.agentId === undefined || record.agentId === input.agentId) &&
-        (input.projectId === undefined || record.projectId === input.projectId))
+      const skill = await repository.get(ownerId, id, { ...input, version: undefined })
+      const matches = records.filter((record) => record.ownerId === ownerId && record.skillId === skill.id &&
+        record.scope === skill.scope && (record.agentId ?? undefined) === skill.agentId && (record.projectId ?? undefined) === skill.projectId)
+      if (matches.length > 1) throw new SkillConflictError('skill selector is ambiguous')
+      const head = matches[0]
       if (!head) throw new SkillNotFoundError(`skill ${id} was not found for owner ${ownerId}`)
-      const historical = await versions.getFullList({ filter: `ownerId = "${ownerId}" && skillHeadId = "${head.id}"` })
-      for (const version of historical) await versions.delete(version.id)
+      const historical = await versions.getFullList()
+      for (const version of historical) {
+        if (version.ownerId === ownerId && version.skillHeadId === head.id && version.skillId === skill.id &&
+          version.scope === skill.scope && (version.agentId ?? undefined) === skill.agentId && (version.projectId ?? undefined) === skill.projectId) await versions.delete(version.id)
+      }
       await heads.delete(head.id)
     },
   }

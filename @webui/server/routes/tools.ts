@@ -2,6 +2,20 @@
 // @ts-nocheck
 import type { BridgeRequestContext } from '../bridge-route-context.ts'
 
+async function ownedGatewaySession(deps: any, client: any, userId: string, sessionId?: string) {
+  if (!sessionId) return null
+  const session = await deps.createProjectSessionRepository(client).getSessionById(sessionId)
+  return session?.userId === userId ? session : null
+}
+
+function sessionScope(session: any, agentName?: string) {
+  return {
+    agentName: agentName ?? session?.profile ?? 'master',
+    ...(session ? { sessionId: session.id } : {}),
+    ...(session?.projectId ? { projectId: String(session.projectId) } : {}),
+  }
+}
+
 export async function handleToolsRoute(context: BridgeRequestContext): Promise<Response | undefined> {
   const { request, url, path, correlationId, deps, gatewayCredential, internalRequest } = context
   let authenticatedUser = context.authenticatedUser
@@ -18,7 +32,8 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
       const agentName = typeof input.agentName === 'string' ? input.agentName : 'master'
 
       if (path[3] === 'register') {
-        if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'add', { agentName, ...(typeof input.projectId === 'string' ? { projectId: input.projectId } : {}) })
+        // Registration mutates a global registry, not a project/session resource.
+                if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'add', {})
         else if (!internalRequest) return deps.json({ error: { code: 'GATEWAY_PERMISSION_DENIED', message: 'Tool registration requires an authorized gateway credential' } }, 403)
         if (typeof input.toolId !== 'string' || typeof input.namespace !== 'string' || typeof input.description !== 'string') return deps.json({ error: 'toolId, namespace, and description are required' }, 400)
         const adapter = input.adapter === 'http' || input.adapter === 'openapi' || input.adapter === 'mcp' ? input.adapter : 'internal'
@@ -40,30 +55,35 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
         return deps.json({ tool })
       }
 
-      if (path[3] === 'list') {
-        if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'list', { agentName })
-        const sessionId = typeof input.sessionId === 'string' && input.sessionId.trim() ? input.sessionId : undefined
-        const session = sessionId ? await deps.createProjectSessionRepository(client).getSessionById(sessionId) : null
-        if (sessionId && (!session || session.userId !== userId)) return deps.json({ error: 'Session not found' }, 404)
-        return deps.json({ tools: await deps.listToolsForAgent(client, userId, session?.profile ?? agentName, session?.projectId ? String(session.projectId) : undefined, true) })
+      const sessionId = typeof input.sessionId === 'string' && input.sessionId.trim() ? input.sessionId : undefined
+      const session = await ownedGatewaySession(deps, client, userId, sessionId)
+      if (sessionId && !session) return deps.json({ error: 'Session not found' }, 404)
+      if (['list', 'search', 'describe'].includes(path[3])) {
+        const resolved = session ? await deps.resolveToolSessionContext(client, userId, session.id) : undefined
+        const discoveryAgent = resolved?.agentName ?? agentName
+        const projectId = resolved?.project?.id ?? session?.projectId
+        const discoveryProject = projectId ? String(projectId) : undefined
+        const permissionOverride = resolved && resolved.permission.source !== 'default' ? resolved.permissionOverride : undefined
+        const discoveryPermission = { list: 'list', search: 'query', describe: 'describe' }[path[3]]
+        if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, discoveryPermission, { ...sessionScope(session, discoveryAgent), ...(discoveryProject ? { projectId: discoveryProject } : {}) })
+        if (path[3] === 'list') {
+          return deps.json({ tools: await deps.listToolsForAgent(client, userId, discoveryAgent, discoveryProject, true, permissionOverride) })
+        }
+        if (path[3] === 'search') {
+          if (typeof input.query !== 'string' || !input.query.trim()) return deps.json({ error: 'A non-empty query is required' }, 400)
+          const tools = await deps.searchToolsForAgent(client, userId, discoveryAgent, input.query, discoveryProject, permissionOverride)
+          return deps.json({ tools, columns: ['tool', 'description', 'usage'] })
+        }
+        if (typeof input.toolId === 'string') {
+          return deps.json({ tool: await deps.describeToolForAgent(client, userId, discoveryAgent, input.toolId, discoveryProject, permissionOverride) })
+        }
       }
-      if (path[3] === 'search') {
-        if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'query', { agentName })
-        if (typeof input.query !== 'string' || !input.query.trim()) return deps.json({ error: 'A non-empty query is required' }, 400)
-        const tools = await deps.searchToolsForAgent(client, userId, agentName, input.query)
-        return deps.json({ tools, columns: ['tool', 'description', 'usage'] })
-      }
-      if (path[3] === 'describe' && typeof input.toolId === 'string') {
-        if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'describe', { agentName })
-        return deps.json({ tool: await deps.describeToolForAgent(client, userId, agentName, input.toolId) })
-      }
+      const effectiveAgentName = session?.profile ?? agentName
+      const operationPermission = { call: 'call', continue: 'approvals' }[path[3]]
+      if (gatewayCredential && operationPermission) deps.assertGatewayAccess(gatewayCredential, operationPermission, sessionScope(session, effectiveAgentName))
       if (path[3] === 'call' && typeof input.toolId === 'string') {
-        const sessionId = typeof input.sessionId === 'string' && input.sessionId.trim() ? input.sessionId : undefined
-        if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'call', { agentName, ...(sessionId ? { sessionId } : {}) })
         if (!sessionId || userId === 'system') return deps.json({ error: 'A valid sessionId is required for tool execution' }, 400)
-        const persistedSession = await deps.createProjectSessionRepository(client).getSessionById(sessionId)
-        if (!persistedSession || persistedSession.userId !== userId) return deps.json({ error: 'Session not found' }, 404)
-        if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'call', { agentName, sessionId, ...(persistedSession.projectId ? { projectId: persistedSession.projectId } : {}) })
+        const persistedSession = session
         const executionUserId = persistedSession.userId
         if (authenticatedUser && authenticatedUser.id !== executionUserId) return deps.json({ error: 'Session not found' }, 404)
         if (typeof input.userId === 'string' && input.userId !== executionUserId) return deps.json({ error: 'Identity assertion does not match the session owner' }, 403)
@@ -71,6 +91,7 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
         if (requestedOverride === null) return deps.json({ error: 'Invalid permission override' }, 400)
         const context = await deps.resolveToolSessionContext(client, executionUserId, sessionId, typeof input.agentName === 'string' ? input.agentName : undefined)
         if (requestedOverride !== undefined && requestedOverride !== context.permissionOverride) return deps.json({ error: 'Permission override does not match the persisted session policy' }, 403)
+        if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'call', sessionScope(session, context.agentName))
         const callId = typeof input.callId === 'string' && input.callId.trim() ? input.callId : crypto.randomUUID()
         const gateway = await deps.createCoreToolGateway(client, executionUserId, {
           onApproval: (approval: any) => {
@@ -101,13 +122,12 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
          return deps.json(deps.redactSensitive(result), result.ok || result.status !== 'approval_required' ? 200 : 202)
       }
       if (path[3] === 'continue' && typeof input.approvalId === 'string') {
-        if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'approvals', { ...(typeof input.sessionId === 'string' ? { sessionId: input.sessionId } : {}) })
         if (userId === 'system') return deps.json({ error: 'An authenticated user is required' }, 401)
-        const sessionId = typeof input.sessionId === 'string' ? input.sessionId : undefined
-        const session = sessionId ? await deps.createProjectSessionRepository(client).getSessionById(sessionId) : null
-        if (session && session.userId !== userId) return deps.json({ error: 'Session not found' }, 404)
         if (!sessionId || !session) return deps.json({ error: 'An owned session is required' }, 404)
-        const result = await deps.continueCoreApprovedTool(client, session.userId, input.approvalId, { sessionId: session.id, cwd: session.directory, agentName, projectId: typeof input.projectId === 'string' ? input.projectId : undefined, callId: typeof input.callId === 'string' ? input.callId : undefined })
+        const persistedContext = await deps.resolveToolSessionContext(client, userId, sessionId)
+        if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'approvals', sessionScope(session, persistedContext.agentName))
+        // Keep the approval's original call identity; a new caller ID must not bypass its claim.
+        const result = await deps.continueCoreApprovedTool(client, userId, input.approvalId, { sessionId: session.id, cwd: persistedContext.cwd, agentName: persistedContext.agentName, projectId: session.projectId ? String(session.projectId) : undefined, ...(persistedContext.permission.source === 'default' ? {} : { permissionOverride: persistedContext.permissionOverride }) })
          return deps.json(deps.redactSensitive(result), 'approvalRequired' in result && result.approvalRequired ? 202 : 200)
       }
       return deps.json({ error: 'Unknown tool gateway operation' }, 404)
@@ -125,23 +145,24 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
   }
 
   if (path[1] === 'permission' && request.method === 'GET') {
-    if (gatewayCredential) {
-      const denied = (() => { try { deps.assertGatewayAccess(gatewayCredential!, 'approvals', { ...(url.searchParams.get('sessionId') ? { sessionId: url.searchParams.get('sessionId')! } : {}) }); return null } catch (error) { return deps.gatewayErrorResponse(error) } })()
-      if (denied) return denied
-    }
     const permissionUserId = authenticatedUser?.id ?? gatewayCredential?.ownerId
     if (!permissionUserId) return deps.json({ message: 'Unauthorized' }, 401)
     try {
-      const approvals = await deps.listPendingCoreApprovals(await deps.applicationDatabase(), permissionUserId, url.searchParams.get('sessionId') ?? undefined)
-      return deps.json(approvals.map((approval) => deps.permissionAskedProperties({ id: approval.id, sessionId: approval.session_id, toolId: approval.tool_id, input: approval.input, reason: approval.reason })))
-    } catch (error) { console.warn(`Approval store request failed: ${deps.redactedDiagnostic(error)}`); return deps.json({ message: 'Approval store unavailable' }, 503) }
+      const client = await deps.applicationDatabase()
+      const sessionId = url.searchParams.get('sessionId') || undefined
+      const session = await ownedGatewaySession(deps, client, permissionUserId, sessionId)
+      if (sessionId && !session) return deps.json({ message: 'Session not found' }, 404)
+      if (gatewayCredential) deps.assertGatewayAccess(gatewayCredential, 'approvals', sessionScope(session))
+      const approvals = await deps.listPendingCoreApprovals(client, permissionUserId, sessionId)
+      return deps.json(deps.redactSensitive(approvals.map((approval) => deps.permissionAskedProperties({ id: approval.id, sessionId: approval.session_id, toolId: approval.tool_id, input: approval.input, reason: approval.reason }))))
+    } catch (error) {
+      if (error instanceof deps.GatewayAuthError) return deps.gatewayErrorResponse(error)
+      console.warn(`Approval store request failed: ${deps.redactedDiagnostic(error)}`)
+      return deps.json({ message: 'Approval store unavailable' }, 503)
+    }
   }
 
   if (path[1] === 'session' && path[3] === 'permissions' && path[4] && request.method === 'POST') {
-    if (gatewayCredential) {
-      const denied = deps.gatewayErrorResponse((() => { try { deps.assertGatewayAccess(gatewayCredential!, 'approvals', { sessionId: decodeURIComponent(path[2] ?? '') }); return null } catch (error) { return error } })())
-      if (denied) return denied
-    }
     const permissionUserId = authenticatedUser?.id ?? gatewayCredential?.ownerId
     if (!permissionUserId) return deps.json({ message: 'Unauthorized' }, 401)
     const input = await deps.body(request)
@@ -150,20 +171,26 @@ export async function handleToolsRoute(context: BridgeRequestContext): Promise<R
       return deps.json({ message: 'Approval response must be approve or reject' }, 400)
     }
     const decision = responseValue === 'once' || responseValue === 'always' ? 'approve' : responseValue
-    const approved = decision === true || decision === 'approve' || decision === 'approved'
+
     const sessionId = decodeURIComponent(path[2] ?? '')
     if (!sessionId) return deps.json({ message: 'Session not found' }, 404)
     const client = await deps.applicationDatabase()
+    const session = await ownedGatewaySession(deps, client, permissionUserId, sessionId)
+    if (!session) return deps.json({ message: 'Session not found' }, 404)
+    if (gatewayCredential) {
+      try { deps.assertGatewayAccess(gatewayCredential, 'approvals', sessionScope(session)) }
+      catch (error) { return deps.gatewayErrorResponse(error) }
+    }
     const approvalId = decodeURIComponent(path[4])
     const waiting = deps.hasPendingApprovalWaiter(approvalId)
     const approval = await deps.respondToCoreApproval(client, permissionUserId, approvalId, decision, sessionId)
     if (!approval) return deps.json({ message: 'Approval not found' }, 404)
-    deps.notifyApprovalResolution(approval.id, approved ? 'approved' : 'rejected')
-    if (!approved || waiting) return deps.json({ ok: true, approval })
-    const session = await deps.createProjectSessionRepository(client).getSession(permissionUserId, sessionId)
-    if (!session) return deps.json({ ok: true, approval, result: { ok: false, error: { code: 'SESSION_NOT_FOUND', message: 'Session not found' } } }, 404)
-    const result = await deps.continueCoreApprovedTool(client, permissionUserId, approval.id, { sessionId: session.id, cwd: session.directory, agentName: session.profile, projectId: session.projectId ? String(session.projectId) : undefined })
-    return deps.json({ ok: true, approval, result })
+    const approved = approval.status === 'approved'
+    if (approved || approval.status === 'rejected') deps.notifyApprovalResolution(approval.id, approved ? 'approved' : 'rejected')
+    if (!approved || waiting) return deps.json(deps.redactSensitive({ ok: true, approval }))
+    const persistedContext = await deps.resolveToolSessionContext(client, permissionUserId, sessionId)
+    const result = await deps.continueCoreApprovedTool(client, permissionUserId, approval.id, { sessionId: session.id, cwd: persistedContext.cwd, agentName: persistedContext.agentName, projectId: session.projectId ? String(session.projectId) : undefined, ...(persistedContext.permission.source === 'default' ? {} : { permissionOverride: persistedContext.permissionOverride }) })
+    return deps.json(deps.redactSensitive({ ok: true, approval, result }))
   }
   return undefined
 }

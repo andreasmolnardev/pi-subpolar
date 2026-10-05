@@ -40,6 +40,23 @@ const routeHandlers: RouteHandler[] = [
   handleExtensionsRoute,
 ]
 
+// This is a principal boundary, not an execution permission policy. Each
+// supported handler still enforces its operation permission and resource scope.
+function supportsGatewayPrincipal(request: Request, url: URL): boolean {
+  const pathname = url.pathname
+  if (request.method === 'POST') {
+    return /^\/api\/subpolar-cli\/tools\/(list|search|describe|register|call|continue)$/.test(pathname)
+      || /^\/api\/session\/[^/]+\/permissions\/[^/]+$/.test(pathname)
+      || pathname === '/api/stt/transcribe' || pathname === '/api/tts/synthesize'
+  }
+  if (request.method === 'GET') {
+    return pathname === '/api/permission' || pathname === '/api/sse/stream'
+      || /^\/api\/(stt|tts)\/(status|models)$/.test(pathname)
+      || pathname === '/api/tts/voices'
+  }
+  return false
+}
+
 export function createBridgeRequestHandler(deps: BridgeRequestDependencies) {
   return async function handle(request: Request, correlationId = deps.requestId(request)): Promise<Response> {
     const url = new URL(request.url)
@@ -59,12 +76,18 @@ export function createBridgeRequestHandler(deps: BridgeRequestDependencies) {
       || path[1] === 'auth-info'
       || (path[1] === 'v1' && (path[2] === 'capabilities' || path[2] === 'health'))
     )
-    const internalRequest = request.headers.get('authorization') === `Bearer ${deps.internalToken}`
+    const internalRequest = Boolean(deps.internalToken) && request.headers.get('authorization') === `Bearer ${deps.internalToken}`
+    // An installation token is not a tenant principal. Never infer an owner from
+    // an arbitrary session id on browser/runtime/provider routes.
+    if (internalRequest && !supportsGatewayPrincipal(request, url)) {
+      return deps.json({ error: { code: 'INTERNAL_ROUTE_DENIED', message: 'This route requires an authenticated tenant principal' } }, 403)
+    }
     let gatewayCredential: any = null
     const authorization = request.headers.get('authorization') ?? ''
-    if (authorization.startsWith('Bearer subpolar_gw_')) {
+    if (!internalRequest && authorization.startsWith('Bearer subpolar_gw_')) {
       try {
         gatewayCredential = await deps.authenticateGatewayCredential(await deps.applicationDatabase(), authorization.slice('Bearer '.length))
+                if (!gatewayCredential) throw new deps.GatewayAuthError('GATEWAY_TOKEN_INVALID', 'Invalid gateway credential')
       } catch (error: any) {
         if (error instanceof deps.GatewayAuthError) {
           const status = error.code === 'GATEWAY_TOKEN_REQUIRED' || error.code === 'GATEWAY_TOKEN_INVALID' ? 401 : 403
@@ -72,6 +95,10 @@ export function createBridgeRequestHandler(deps: BridgeRequestDependencies) {
         }
         return deps.json({ error: { code: 'GATEWAY_AUTH_UNAVAILABLE', message: 'Gateway authentication unavailable' } }, 503)
       }
+    }
+
+    if (gatewayCredential && !internalRequest && !supportsGatewayPrincipal(request, url)) {
+      return deps.json({ error: { code: 'GATEWAY_ROUTE_DENIED', message: 'This route does not support gateway credentials' } }, 403)
     }
 
     let authenticatedUser: any = null

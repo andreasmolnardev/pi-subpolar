@@ -26,7 +26,10 @@ export type BrowserContext = { ownerId: string; projectId?: string; sessionId?: 
 export const BROWSER_POLICY_GROUPS = ['read', 'navigation', 'form-interaction', 'upload', 'download', 'submit', 'destructive'] as const
 export type BrowserPolicyGroup = (typeof BROWSER_POLICY_GROUPS)[number]
 export function browserProfileAllows(group: string, readOnly: boolean): boolean { return !readOnly || group === 'read' || group === 'navigation' }
+/** Each sessionId is an opaque owner/scope lease, not a durable database id.
+ * Implementations must isolate cookies, storage and authentication per lease. */
 export type BrowserPort = {
+  close?(sessionId: string): Promise<void>
   open(sessionId: string, url: string, limits: BrowserLimits): Promise<BrowserTab>
   navigate(sessionId: string, tabId: string, url: string, limits: BrowserLimits): Promise<BrowserTab>
   back(sessionId: string, tabId: string): Promise<BrowserTab>
@@ -132,6 +135,7 @@ export class FakeBrowserPort implements BrowserPort {
     pages.set(tabId, { tab, history: old ? [...old.history.slice(0, old.cursor + 1), tab] : [tab], cursor: old ? old.cursor + 1 : 0 })
     return tab
   }
+  async close(sessionId: string) { this.pages.delete(sessionId) }
   async open(sessionId: string, url: string, limits: BrowserLimits) { const pages = this.store(sessionId); const id = `tab-${pages.size + 1}`; return this.load(sessionId, id, url, limits) }
   async navigate(sessionId: string, tabId: string, url: string, limits: BrowserLimits) { if (!this.store(sessionId).has(tabId)) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Tab not found'); return this.load(sessionId, tabId, url, limits) }
   async back(sessionId: string, tabId: string) { const item = this.store(sessionId).get(tabId); if (!item || item.cursor < 1) throw new BrowserRuntimeError('BROWSER_INVALID_INPUT', 'No previous page is available'); item.cursor--; item.tab = item.history[item.cursor]!; return item.tab }
@@ -156,32 +160,35 @@ export class BrowserSessionService {
   private async audit(ownerId: string, sessionId: string, action: string, details: Record<string, unknown> = {}) { await this.auditCollection().create({ owner_id: ownerId, browser_session_id: sessionId, action, details: sanitizeAuditValue(details), created_at: this.now() }) }
   private record(value: Record<string, unknown>): BrowserSession { const tabs = Array.isArray(value.tabs) ? value.tabs as BrowserTab[] : []; return { id: String(value.id), owner_id: String(value.owner_id), ...(typeof value.project_id === 'string' && value.project_id ? { project_id: value.project_id } : {}), ...(typeof value.session_id === 'string' && value.session_id ? { session_id: value.session_id } : {}), ...(typeof value.task_id === 'string' && value.task_id ? { task_id: value.task_id } : {}), lifecycle: value.lifecycle === 'closed' ? 'closed' : 'open', ...(typeof value.current_tab_id === 'string' ? { current_tab_id: value.current_tab_id } : {}), ...(typeof value.current_url === 'string' ? { current_url: browserAuditUrl(value.current_url) } : {}), tabs: tabs.map((tab) => ({ ...tab, url: browserAuditUrl(tab.url) })), limits: safeLimits((value.limits ?? {}) as Partial<BrowserLimits>), created_at: Number(value.created_at), updated_at: Number(value.updated_at), ...(typeof value.closed_at === 'number' ? { closed_at: value.closed_at } : {}) } }
   private tabMetadata(tabs: BrowserTab[]): BrowserTabMetadata[] { return tabs.map(({ text: _text, ...metadata }) => ({ ...metadata, url: browserAuditUrl(metadata.url) })) }
+  private lease(session: BrowserSession): string { return JSON.stringify([session.owner_id, session.project_id ?? null, session.session_id ?? null, session.task_id ?? null, session.id]) }
   private scopesMatch(context: BrowserContext, session: BrowserSession): boolean { return session.project_id === context.projectId && session.session_id === context.sessionId && session.task_id === context.taskId }
   private async owned(context: BrowserContext, id: string): Promise<BrowserSession> { const item = await this.collection().getOne(id).catch(() => null); if (!item || String(item.owner_id) !== context.ownerId) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Browser session is not owned by the requested context'); const session = this.record(item); if (!this.scopesMatch(context, session)) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Browser session is not owned by the requested context'); if (session.lifecycle !== 'open') throw new BrowserRuntimeError('BROWSER_SESSION_CLOSED', 'Browser session is closed'); return session }
-  private async assertScope(context: BrowserContext): Promise<void> { if (context.projectId) { const project = await this.client.collection('projects').getOne(context.projectId).catch(() => null); if (!project || String(project.user_id) !== context.ownerId) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Project is not owned by the requesting user') } if (context.sessionId) { const session = await this.client.collection('sessions').getFirstListItem(`user_id = "${context.ownerId.replaceAll('"', '\\"')}" && session_id = "${context.sessionId.replaceAll('"', '\\"')}"`).catch(() => null); if (!session || (context.projectId !== undefined && String(session.project_id ?? '') !== context.projectId)) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Pi session is not owned by the requesting user') } if (context.taskId) { const task = await this.client.collection('tasks').getOne(context.taskId).catch(() => null); if (!task || String(task.owner_id) !== context.ownerId || (context.projectId !== undefined && String(task.project_id ?? '') !== context.projectId) || (context.sessionId !== undefined && String(task.session_id ?? '') !== context.sessionId)) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Task is not owned by the requested context') } }
+  private async assertScope(context: BrowserContext): Promise<void> { if (context.projectId) { const project = await this.client.collection('projects').getOne(context.projectId).catch(() => null); if (!project || String(project.user_id) !== context.ownerId) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Project is not owned by the requesting user') } if (context.sessionId) { const session = await this.client.collection('sessions').getFirstListItem(`user_id = "${context.ownerId.replaceAll('"', '\\"')}" && session_id = "${context.sessionId.replaceAll('"', '\\"')}"`).catch(() => null); if (!session || session.user_id !== context.ownerId || session.session_id !== context.sessionId || (context.projectId !== undefined && String(session.project_id ?? '') !== context.projectId)) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Pi session is not owned by the requesting user') } if (context.taskId) { const task = await this.client.collection('tasks').getOne(context.taskId).catch(() => null); if (!task || String(task.owner_id) !== context.ownerId || (context.projectId !== undefined && String(task.project_id ?? '') !== context.projectId) || (context.sessionId !== undefined && String(task.session_id ?? '') !== context.sessionId)) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Task is not owned by the requested context') } }
   async create(context: BrowserContext, limits?: Partial<BrowserLimits>): Promise<BrowserSession> { if (!context.ownerId.trim()) throw new BrowserRuntimeError('BROWSER_INVALID_INPUT', 'Browser session owner is required'); await this.assertScope(context); const now = this.now(); const session = this.record(await this.collection().create({ owner_id: context.ownerId, ...(context.projectId ? { project_id: context.projectId } : {}), ...(context.sessionId ? { session_id: context.sessionId } : {}), ...(context.taskId ? { task_id: context.taskId } : {}), lifecycle: 'open', tabs: [], limits: safeLimits(limits), created_at: now, updated_at: now })); await this.audit(context.ownerId, session.id, 'session.create', { project_id: session.project_id, session_id: session.session_id, task_id: session.task_id }); return session }
-  async list(context: BrowserContext) { const items = await this.collection().getFullList({ filter: `owner_id = "${context.ownerId.replaceAll('"', '\\"')}"`, sort: '-created_at' }); return items.map((item) => this.record(item)).filter((item) => this.scopesMatch(context, item)) }
+  async list(context: BrowserContext) { const items = await this.collection().getFullList({ filter: `owner_id = "${context.ownerId.replaceAll('"', '\\"')}"`, sort: '-created_at' }); return items.filter((item) => item.owner_id === context.ownerId).map((item) => this.record(item)).filter((item) => this.scopesMatch(context, item)) }
   async get(context: BrowserContext, id: string) { return this.owned(context, id) }
-  async close(context: BrowserContext, id: string) { await this.owned(context, id); const closed = this.record(await this.collection().update(id, { lifecycle: 'closed', closed_at: this.now(), updated_at: this.now() })); await this.audit(context.ownerId, id, 'session.close'); return closed }
+  async close(context: BrowserContext, id: string) { const session = await this.owned(context, id); const closed = this.record(await this.collection().update(id, { lifecycle: 'closed', closed_at: this.now(), updated_at: this.now() })); await this.port.close?.(this.lease(session)); await this.audit(context.ownerId, id, 'session.close'); return closed }
   async execute(context: BrowserContext, operation: string, input: Record<string, unknown>): Promise<unknown> {
     const session = await this.owned({ ...context, ...(typeof input.taskId === 'string' ? { taskId: input.taskId } : {}) }, String(input.browserSessionId ?? '')); const limits = session.limits; const tabId = typeof input.tabId === 'string' ? input.tabId : session.current_tab_id
+    await this.assertScope({ ownerId: session.owner_id, projectId: session.project_id, sessionId: session.session_id, taskId: session.task_id })
+    const lease = this.lease(session)
     let result: unknown
     if (operation === 'open') {
-      const existingTabs = await this.port.tabs(session.id)
+      const existingTabs = await this.port.tabs(lease)
       if (existingTabs.length >= limits.maxTabs) throw new BrowserRuntimeError('BROWSER_LIMIT', `Browser tab limit ${limits.maxTabs} exceeded`)
-      result = await this.port.open(session.id, String(input.url ?? ''), limits)
+      result = await this.port.open(lease, String(input.url ?? ''), limits)
     }
-    else if (operation === 'navigate') result = await this.port.navigate(session.id, String(tabId ?? ''), String(input.url ?? ''), limits)
-    else if (operation === 'back') result = await this.port.back(session.id, String(tabId ?? ''))
-    else if (operation === 'forward') result = await this.port.forward(session.id, String(tabId ?? ''))
-    else if (operation === 'tabs') result = await this.port.tabs(session.id)
-    else if (operation === 'read') result = await this.port.read(session.id, tabId, limits.maxTextBytes)
-    else if (operation === 'find') result = await this.port.find(session.id, String(input.query ?? ''), tabId)
-    else if (operation === 'screenshot') result = await this.port.screenshot(session.id, tabId)
-    else if (operation === 'wait') { const milliseconds = Math.min(Math.max(Math.trunc(Number(input.milliseconds ?? 250)), 0), limits.timeoutMs); result = await this.port.wait(session.id, milliseconds) }
+    else if (operation === 'navigate') result = await this.port.navigate(lease, String(tabId ?? ''), String(input.url ?? ''), limits)
+    else if (operation === 'back') result = await this.port.back(lease, String(tabId ?? ''))
+    else if (operation === 'forward') result = await this.port.forward(lease, String(tabId ?? ''))
+    else if (operation === 'tabs') result = await this.port.tabs(lease)
+    else if (operation === 'read') result = await this.port.read(lease, tabId, limits.maxTextBytes)
+    else if (operation === 'find') result = await this.port.find(lease, String(input.query ?? ''), tabId)
+    else if (operation === 'screenshot') result = await this.port.screenshot(lease, tabId)
+    else if (operation === 'wait') { const milliseconds = Math.min(Math.max(Math.trunc(Number(input.milliseconds ?? 250)), 0), limits.timeoutMs); result = await this.port.wait(lease, milliseconds) }
     else throw new BrowserRuntimeError('BROWSER_INVALID_INPUT', `Unknown browser operation: ${operation}`)
     if (result && typeof result === 'object' && 'text' in result && typeof result.text === 'string') result = { ...result, text: truncateUtf8(result.text, limits.maxTextBytes) }
-    const tabs = await this.port.tabs(session.id).catch(() => [])
+    const tabs = await this.port.tabs(lease).catch(() => [])
     if (tabs.length > limits.maxTabs) throw new BrowserRuntimeError('BROWSER_LIMIT', `Browser tab limit ${limits.maxTabs} exceeded`)
     const current = result && typeof result === 'object' && 'id' in result ? result as BrowserTab : undefined
     await this.collection().update(session.id, { tabs: this.tabMetadata(tabs), ...(current ? { current_tab_id: current.id, current_url: current.url } : {}), updated_at: this.now() })

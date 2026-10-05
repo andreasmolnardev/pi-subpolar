@@ -122,11 +122,11 @@ describe('resolveNewSessionRoute', () => {
           collection: (name: string) => ({
             getFullList: async () => name === 'tool_registry'
               ? [
-                  { tool_id: 'read', namespace: 'builtin', enabled: true },
-                  { tool_id: 'acme/search', namespace: 'acme', enabled: true },
-                  { tool_id: 'other/private', namespace: 'other', enabled: true },
+                  { tool_id: 'read', namespace: 'builtin', owner_id: '', enabled: true },
+                  { tool_id: 'acme/search', namespace: 'acme', owner_id: 'owner-a', enabled: true },
+                  { tool_id: 'other/private', namespace: 'other', owner_id: 'owner-b', enabled: true },
                 ]
-              : [{ tool_id: 'acme/search', effect: 'allow' }],
+              : [{ user_id: 'owner-a', agent_id: 'master-id', tool_id: 'acme/search', effect: 'allow' }],
           }),
         }),
         json: (body: unknown, status = 200) => Response.json(body, { status }),

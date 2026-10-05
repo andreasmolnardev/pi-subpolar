@@ -98,8 +98,15 @@ describe('secure tool registry validation', () => {
     const created = await manageRegisteredTool(client, 'create-cli', { tool_id: 'local/bun-version', namespace: 'local', description: 'Bun version', executable: 'bun', fixed_args: ['--version'], max_args: 0 }, 'u1') as Record<string, unknown>
     expect(created.requires_approval).toBe(true)
     expect((created.metadata as Record<string, unknown>).cli).toMatchObject({ executable: 'bun', maxArgs: 0 })
-    await expect(executeCliTool(created as never, { args: [';touch'] }, process.cwd())).rejects.toThrow('invalid')
-    await expect(executeCliTool(created as never, { args: [] }, process.cwd())).resolves.toMatchObject({ exitCode: 0 })
+    const previousTrusted = process.env.SUBPOLAR_TRUSTED_HOST_EXECUTION
+    delete process.env.SUBPOLAR_TRUSTED_HOST_EXECUTION
+    try {
+      await expect(executeCliTool(created as never, { args: [';touch'] }, process.cwd())).rejects.toThrow('invalid')
+      await expect(executeCliTool(created as never, { args: [] }, process.cwd())).rejects.toThrow('host execution is disabled')
+    } finally {
+      if (previousTrusted === undefined) delete process.env.SUBPOLAR_TRUSTED_HOST_EXECUTION
+      else process.env.SUBPOLAR_TRUSTED_HOST_EXECUTION = previousTrusted
+    }
     expect(requiresManualApproval('local/bun-version', 'cli')).toBe(true)
     expect(requiresManualApproval('create_cli_tool', 'tool-registry')).toBe(true)
     expect(requiresManualApproval('read', 'pi')).toBe(false)

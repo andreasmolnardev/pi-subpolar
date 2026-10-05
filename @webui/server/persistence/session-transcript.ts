@@ -46,7 +46,7 @@ export class SessionTranscriptRepository {
     const record = await collection(this.client)
       .getFirstListItem(`owner_id = "${value(ownerId)}" && session_id = "${value(sessionId)}"`)
       .catch(() => null)
-    return record ? transcriptFromRecord(record) : null
+    return record?.owner_id === ownerId && record.session_id === sessionId ? transcriptFromRecord(record) : null
   }
 
   async list(ownerId: string): Promise<SessionTranscript[]> {
@@ -54,7 +54,7 @@ export class SessionTranscriptRepository {
       filter: `owner_id = "${value(ownerId)}"`,
       sort: '-updated_at',
     })
-    return records.map(transcriptFromRecord)
+    return records.filter(record => record.owner_id === ownerId).map(transcriptFromRecord)
   }
 
   async save(ownerId: string, sessionId: string, entries: readonly unknown[], leafId: string | null): Promise<SessionTranscript> {
@@ -67,9 +67,9 @@ export class SessionTranscriptRepository {
       leaf_id: leafId ?? '',
       updated_at: Date.now(),
     }
-    const record = current
-      ? await collection(this.client).update((await collection(this.client).getFirstListItem(`owner_id = "${value(ownerId)}" && session_id = "${value(sessionId)}"`)).id, data)
-      : await collection(this.client).create(data)
+    const stored = current ? await collection(this.client).getFirstListItem(`owner_id = "${value(ownerId)}" && session_id = "${value(sessionId)}"`) : null
+    if (stored && (stored.owner_id !== ownerId || stored.session_id !== sessionId)) throw new Error('Transcript scope changed')
+    const record = stored ? await collection(this.client).update(stored.id, data) : await collection(this.client).create(data)
     return transcriptFromRecord(record)
   }
 }

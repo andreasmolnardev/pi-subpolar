@@ -21,14 +21,15 @@ describe('agent debug tool listing', () => {
         json: (body: unknown, status = 200) => Response.json(body, { status }),
         applicationDatabase: async () => ({}),
         ensureUserMetadata: async () => {},
-        createProjectSessionRepository: () => ({ getSessionById: async () => ({ id: 'session-1', userId: 'owner-1', projectId: 'project-1' }) }),
+        createProjectSessionRepository: () => ({ getSessionById: async () => ({ id: 'session-1', userId: 'owner-1', projectId: 'project-1', profile: 'researcher' }) }),
+                resolveToolSessionContext: async () => ({ sessionId: 'session-1', agentName: 'researcher', project: { id: 'project-1' }, permissionOverride: 'ask', permission: { source: 'session' } }),
         listToolsForAgent,
       },
     } as never)
 
     expect(response?.status).toBe(200)
     await expect(response?.json()).resolves.toMatchObject({ tools: [{ id: 'web.search' }] })
-    expect(listToolsForAgent).toHaveBeenCalledWith({}, 'owner-1', 'researcher', 'project-1', true)
+    expect(listToolsForAgent).toHaveBeenCalledWith({}, 'owner-1', 'researcher', 'project-1', true, 'ask')
   })
 
   it('does not list tools for sessions owned by another user', async () => {
