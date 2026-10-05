@@ -13,7 +13,7 @@ The only prop is `sessionId: string`. The component handles fetching, the launch
 and a portal-rendered, nonmodal right-hand panel. No parent callbacks or layout
 changes are required. The panel is full-width on small screens and bounded on desktop;
 Escape inside the panel or its close button closes it and restores launcher focus.
-Tabs support arrow keys, Home, and End. The Browser tab is currently a GitHub/Gitee provider context view: it can browse bounded, read-only repository branches, issues, issue comments, pull requests, and checks through an explicitly mapped repository and connected owner account. It can add issue text to the current composer or start an `ask`-permission session from an issue. It does not provide interactive website browsing; the server-side browser and persistent website profiles remain future work.
+Tabs support arrow keys, Home, and End. The Browser tab is currently a GitHub/Gitee provider context view: it can browse bounded, read-only repository branches, issues/comments, pull requests/discussion comments, and checks through an explicitly mapped repository and connected owner account. It can add issue text to the current composer or start an `ask`-permission session from an issue. It does not provide interactive website browsing; the server-side browser and persistent website profiles remain future work.
 
 Workspace polling uses `useSessionStatusForSession`: every 4 seconds while busy,
 compacting, or retrying; every 10 seconds while the panel is open and idle. Status
