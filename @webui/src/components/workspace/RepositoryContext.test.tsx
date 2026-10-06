@@ -38,7 +38,7 @@ beforeEach(() => {
 describe('RepositoryContext provider browsing', () => {
   it('shows an explicit unavailable state and never guesses mapping from local remotes', async () => {
     const view = mount()
-    expect(await screen.findByText(/no supported GitHub or Gitee remote identity/)).toBeInTheDocument()
+    expect(await screen.findByText(/no supported GitHub or Gitea remote identity/)).toBeInTheDocument()
     expect(mocks.accounts).not.toHaveBeenCalled()
     expect(mocks.issues).not.toHaveBeenCalled()
     view.unmount()
@@ -73,7 +73,7 @@ describe('RepositoryContext provider browsing', () => {
   it('auto-selects one matching account, requires a choice for multiple, and stays unavailable without one', async () => {
     mocks.sources.mockResolvedValue({ repositoryId: 'durable-id', providerRepository: identity, repository: { head: 'local-head' }, branches: [], remotes: [] })
     mocks.accounts.mockResolvedValue({ accounts: [
-      { id: 'gitee-account', provider: 'gitee', username: 'team', displayName: 'Gitee team', status: 'connected' },
+      { id: 'gitea-account', provider: 'gitea', username: 'team', displayName: 'Gitea team', status: 'connected' },
       { id: 'provider-account', provider: 'github', username: 'octo', displayName: 'Octo', status: 'connected' },
       { id: 'disabled-account', provider: 'github', username: 'old', displayName: 'Disabled', status: 'disabled' },
     ] })
@@ -95,7 +95,7 @@ describe('RepositoryContext provider browsing', () => {
     expect(mocks.issues).toHaveBeenCalledWith({ ...mapping, accountId: 'second-account' })
     multiple.unmount()
 
-    mocks.accounts.mockResolvedValue({ accounts: [{ id: 'gitee-account', provider: 'gitee', username: 'team', displayName: 'Gitee team', status: 'connected' }] })
+    mocks.accounts.mockResolvedValue({ accounts: [{ id: 'gitea-account', provider: 'gitea', username: 'team', displayName: 'Gitea team', status: 'connected' }] })
     mocks.issues.mockClear()
     const none = mount('no-provider-account')
     expect(await screen.findByText(/no connected github account/)).toBeInTheDocument()

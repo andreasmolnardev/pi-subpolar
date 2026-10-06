@@ -17,12 +17,12 @@ type MigrationOptions = { now?: () => number; encryptionKeyAvailable?: () => boo
 
 const migrationFailure = () => new Error('Legacy Git credential migration could not be completed')
 
-type Provider = 'github' | 'gitee'
+type Provider = 'github'
 const providerForHost = (value: unknown): Provider | undefined => {
   if (typeof value !== 'string') return undefined
   const host = value.trim().toLowerCase()
   if (host === 'github.com' || host === 'https://github.com' || host === 'https://github.com/') return 'github'
-  if (host === 'gitee.com' || host === 'https://gitee.com' || host === 'https://gitee.com/') return 'gitee'
+
   return undefined
 }
 
@@ -64,7 +64,7 @@ function preferenceCollection(client: PocketBase) {
 
 /**
  * Eagerly migrates the former preference-embedded Git secrets for every owner.
- * Only PATs with an exact GitHub.com/Gitee.com host mapping are retained, and
+ * Only PATs with an exact GitHub.com host mapping are retained, and
  * those are written through ProviderAccountService's encrypted credential path.
  * Unsupported or invalid legacy entries are removed with count-only status recorded per owner.
  * Supported PAT sources remain untouched unless encrypted persistence succeeds.

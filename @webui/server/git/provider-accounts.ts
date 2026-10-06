@@ -21,7 +21,7 @@ export type GitProviderAccountsOptions = {
 
 const PROVIDERS: Record<GitProviderId, { apiHost: string; webHost: string }> = {
   github: { apiHost: 'api.github.com', webHost: 'github.com' },
-  gitee: { apiHost: 'gitee.com', webHost: 'gitee.com' },
+  gitea: { apiHost: 'gitea.com', webHost: 'gitea.com' },
 }
 const CAPABILITIES: GitProviderCapabilities = Object.freeze({ repoMetadata: true, branches: true, issues: true, comments: true, pullRequests: true, statuses: true, createPullRequest: false })
 const safeString = (value: unknown): string => typeof value === 'string' ? value.slice(0, 200) : ''
@@ -29,13 +29,13 @@ const safeString = (value: unknown): string => typeof value === 'string' ? value
 function identity(value: unknown, provider: GitProviderId, token: string): { username: string; displayName: string; avatarUrl: string | null } {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Git provider account response is invalid')
   const data = value as Record<string, unknown>
-  const username = safeString(provider === 'github' ? data.login : data.login ?? data.username)
+  const username = safeString(provider === 'github' ? data.login : data.username ?? data.login)
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(username)) throw new Error('Git provider account response is invalid')
   let avatarUrl: string | null = null
   if (typeof data.avatar_url === 'string') {
     try { const parsed = new URL(data.avatar_url); if (parsed.protocol === 'https:' && parsed.hostname === PROVIDERS[provider].webHost) avatarUrl = parsed.toString() } catch { /* Ignore unsafe upstream avatar links. */ }
   }
-  const displayName = safeString(data.name).trim()
+  const displayName = safeString(provider === 'gitea' ? data.full_name ?? data.name : data.name).trim()
   return { username, displayName: displayName && !displayName.includes(token) ? displayName : username, avatarUrl }
 }
 
@@ -53,11 +53,11 @@ export class GitProviderAccounts {
     const timer = setTimeout(() => controller.abort(), 10_000)
     try {
 
-      const response = await this.fetchImpl(new URL(provider === 'github' ? 'https://api.github.com/user' : 'https://gitee.com/api/v5/user'), {
+      const response = await this.fetchImpl(new URL(provider === 'github' ? 'https://api.github.com/user' : 'https://gitea.com/api/v1/user'), {
         method: 'GET', redirect: 'error', signal: controller.signal,
         headers: provider === 'github'
           ? { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', authorization: `Bearer ${token}` }
-          : { accept: 'application/json', authorization: `Bearer ${token}` },
+          : { accept: 'application/json', authorization: `token ${token}` },
       })
       if (!response.ok) throw new Error('Git provider authorization failed')
       const declared = Number(response.headers.get('content-length'))

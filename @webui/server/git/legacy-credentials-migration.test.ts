@@ -25,7 +25,7 @@ function fixture(values: Array<{ id: string; user_id: string; preferences: Recor
 }
 
 describe('eager legacy Git credential migration', () => {
-  it('migrates supported PATs for all owners, scrubs unknown entries, and is idempotent', async () => {
+  it('migrates GitHub PATs, removes obsolete Gitee entries, and is idempotent', async () => {
     const f = fixture([
       { id: 'prefs-a', user_id: 'owner-a', updated_at: 20, preferences: { theme: 'dark', gitCredentials: [
         { type: 'pat', host: 'github.com', name: 'Personal', username: 'alice', token: 'github-secret' },
@@ -38,17 +38,17 @@ describe('eager legacy Git credential migration', () => {
     ])
 
     const result = await migrateLegacyGitCredentials(f.client, f.accountStore as any, { now: () => 500, encryptionKeyAvailable: () => true })
-    expect(result).toEqual({ ownersProcessed: 2, credentialsMigrated: 3, credentialsRemoved: 2 })
+    expect(result).toEqual({ ownersProcessed: 2, credentialsMigrated: 1, credentialsRemoved: 4 })
     expect(f.creates.map(({ owner, input }) => [owner, input.providerType, input.credential.key])).toEqual([
-      ['owner-a', 'git:github', 'github-secret'], ['owner-a', 'git:gitee', 'gitee-secret'], ['owner-b', 'git:gitee', 'owner-b-secret'],
+      ['owner-a', 'git:github', 'github-secret'],
     ])
     for (const row of f.rows.values()) {
       expect(row.preferences).not.toHaveProperty('gitCredentials')
       expect(JSON.stringify(row.preferences)).not.toMatch(/github-secret|gitee-secret|private-key-secret|unknown-secret|owner-b-secret/)
     }
-    expect(f.rows.get('prefs-a')!.preferences.gitCredentialMigration).toMatchObject({ version: 1, migrated: 2, removedUnsupported: 2, completedAt: 500 })
+    expect(f.rows.get('prefs-a')!.preferences.gitCredentialMigration).toMatchObject({ version: 1, migrated: 1, removedUnsupported: 3, completedAt: 500 })
     expect(await migrateLegacyGitCredentials(f.client, f.accountStore as any)).toEqual({ ownersProcessed: 0, credentialsMigrated: 0, credentialsRemoved: 0 })
-    expect(f.creates).toHaveLength(3)
+    expect(f.creates).toHaveLength(1)
   })
 
   it('awaits migration readiness before Bun starts serving bridge routes', async () => {

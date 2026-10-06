@@ -1,7 +1,7 @@
 import { API_BASE_URL } from '@/config'
 import { fetchWrapper } from './fetchWrapper'
 
-export type GitProviderId = 'github' | 'gitee'
+export type GitProviderId = 'github' | 'gitea'
 export type GitProviderAccount = {
   id: string
   provider: GitProviderId
@@ -9,7 +9,7 @@ export type GitProviderAccount = {
   displayName: string
   avatarUrl: string | null
   status: 'connected' | 'disabled'
-  capabilities: { repoMetadata: true; branches: true; issues: true; comments: true; pullRequests: true; statuses: true; createPullRequest: true }
+  capabilities: { repoMetadata: true; branches: true; issues: true; comments: true; pullRequests: true; statuses: true; createPullRequest: false }
   connectedAt: number
 }
 

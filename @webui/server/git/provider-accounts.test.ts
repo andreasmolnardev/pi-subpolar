@@ -40,9 +40,24 @@ describe('Git provider account auth slice', () => {
     expect(JSON.stringify(await service.list('owner-a'))).not.toContain('ghp-private-value')
   })
 
+  it('verifies Gitea PATs against the Gitea API and uses Gitea profile fields', async () => {
+    let requestUrl = ''
+    let authorization = ''
+    const service = new GitProviderAccounts({ store: store(), fetch: async (url, init) => {
+      requestUrl = url.toString()
+      authorization = new Headers(init.headers).get('authorization') ?? ''
+      return new Response(JSON.stringify({ username: 'gitea-user', full_name: 'Gitea User', avatar_url: 'https://gitea.com/avatars/avatar.png' }), { status: 200 })
+    } })
+    const account = await service.connect('owner-a', 'gitea', 'gitea-secret')
+    expect(account).toMatchObject({ provider: 'gitea', username: 'gitea-user', displayName: 'Gitea User' })
+    expect(requestUrl).toBe('https://gitea.com/api/v1/user')
+    expect(authorization).toBe('token gitea-secret')
+    expect(account.avatarUrl).toBe('https://gitea.com/avatars/avatar.png')
+  })
+
   it('keeps account listing and revoke owner-scoped', async () => {
-    const service = new GitProviderAccounts({ store: store(), fetch: async () => new Response(JSON.stringify({ login: 'user', name: null }), { status: 200 }) })
-    const account = await service.connect('owner-a', 'gitee', 'gitee-secret')
+    const service = new GitProviderAccounts({ store: store(), fetch: async () => new Response(JSON.stringify({ username: 'user', full_name: null }), { status: 200 }) })
+    const account = await service.connect('owner-a', 'gitea', 'gitea-secret')
     expect(await service.list('owner-b')).toEqual([])
     expect(await service.status('owner-b', account.id)).toBeNull()
     expect(await service.revoke('owner-b', account.id)).toBe(false)

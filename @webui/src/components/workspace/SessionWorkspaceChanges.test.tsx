@@ -67,7 +67,7 @@ describe('SessionWorkspaceChanges', () => {
     expect(screen.getByText('SHA fedcba9876543210')).toBeInTheDocument()
     expect(screen.getByText('Base SHA fedcba9876543210')).toBeInTheDocument()
     expect(screen.getAllByText('.', { exact: true }).length).toBeGreaterThan(0)
-    expect(screen.getByText(/no supported GitHub or Gitee remote identity was found/)).toBeInTheDocument()
+    expect(screen.getByText(/no supported GitHub or Gitea remote identity was found/)).toBeInTheDocument()
     expect(repositoryMetadataMock.sources).toHaveBeenCalledWith('repo-context-session')
     expect(gitMocks.status).toHaveBeenCalledWith('durable-project-record-id')
     expect(gitMocks.branches).toHaveBeenCalledWith('durable-project-record-id')

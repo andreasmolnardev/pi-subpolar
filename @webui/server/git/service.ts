@@ -8,7 +8,7 @@ function conflictDetails(value: string): string { const detail = value.replaceAl
 function executionError(error: unknown, conflict = false): never { if (error instanceof GitExecutionError) { if (conflict && error.kind === 'failed') throw new GitServiceError('GIT_CONFLICT', conflictDetails(error.stderr || error.stdout)); throw new GitServiceError(error.kind === 'timeout' ? 'GIT_TIMEOUT' : error.kind === 'output' ? 'GIT_OUTPUT_LIMIT' : 'GIT_FAILED', error.message) } ; throw error }
 function lines(value: string): string[] { return value.split('\n').map((line) => line.trim()).filter(Boolean) }
 
-type GitProviderRemote = { remote: string; provider: 'github' | 'gitee'; owner: string; repo: string }
+type GitProviderRemote = { remote: string; provider: 'github' | 'gitea'; owner: string; repo: string }
 const safeRemoteName = (name: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)
 function providerIdentity(remote: string, value: string): GitProviderRemote | undefined {
   if (!safeRemoteName(remote) || value.length > 2048 || /[?#]/.test(value)) return undefined
@@ -23,12 +23,12 @@ function providerIdentity(remote: string, value: string): GitProviderRemote | un
       path = url.pathname.slice(1)
     } catch { return undefined }
   } else {
-    const scp = /^(?:[A-Za-z0-9._-]+@)?(github\.com|gitee\.com):(.+)$/.exec(value)
+    const scp = /^(?:[A-Za-z0-9._-]+@)?(github\.com|gitea\.com):(.+)$/.exec(value)
     if (!scp) return undefined
     host = scp[1]!
     path = scp[2]!
   }
-  const provider = host === 'github.com' ? 'github' : host === 'gitee.com' ? 'gitee' : undefined
+  const provider = host === 'github.com' ? 'github' : host === 'gitea.com' ? 'gitea' : undefined
   if (!provider) return undefined
   if (path.toLowerCase().endsWith('.git')) path = path.slice(0, -4)
   const parts = path.split('/')

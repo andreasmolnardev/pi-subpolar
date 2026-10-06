@@ -2,7 +2,7 @@
  * Remote Git provider foundation. This adapter is intentionally not connected to
  * owner credential UI: existing general preferences are not a safe credential store.
  */
-export type GitProviderId = 'github' | 'gitee'
+export type GitProviderId = 'github' | 'gitea'
 
 export type GitProviderCapabilities = Readonly<{
   repoMetadata: true

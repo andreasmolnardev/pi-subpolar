@@ -71,7 +71,7 @@ describe('Git read service', () => {
     const calls: string[][] = []
     const configured = new Map([
       ['https-auth', 'https://alice:secret@github.com/acme/private.git'],
-      ['ssh-auth', 'ssh://alice:secret@gitee.com/team/project.git'],
+      ['ssh-auth', 'ssh://alice:secret@gitea.com/team/project.git'],
       ['scp', 'git@github.com:octo/sample.git'],
       ['private-host', 'https://git.example.com/acme/repo.git'],
       ['local', 'file:///tmp/acme/repo.git'],
@@ -90,7 +90,7 @@ describe('Git read service', () => {
     const sources = await new GitReadService(new GitPathPolicy(async () => project(root), workspace), run).branches('user-a', 'project-a')
     expect(sources.providerRemotes).toEqual([
       { remote: 'https-auth', provider: 'github', owner: 'acme', repo: 'private' },
-      { remote: 'ssh-auth', provider: 'gitee', owner: 'team', repo: 'project' },
+      { remote: 'ssh-auth', provider: 'gitea', owner: 'team', repo: 'project' },
       { remote: 'scp', provider: 'github', owner: 'octo', repo: 'sample' },
     ])
     expect(JSON.stringify(sources)).not.toMatch(/alice|secret|git\.example|file:\/\//)

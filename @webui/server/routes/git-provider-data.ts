@@ -1,8 +1,8 @@
 import type { BridgeRequestContext } from '../bridge-route-context.ts'
 import { GitProviderError, type GitProviderId, type GitProviderRepositoryRef } from '../git/provider-contracts.ts'
-import { GiteeProvider, GitHubProvider, type GitProviderFetch } from '../git/providers.ts'
+import { GiteaProvider, GitHubProvider, type GitProviderFetch } from '../git/providers.ts'
 
-const providerId = (value: unknown): GitProviderId | undefined => value === 'git:github' ? 'github' : value === 'git:gitee' ? 'gitee' : undefined
+const providerId = (value: unknown): GitProviderId | undefined => value === 'git:github' ? 'github' : value === 'git:gitea' ? 'gitea' : undefined
 const segmentPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/
 const accountIdPattern = /^[A-Za-z0-9_-]{1,300}$/
 const shaPattern = /^[A-Za-z0-9._-]{1,128}$/
@@ -75,7 +75,7 @@ export async function handleGitProviderDataRoute(context: BridgeRequestContext):
 
     const token = credential.key
     const options = { tokenSource: (requested: GitProviderId) => requested === provider ? token : undefined, ...(deps.gitProviderFetch ? { fetch: deps.gitProviderFetch as GitProviderFetch } : {}) }
-    const adapter = provider === 'github' ? new GitHubProvider(options) : new GiteeProvider(options)
+    const adapter = provider === 'github' ? new GitHubProvider(options) : new GiteaProvider(options)
     const ref: GitProviderRepositoryRef = { owner, repo }
     if (operation === 'repository') return deps.json({ repository: await adapter.getRepository(ref, request.signal) })
     const items = operation === 'branches' ? await adapter.listBranches(ref, request.signal)
@@ -84,7 +84,8 @@ export async function handleGitProviderDataRoute(context: BridgeRequestContext):
       : operation === 'comments' ? await adapter.listComments(ref, Number(extra), request.signal)
       : await adapter.listStatuses(ref, extra!, request.signal)
     const collectionKey = operation === 'branches' ? 'branches' : operation === 'issues' ? 'issues' : operation === 'pulls' ? 'pulls' : operation === 'comments' ? 'comments' : 'statuses'
-    return deps.json({ [collectionKey]: items, truncated: items.length >= PAGE_CAP })
+    const pageCap = provider === 'gitea' ? 50 : PAGE_CAP
+    return deps.json({ [collectionKey]: items, truncated: items.length >= pageCap })
   } catch (error) {
     return providerErrorResponse(deps, error)
   }

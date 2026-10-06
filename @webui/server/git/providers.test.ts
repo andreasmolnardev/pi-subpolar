@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { GitProviderError } from './provider-contracts.ts'
-import { GiteeProvider, GitHubProvider, type GitProviderFetch } from './providers.ts'
+import { GiteaProvider, GitHubProvider, type GitProviderFetch } from './providers.ts'
 
 const secret = 'test-token-that-must-never-escape'
 const jsonResponse = (value: unknown, init: ResponseInit = {}) => new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' }, ...init })
@@ -21,20 +21,29 @@ describe('remote Git provider foundation', () => {
     expect(requestedUrl).not.toContain(secret)
   })
 
-  it('uses Gitee fixed API host and injects credentials only in server-side authorization headers', async () => {
+  it('uses the Gitea v1 API, token authorization, and Gitea response fields', async () => {
     let requestUrl = ''
     let authorization = ''
-    const provider = new GiteeProvider(options(async (url, init) => {
+    const provider = new GiteaProvider(options(async (url, init) => {
       requestUrl = url.toString()
       authorization = new Headers(init?.headers).get('authorization') ?? ''
-      return jsonResponse([{ name: 'main', commit: { sha: 'abc' }, protected: false }])
+      return jsonResponse([{ name: 'main', commit: { id: 'abc' }, protected: false }])
     }))
     const branches = await provider.listBranches({ owner: 'team', repo: 'repo' })
     expect(branches).toEqual([{ name: 'main', sha: 'abc', protected: false }])
     expect(JSON.stringify(branches)).not.toContain(secret)
-    expect(new URL(requestUrl).host).toBe('gitee.com')
-    expect(new URL(requestUrl).pathname).toBe('/api/v5/repos/team/repo/branches')
-    expect(authorization).toContain(secret)
+    expect(new URL(requestUrl).host).toBe('gitea.com')
+    expect(new URL(requestUrl).pathname).toBe('/api/v1/repos/team/repo/branches')
+    expect(new URL(requestUrl).searchParams.get('limit')).toBe('50')
+    expect(authorization).toBe(`token ${secret}`)
+  })
+
+  it('maps Gitea repository and issue usernames', async () => {
+    const provider = new GiteaProvider(options(async (url) => url.pathname.endsWith('/issues')
+      ? jsonResponse([{ id: 4, number: 3, title: 'Issue', body: null, state: 'open', html_url: 'https://gitea.com/team/repo/issues/3', user: { username: 'reporter' } }])
+      : jsonResponse({ id: 9, full_name: 'team/repo', name: 'repo', owner: { username: 'team' }, description: null, default_branch: 'main', html_url: 'https://gitea.com/team/repo', private: false })))
+    expect(await provider.getRepository({ owner: 'team', repo: 'repo' })).toMatchObject({ owner: 'team', fullName: 'team/repo' })
+    expect(await provider.listIssues({ owner: 'team', repo: 'repo' })).toMatchObject([{ user: 'reporter', number: 3 }])
   })
 
   it('supports create-PR without accepting a remote URL as repository identity', async () => {

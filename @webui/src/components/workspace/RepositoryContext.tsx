@@ -194,7 +194,7 @@ function ProviderBrowser({ identity, owner, generation, projectRouteId }: { iden
     }
   }
 
-  if (!identity?.owner || !identity.repo) return <section aria-label="Provider repository" className="space-y-2"><h3 className="text-sm font-medium">Provider issues and pull requests</h3><p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">Unavailable: no supported GitHub or Gitee remote identity was found. Workspace display paths are not used to infer a repository.</p></section>
+  if (!identity?.owner || !identity.repo) return <section aria-label="Provider repository" className="space-y-2"><h3 className="text-sm font-medium">Provider issues and pull requests</h3><p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">Unavailable: no supported GitHub or Gitea remote identity was found. Workspace display paths are not used to infer a repository.</p></section>
   if (accounts.isPending) return <p className="text-sm text-muted-foreground">Checking connected provider account…</p>
   if (accounts.isError) return <InlineError label={`Provider accounts unavailable: ${getApiErrorMessage(accounts.error)}`} onRetry={() => void accounts.refetch()} />
   if (!candidates.length) return <section aria-label="Provider repository" className="space-y-2"><h3 className="text-sm font-medium">Provider issues and pull requests</h3><p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">Unavailable: no connected {identity.provider} account is available for this repository.</p></section>

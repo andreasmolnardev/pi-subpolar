@@ -2,7 +2,7 @@ import type { BridgeRequestContext } from '../bridge-route-context.ts'
 import { GitProviderAccounts } from '../git/provider-accounts.ts'
 import type { GitProviderId } from '../git/provider-contracts.ts'
 
-const validProvider = (value: unknown): value is GitProviderId => value === 'github' || value === 'gitee'
+const validProvider = (value: unknown): value is GitProviderId => value === 'github' || value === 'gitea'
 
 export async function handleGitProviderAccountsRoute(context: BridgeRequestContext): Promise<Response | undefined> {
   const { request, path, deps } = context
