@@ -2,7 +2,7 @@
 
 `@subpolar/adapter-pocketbase` is a Phase 0A adapter boundary. It depends only
 on `@subpolar/contracts` and accepts small, injected PocketBase-like ports. It
-does not import PocketBase, WebUI routes, Hono, HTTP handlers, Pi runtime code,
+does not import PocketBase, Subpolar Agent routes, Hono, HTTP handlers, Pi runtime code,
 or bridge code.
 
 The factory returns owner-scoped repositories for agents, projects, sessions,
@@ -56,7 +56,7 @@ const gateway = createGateway({
 uses deny > approval > allow precedence, and fails closed when no rule matches.
 The owner-bound port factory supplies durable approvals, opaque continuation
 storage, atomic approval claims, durable call-id idempotency, and audit writes.
-It does not import core or WebUI, so a WebUI executor remains only an execution
+It does not import core or Subpolar Agent, so a Subpolar Agent executor remains only an execution
 adapter during migration rather than a second policy authority.
 
 ## Capabilities

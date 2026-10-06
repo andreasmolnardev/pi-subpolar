@@ -1,6 +1,6 @@
 # Multi-user tool execution boundary
 
-This is an **application-level execution restriction, not full OS isolation**. It applies to the WebUI tool gateway and `invokeExternalTool` in `@webui/server/application/tools/tools.ts`. Full hostile-tenant execution requires independently isolated per-tenant workers.
+This is an **application-level execution restriction, not full OS isolation**. It applies to the Subpolar Agent tool gateway and `invokeExternalTool` in `@subpolar-agent/server/application/tools/tools.ts`. Full hostile-tenant execution requires independently isolated per-tenant workers.
 
 ## Supported subset on the shared application host
 
@@ -39,7 +39,7 @@ Remote HTTP/MCP execution is not sandboxed by this change: the remote service is
 For trusted single-user/operator-controlled execution only:
 
 ```sh
-SUBPOLAR_TRUSTED_HOST_EXECUTION=true bun @webui/bridge.ts
+SUBPOLAR_TRUSTED_HOST_EXECUTION=true bun @subpolar-agent/bridge.ts
 ```
 
 Only the exact server environment value `true` enables this switch. Caller capabilities, permissions, approval decisions, tool metadata and input cannot enable it. The switch permits registered CLI execution while preserving CLI validation, limits and manual-approval behavior. The application CLI path still verifies the owned session/cwd.
@@ -51,13 +51,13 @@ Permitted CLI processes receive an explicit minimal environment (`PATH`, workspa
 Existing CLI compatibility tests can be run explicitly:
 
 ```sh
-SUBPOLAR_TRUSTED_HOST_EXECUTION=true bun test @webui/server/tests/tools-registry.test.ts
+SUBPOLAR_TRUSTED_HOST_EXECUTION=true bun test @subpolar-agent/server/tests/tools-registry.test.ts
 ```
 
 The default-denial suite resets the switch and also launches real Bun subprocesses to verify denial and lack of inherited secrets:
 
 ```sh
-bun test @webui/server/tests/multi-user-tool-execution.test.ts @webui/server/tests/project-filesystem.test.ts
+bun test @subpolar-agent/server/tests/multi-user-tool-execution.test.ts @subpolar-agent/server/tests/project-filesystem.test.ts
 ```
 
 ## Required deployment for hostile tenants

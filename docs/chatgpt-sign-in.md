@@ -2,7 +2,7 @@
 
 ## Normal OpenAI sign-in, not Codex login
 
-The WebUI now uses Pi **1.0.2**'s native **Sign in with ChatGPT** on the normal `openai` provider. This shares a user-authorized access token with the OpenAI Responses API at `https://api.openai.com/v1/responses`. A normal OpenAI API key remains an alternative on that same provider.
+The Subpolar Agent now uses Pi **1.0.2**'s native **Sign in with ChatGPT** on the normal `openai` provider. This shares a user-authorized access token with the OpenAI Responses API at `https://api.openai.com/v1/responses`. A normal OpenAI API key remains an alternative on that same provider.
 
 The previous guide incorrectly presented Pi 0.84.4's existing `openai-codex` OAuth as this new login. These are separate implementations:
 
@@ -34,7 +34,7 @@ Use **Add another account** to create another instance, **Reconnect** to renew a
 
 ## Inference and limits
 
-The account adapter retains account-qualified model/transcript identity while invoking the original native provider with `provider: "openai"`. This matters: Pi detects the direct ChatGPT token path using native provider identity, the standard OpenAI base URL, and a non-`sk-` token. Its native Responses adapter omits unsupported `temperature`, `max_output_tokens`, `prompt_cache_retention`, and `prompt_cache_options` fields for that path. API-key requests retain their normal supported options. The WebUI does not reimplement OAuth or these special request rules.
+The account adapter retains account-qualified model/transcript identity while invoking the original native provider with `provider: "openai"`. This matters: Pi detects the direct ChatGPT token path using native provider identity, the standard OpenAI base URL, and a non-`sk-` token. Its native Responses adapter omits unsupported `temperature`, `max_output_tokens`, `prompt_cache_retention`, and `prompt_cache_options` fields for that path. API-key requests retain their normal supported options. The Subpolar Agent does not reimplement OAuth or these special request rules.
 
 Signing in sends authorization information and the installation ID to OpenAI; inference sends the conversation to OpenAI. Eligibility, consent, models, workspace policies, rate limits, and shared ChatGPT usage allowances are controlled by OpenAI. Sign-in does **not** promise unlimited access, universally free API usage, or access to every catalog model. Catalog presence is not proof that an account can execute a model.
 

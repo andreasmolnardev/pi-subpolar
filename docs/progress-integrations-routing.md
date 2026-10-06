@@ -30,7 +30,7 @@ await proposeTools({
 Remaining dependencies:
 
 1. **CLOSED locally — gateway discovery context:** CLI gateway list/describe/search now resolve the owned persisted session without caller agent or permission hints, authorize against the actual resolved agent and resolved `project.id` (stored `session.projectId` fallback), and forward only a non-default durable permission override. Explicit list retains `includeOnDemand: true`; describe retains permitted on-demand inspection. `searchToolsForAgent(..., query, projectId?, permissionOverride?, includeOnDemand = false)` obtains the existing effective visibility projection before ranking and the 12-result cap; the route's post-cap intersection is removed. Standard search still excludes on-demand tools. No capability ceiling, policy authority, execution, or approval state was changed. Real-policy regressions and exact validation are recorded below.
-2. **OpenAPI extension owner:** `@webui/subpolar/extensions/openapi-tools.ts` remains unchanged. Its configured-file registration path is distinct from disabled settings drafts. Full `$ref`/recursive-schema handling, parameter conflicts across locations, object operation-selection semantics, refresh/removal of stale operations, and response-schema fidelity need a bounded, shared compiler rather than another registry. No claim of complete OpenAPI schema validation is made here.
+2. **OpenAPI extension owner:** `@subpolar-agent/subpolar/extensions/openapi-tools.ts` remains unchanged. Its configured-file registration path is distinct from disabled settings drafts. Full `$ref`/recursive-schema handling, parameter conflicts across locations, object operation-selection semantics, refresh/removal of stale operations, and response-schema fidelity need a bounded, shared compiler rather than another registry. No claim of complete OpenAPI schema validation is made here.
 3. **Settings/integration owner:** provider editing, source refresh, schema preview and credential-reference storage/normalization must converge on the existing registry registration/configuration workflow. No new provider settings store was introduced.
 4. **Bridge/context owner:** keep durable project IDs consistent between extension browsing, gateway execution and runtime context. The extension uses resolved `project.id` with stored `session.projectId` fallback; synthetic projects may have neither.
 
@@ -77,10 +77,10 @@ This is a pure, stateless local comparison function: no network, persistence, pr
 
 Isolated suites:
 
-- `@webui/server/tests/integrations-routing-progress.test.ts`: owner/shared visibility across discovery, inspection, search and execution definition loading; wildcard and effective policy projection; project restrictions; independent plan and reviewer capability regressions; extension ownership/session context; pending/failed MCP initialization shutdown/retry; selective OpenAPI schemas with no HTTP calls; pure deterministic registry comparison.
-- `@webui/src/api/integrations-routing-progress.test.ts`: argv and input validation; selected-config single persistence and identical connection config; duplicate rejection; frontend disconnect pending state.
+- `@subpolar-agent/server/tests/integrations-routing-progress.test.ts`: owner/shared visibility across discovery, inspection, search and execution definition loading; wildcard and effective policy projection; project restrictions; independent plan and reviewer capability regressions; extension ownership/session context; pending/failed MCP initialization shutdown/retry; selective OpenAPI schemas with no HTTP calls; pure deterministic registry comparison.
+- `@subpolar-agent/src/api/integrations-routing-progress.test.ts`: argv and input validation; selected-config single persistence and identical connection config; duplicate rejection; frontend disconnect pending state.
 
-Commands run from `@webui`:
+Commands run from `@subpolar-agent`:
 
 ```sh
 npx --no-install vitest run server/tests/integrations-routing-progress.test.ts src/api/integrations-routing-progress.test.ts server/tests/agent-runtime.test.ts server/tests/tools-debug-route.test.ts server/tests/tools-teach.test.ts
@@ -91,7 +91,7 @@ Latest focused results: **36 Vitest tests passed** (20 new isolated tests and 16
 
 App and bridge TypeScript checks were attempted. The last observed failures were outside this slice (`DesktopSidebar`, parent-owned gateway/profile progress tests, and browser transport/fetch/SSH modules imported into the bridge compilation). No outstanding diagnostics were reported in this slice by those runs. Parent is resolving the broad typecheck failures; no edits were made to silence them here. No live integration completeness claim is made.
 
-Gateway discovery handoff #1 closure validation (all commands bounded to 60 seconds, from `@webui`):
+Gateway discovery handoff #1 closure validation (all commands bounded to 60 seconds, from `@subpolar-agent`):
 
 ```sh
 ./node_modules/.bin/vitest run server/tests/gateway-parity-progress.test.ts server/tests/integrations-routing-progress.test.ts src/api/integrations-routing-progress.test.ts server/tests/tool-routing.test.ts server/tests/approval-flow.test.ts server/tests/approval-event.test.ts server/tests/approval-execution.test.ts server/tests/security-redaction.test.ts

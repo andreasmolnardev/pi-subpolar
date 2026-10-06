@@ -24,7 +24,7 @@ export type PocketBaseSdkClient = {
   }
 }
 
-export type StatelessWebUiRunInput = {
+export type StatelessSubpolarAgentRunInput = {
   ownerId: string
   sessionId: string
   runId: string
@@ -34,7 +34,7 @@ export type StatelessWebUiRunInput = {
   metadata?: Record<string, string>
 }
 
-export type StatelessWebUiRuntimeOptions = {
+export type StatelessSubpolarAgentRuntimeOptions = {
   client: PocketBaseSdkClient
   ownerId: string
   resolveContext: (request: StatelessRunRequest) => Promise<RuntimeContext>
@@ -85,7 +85,7 @@ function createClientPort(client: PocketBaseSdkClient): PocketBaseClientPort {
  * composition callback; run stores and event replay are owner-bound to the
  * authenticated PocketBase client and are recreated for each invocation.
  */
-export function createStatelessWebUiRuntime(options: StatelessWebUiRuntimeOptions) {
+export function createStatelessSubpolarAgentRuntime(options: StatelessSubpolarAgentRuntimeOptions) {
   if (!options.ownerId.trim()) throw new Error('Runtime owner is required')
   const adapter = createPocketBaseAdapter({
     client: createClientPort(options.client),
@@ -99,7 +99,7 @@ export function createStatelessWebUiRuntime(options: StatelessWebUiRuntimeOption
   const eventReplay = createPocketBaseEventReplayPort(adapter, options.ownerId)
 
   return {
-    async runPrompt(input: StatelessWebUiRunInput): Promise<StatelessRunResult> {
+    async runPrompt(input: StatelessSubpolarAgentRunInput): Promise<StatelessRunResult> {
       if (input.ownerId !== options.ownerId) throw new Error('Runtime owner mismatch')
       if (!input.sessionId.trim()) throw new Error('Runtime session is required')
       const request: StatelessRunRequest = {

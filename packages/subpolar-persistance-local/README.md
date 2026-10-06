@@ -12,7 +12,7 @@ Local persistence implementations for development, tests, and standalone CLI use
 
 Without file paths, state is process-local and ephemeral. JSON-file persistence is deliberately single-process and does not claim multi-process concurrency, durable approvals, or event replay.
 
-The adapter implements shared contracts and does not depend on Pi, PocketBase, WebUI, or network services.
+The adapter implements shared contracts and does not depend on Pi, PocketBase, Subpolar Agent, or network services.
 
 ## Workspace setup
 

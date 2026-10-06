@@ -65,7 +65,7 @@ These remaining items prevent calling the whole deployment “fully multi-user i
 
 ## Regression coverage and validation
 
-`@webui/server/tests/multi-user-boundaries.test.ts` intentionally uses an **unfiltered transport** for first-item and list queries, with foreign rows first. Its ten tests cover:
+`@subpolar-agent/server/tests/multi-user-boundaries.test.ts` intentionally uses an **unfiltered transport** for first-item and list queries, with foreign rows first. Its ten tests cover:
 
 - project/session lookup/list/mutation fences, protected/default/foreign namespaces;
 - exact General Chat roots, foreign reuse, wrong-session/parent rejection, ambiguous owner-free lookup;
@@ -78,7 +78,7 @@ These remaining items prevent calling the whole deployment “fully multi-user i
 - browser lease separation, list/scope fences and fake-context cleanup;
 - route-level task-worktree, browser-audit, agent and tool projections, including arbitrary-named integration secrets.
 
-`@webui/server/tests/multi-user-boundaries-mcp.test.ts` covers effective config/owner separation, unscoped concurrent connections, temporary-client cleanup, frozen env credential rotation, and ignoring metadata owner hints. These are deterministic fake-transport tests, not live MCP/browser/PocketBase integration tests.
+`@subpolar-agent/server/tests/multi-user-boundaries-mcp.test.ts` covers effective config/owner separation, unscoped concurrent connections, temporary-client cleanup, frozen env credential rotation, and ignoring metadata owner hints. These are deterministic fake-transport tests, not live MCP/browser/PocketBase integration tests.
 
 Use Bun for commands; dependencies are not installed by validation. Runner selection follows each file's imports during the Bun migration:
 
@@ -92,4 +92,4 @@ bun x --no-install vitest run --reporter=dot server/tests/project-store.test.ts 
 bun run bridge:typecheck
 ```
 
-Commands run from `@webui`, with bounded terminal timeouts. Review tests intentionally exercise existing Git index locks and may print an expected Git lock error while passing. No live database, real-browser authentication, live SSH/MCP OAuth, production multi-process tenancy, frontend build, or full application suite is validated here.
+Commands run from `@subpolar-agent`, with bounded terminal timeouts. Review tests intentionally exercise existing Git index locks and may print an expected Git lock error while passing. No live database, real-browser authentication, live SSH/MCP OAuth, production multi-process tenancy, frontend build, or full application suite is validated here.

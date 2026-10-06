@@ -1,5 +1,5 @@
 {
-  "name": "@subpolar/webui",
+  "name": "@subpolar/subpolar-agent",
   "private": true,
   "type": "module",
   "scripts": {

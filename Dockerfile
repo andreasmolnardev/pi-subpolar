@@ -6,7 +6,7 @@ COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 
 WORKDIR /app
 
-# start-webui.sh uses curl while waiting for the bridge health endpoint.
+# start-subpolar-agent.sh uses curl while waiting for the bridge health endpoint.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl git ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -14,7 +14,7 @@ RUN apt-get update \
 # Install dependencies in a separate layer so source-only edits do not trigger
 # a full dependency reinstall when the image is rebuilt.
 COPY package.json bun.lock bunfig.toml ./
-COPY @webui/package.json ./@webui/package.json
+COPY @subpolar-agent/package.json ./@subpolar-agent/package.json
 COPY packages/subpolar-cli/package.json ./packages/subpolar-cli/package.json
 COPY packages/subpolar-contracts/package.json ./packages/subpolar-contracts/package.json
 COPY packages/subpolar-core/package.json ./packages/subpolar-core/package.json
@@ -27,8 +27,8 @@ RUN bun install --frozen-lockfile
 
 COPY . .
 
-RUN chmod +x ./start-webui.sh
+RUN chmod +x ./start-subpolar-agent.sh
 
 EXPOSE 5173 4173
 
-CMD ["./start-webui.sh"]
+CMD ["./start-subpolar-agent.sh"]

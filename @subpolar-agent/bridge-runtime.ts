@@ -152,9 +152,9 @@ import {
   type SessionRecord,
 } from './server/application/runtime/pi-sdk-session.ts'
 import {
-  createStatelessWebUiRuntime,
-  type StatelessWebUiRunInput,
-} from './server/application/runtime/stateless-webui-runtime.ts'
+  createStatelessSubpolarAgentRuntime,
+  type StatelessSubpolarAgentRunInput,
+} from './server/application/runtime/stateless-subpolar-agent-runtime.ts'
 import { createPiRunPort } from '../packages/subpolar-core-pi/src/index.ts'
 import type { RuntimeContext, RuntimeExecution, StatelessRunRequest } from '../packages/subpolar-contracts/src/index.ts'
 
@@ -186,16 +186,16 @@ type SocketData = { sessionId: string; userId: string; record: SessionRecord; pr
 type SseClient = { userId: string; enqueue: (chunk: Uint8Array) => void; close: () => void }
 
 const root = resolve(import.meta.dir, '..')
-const webuiDir = import.meta.dir
+const subpolarAgentDir = import.meta.dir
 const subpolarDataDir = join(homedir(), '.subpolar')
 const projectsRoot = configuredWorkspaceRoot()
 
-const legacyStatePath = join(webuiDir, '.sessions.json')
+const legacyStatePath = join(subpolarAgentDir, '.sessions.json')
 
 const legacyProjectStatePath = join(subpolarDataDir, 'projects.json')
 const generalChatRoot = join(projectsRoot, 'general-chat')
 
-const port = Number(process.env.WEBUI_PORT ?? 4173)
+const port = Number(process.env.SUBPOLAR_AGENT_PORT ?? 4173)
 const internalToken = process.env.SUBPOLAR_INTERNAL_TOKEN || randomBytes(32).toString('hex')
 process.env.SUBPOLAR_INTERNAL_TOKEN = internalToken
 let applicationDatabasePromise: ReturnType<typeof getPocketBaseAdmin> | undefined
@@ -481,11 +481,11 @@ const allowedRpcCommands = new Set([
 ])
 // Only extensions that do not own session state are loaded into the transient SDK.
 // Session browsing, search, usage, archive, projects, and title routes are handled
-// by the PocketBase-backed WebUI application routes.
+// by the PocketBase-backed Subpolar Agent application routes.
 const applicationExtensionPaths = [
   'list-tools.ts',
   'openapi-tools.ts',
-].map((file) => join(webuiDir, 'subpolar', 'extensions', file))
+].map((file) => join(subpolarAgentDir, 'subpolar', 'extensions', file))
 
 const applicationExtensionFactories = [listToolsExtension, openapiTools]
 const modelRuntimePromise = createSharedProviderCatalogRuntime()
@@ -1378,7 +1378,7 @@ function runtimeJson(value: unknown, seen = new WeakSet<object>()): import('../p
  * an in-memory execution resource and is reconstructed from PocketBase-backed
  * session/transcript state by rpcSession when the active fast path is absent.
  */
-async function runStatelessPrompt(input: StatelessWebUiRunInput, owner: SessionRecord, project: Project): Promise<unknown> {
+async function runStatelessPrompt(input: StatelessSubpolarAgentRunInput, owner: SessionRecord, project: Project): Promise<unknown> {
   const ownerId = owner.userId
   if (!ownerId) throw new Error('Session owner is unavailable')
   if (input.ownerId !== ownerId) throw new Error('Runtime owner mismatch')
@@ -1395,7 +1395,7 @@ async function runStatelessPrompt(input: StatelessWebUiRunInput, owner: SessionR
       }, ownerId)
     },
   })
-  const runtime = createStatelessWebUiRuntime({
+  const runtime = createStatelessSubpolarAgentRuntime({
     client,
     ownerId,
     gateway: coreGateway,

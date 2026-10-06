@@ -1,6 +1,6 @@
-# Web UI Style Guide
+# Subpolar Agent Style Guide
 
-This guide documents the shared visual color tokens used by the Subpolar web UI. The source of truth is `@webui/src/index.css`.
+This guide documents the shared visual color tokens used by the Subpolar Agent UI. The source of truth is `@subpolar-agent/src/index.css`.
 
 ## Theme behavior
 
@@ -68,7 +68,7 @@ Use these semantic aliases when they better express the component's role. They r
 
 ## Component-specific border colors
 
-Dialog content and nested cards use `#343434` borders in dark mode and `#d1d5db` in light mode. These are currently explicit component overrides in `@webui/src/index.css` rather than general theme tokens.
+Dialog content and nested cards use `#343434` borders in dark mode and `#d1d5db` in light mode. These are currently explicit component overrides in `@subpolar-agent/src/index.css` rather than general theme tokens.
 
 ## Usage guidance
 
@@ -76,4 +76,4 @@ Dialog content and nested cards use `#343434` borders in dark mode and `#d1d5db`
 - Use `primary` for interactive emphasis; retain `primary-hover` for its hover state.
 - Keep text and icon colors paired with the corresponding `*-foreground` token on colored surfaces.
 - Use `destructive`/`danger` only for destructive or error states, not general emphasis.
-- If a new recurring color is needed, add a semantic token to both palettes in `@webui/src/index.css` and document it here.
+- If a new recurring color is needed, add a semantic token to both palettes in `@subpolar-agent/src/index.css` and document it here.

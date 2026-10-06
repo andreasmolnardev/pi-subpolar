@@ -26,7 +26,7 @@ Native Pi 1.0.2 credentials are serialized without dropping OAuth extension fiel
 
 ## Validation
 
-From `@webui`, run the bounded provider suite using the existing workspace dependencies (no install needed):
+From `@subpolar-agent`, run the bounded provider suite using the existing workspace dependencies (no install needed):
 
 ```sh
 bun run --bun vitest run --maxWorkers=2 server/tests/multi-user-providers.test.ts server/tests/provider-login-flow-store.test.ts server/tests/custom-providers.test.ts server/tests/provider-auth.test.ts

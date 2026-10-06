@@ -1,10 +1,10 @@
-# Feature 2: WebUI streaming, history, tool display, and recovery
+# Feature 2: Subpolar Agent streaming, history, tool display, and recovery
 
 ## Scope and status
 
 Scoped fixes and targeted regression coverage are complete. Live recovery is **not verified**, and this work does not add transparent resumption of interrupted model/tool runs.
 
-Edits are limited to `@webui/src/components/message/**`, `@webui/src/stores/sessionStatusStore*`, related new chat-recovery tests, and this document. `SessionDetail.tsx`, `bridge-runtime.ts`, auth, route wiring, and approval behavior were not edited. Other work already present or arriving concurrently in the working tree was left alone.
+Edits are limited to `@subpolar-agent/src/components/message/**`, `@subpolar-agent/src/stores/sessionStatusStore*`, related new chat-recovery tests, and this document. `SessionDetail.tsx`, `bridge-runtime.ts`, auth, route wiring, and approval behavior were not edited. Other work already present or arriving concurrently in the working tree was left alone.
 
 ## Fixed
 
@@ -41,7 +41,7 @@ PocketBase startup reconciliation marks running deliveries `interrupted`, in-fli
 
 ## Validation
 
-Commands run from `@webui`:
+Commands run from `@subpolar-agent`:
 
 - `bunx vitest run src/components/message src/stores/sessionStatusStore.test.ts server/tests/chat-recovery-stream.test.ts server/tests/durable-events.test.ts server/tests/suggestions.test.ts src/lib/runtime-event-stream/__tests__/runtimeEventStream.test.ts src/hooks/useSSE.test.tsx --reporter=dot` — **116 passed, 12 files**. Existing `SessionTodoDisplay.test.tsx` emitted a React `act(...)` warning; it did not fail.
 - `bun test server/tests/chat-recovery-run.test.ts server/tests/runtime-recovery.test.ts server/tests/event-cursor.test.ts server/tests/message-delivery.test.ts server/tests/message-queue.test.ts` — **26 passed, 5 files**.

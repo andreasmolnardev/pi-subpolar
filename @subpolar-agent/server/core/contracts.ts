@@ -1,5 +1,5 @@
 /**
- * Dependency-free wire contracts for the versioned WebUI API.
+ * Dependency-free wire contracts for the versioned Subpolar Agent API.
  *
  * Keep this module safe to import from tests, tooling, and alternate hosts. It
  * must not depend on Hono, PocketBase, Pi, or browser APIs.

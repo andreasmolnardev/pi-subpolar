@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This is a targeted runtime/credential hardening pass, **not a certification of full multi-user deployment safety**. Changes are limited to `@webui/bridge-runtime.ts`, `@webui/server/application/runtime/` (excluding the existing provider catalog/login-flow modules), `@webui/server/bridge-request-handler.ts`, and new runtime tests. Data, frontend, workspace migration, and dependency files are not changed.
+This is a targeted runtime/credential hardening pass, **not a certification of full multi-user deployment safety**. Changes are limited to `@subpolar-agent/bridge-runtime.ts`, `@subpolar-agent/server/application/runtime/` (excluding the existing provider catalog/login-flow modules), `@subpolar-agent/server/bridge-request-handler.ts`, and new runtime tests. Data, frontend, workspace migration, and dependency files are not changed.
 
 Pi remains pinned by the existing manifests to 1.0.2. Native OpenAI direct ChatGPT OAuth and the separate OpenAI Codex provider remain native implementations, not compatibility shims.
 
@@ -29,7 +29,7 @@ Pi remains pinned by the existing manifests to 1.0.2. Native OpenAI direct ChatG
 
 ## Intentional behavior changes
 
-1. Server `~/.pi` auth, `models.json` credentials/configured providers, and host provider environment keys are not available to arbitrary WebUI/proxy users. Users need owned provider accounts.
+1. Server `~/.pi` auth, `models.json` credentials/configured providers, and host provider environment keys are not available to arbitrary Subpolar Agent/proxy users. Users need owned provider accounts.
 2. Proxy clients must obtain an owner proxy token and use a model id from that owner's `/v1/models` response, including the account qualifier.
 3. `baseRuntime` remains a source-compatible option, but is deprecated and ignored for inference. Local/shared custom providers cannot be used as an account implementation.
 4. Owned custom-provider CRUD remains untouched, but **owned custom-provider inference is not wired up**. The persistence service exposes public definitions but no owner-bound secret-loading inference API. Unknown provider types fail explicitly rather than borrowing host configuration. A future integration must retrieve the authenticated owner's definition/secrets, create a fresh provider implementation, prohibit ambient/command key resolution and apply outbound network policy. Do not mark custom-provider inference complete based on CRUD/discovery alone.
@@ -55,8 +55,8 @@ The native OpenAI login flow continues to use `SettingsManager.getOrCreateDevice
 
 New tests:
 
-- `@webui/server/tests/multi-user-runtime.test.ts`: host-env catalog isolation; hostile shared configuration; concurrent account-identical inference with distinct owner keys; proxy token ownership/qualified selection; collision-free session keys; record mismatch; internal-token route rejection; stateless input/context mismatch.
-- `@webui/server/tests/multi-user-runtime-sessions.test.ts`: dependency-stubbed Pi SDK, concurrent identical session ids across owners and separate sessions for one owner, independent histories/events/transcript writes, immutable session identity, resource isolation, close-during-initialization disposal.
+- `@subpolar-agent/server/tests/multi-user-runtime.test.ts`: host-env catalog isolation; hostile shared configuration; concurrent account-identical inference with distinct owner keys; proxy token ownership/qualified selection; collision-free session keys; record mismatch; internal-token route rejection; stateless input/context mismatch.
+- `@subpolar-agent/server/tests/multi-user-runtime-sessions.test.ts`: dependency-stubbed Pi SDK, concurrent identical session ids across owners and separate sessions for one owner, independent histories/events/transcript writes, immutable session identity, resource isolation, close-during-initialization disposal.
 
 Tests use fabricated credentials and stubbed inference/SDK/storage. They do not require live accounts or secrets. Native OpenAI auth regressions also use stubbed network responses.
 
@@ -70,9 +70,9 @@ bun x --no-install tsc --noEmit -p tsconfig.bridge.json
 Run Bun-native recovery/runtime tests separately:
 
 ```sh
-bun test server/tests/stateless-webui-runtime.test.ts server/tests/runtime-recovery.test.ts server/tests/chat-recovery-run.test.ts
+bun test server/tests/stateless-subpolar-agent-runtime.test.ts server/tests/runtime-recovery.test.ts server/tests/chat-recovery-run.test.ts
 ```
 
-All commands above run from `@webui/` and should be bounded by the invoking CI/agent. The final focused Vitest run additionally included provider model-state/login-flow-store and worktree integration regressions: **97 tests passed across 9 files**. The Bun-native run passed **4 tests across 3 files**. Bridge typechecking passed after the initial runtime edits; the final rerun was blocked by a concurrent, out-of-scope `server/tests/multi-user-boundaries.test.ts:42` Request/URL type error (TS2769), with no scoped errors reported. That test was not modified by this pass.
+All commands above run from `@subpolar-agent/` and should be bounded by the invoking CI/agent. The final focused Vitest run additionally included provider model-state/login-flow-store and worktree integration regressions: **97 tests passed across 9 files**. The Bun-native run passed **4 tests across 3 files**. Bridge typechecking passed after the initial runtime edits; the final rerun was blocked by a concurrent, out-of-scope `server/tests/multi-user-boundaries.test.ts:42` Request/URL type error (TS2769), with no scoped errors reported. That test was not modified by this pass.
 
 These are focused tests, not a live multi-user deployment, whole-repository test run, or an OS sandbox/security certification.

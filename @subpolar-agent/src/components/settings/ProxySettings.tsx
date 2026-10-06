@@ -45,7 +45,7 @@ export function ProxySettings() {
         <CardHeader className="flex-row items-center justify-between space-y-0">
           <div>
             <CardTitle className="text-base">Credentials</CardTitle>
-            <CardDescription>Credentials are local to this WebUI and are only shown once when generated.</CardDescription>
+            <CardDescription>Credentials are local to Subpolar Agent and are only shown once when generated.</CardDescription>
           </div>
           <Button size="sm" onClick={() => generate.mutate()} disabled={generate.isPending}>
             {generate.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}

@@ -1,6 +1,6 @@
 # PocketBase Adapter Composition
 
-The PocketBase adapter is composed by the WebUI bridge for canonical run outcomes
+The PocketBase adapter is composed by the Subpolar Agent bridge for canonical run outcomes
 and run-event replay. Its exact composition seam is:
 
 1. The application composition root supplies a `PocketBaseClientPort` whose
@@ -52,7 +52,7 @@ silently degrading.
   list order.
 - Approval records are durable when the approval collection is present, but
   approval execution and tool execution are not one transaction in this phase.
-- Existing WebUI routes and local JSON session data have different schemas.
+- Existing Subpolar Agent routes and local JSON session data have different schemas.
   Migration needs an explicit owner identity, collection rules, timestamp
   policy, and a backfill/rollback plan before production wiring.
 

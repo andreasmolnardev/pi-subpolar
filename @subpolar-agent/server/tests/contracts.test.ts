@@ -23,7 +23,7 @@ const components = {
   tts: { state: 'unknown' as const, reason: 'client_capability_not_observed' },
 }
 
-describe('WebUI API contracts', () => {
+describe('Subpolar Agent API contracts', () => {
   test('creates the stable error envelope without optional fields', () => {
     expect(errorEnvelope('NOT_READY', 'The service is not ready')).toEqual({
       error: { code: 'NOT_READY', message: 'The service is not ready' },

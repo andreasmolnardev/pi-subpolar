@@ -180,7 +180,7 @@ export class PiSdkSession<TClient = unknown> {
       noThemes: true,
       noContextFiles: true,
       appendSystemPromptOverride: () => [],
-      // The WebUI owns its extension set. Do not load user/global Pi extension
+      // Subpolar Agent owns its extension set. Do not load user/global Pi extension
       // directories because those extensions may reintroduce file-backed state
       // or bypass the Subpolar application boundary.
       noExtensions: true,

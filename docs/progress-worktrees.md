@@ -20,7 +20,7 @@
 
 ## Validation performed
 
-All commands used existing installed tooling, were bounded, and ran from `@webui`:
+All commands used existing installed tooling, were bounded, and ran from `@subpolar-agent`:
 
 ```sh
 node_modules/.bin/vitest run server/tests/worktree-integration.test.ts server/tests/task-control-plane.test.ts src/components/worktree/CreateWorktreeDialog.test.tsx

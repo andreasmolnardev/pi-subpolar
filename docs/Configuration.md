@@ -36,7 +36,7 @@ machine-specific. Create these files locally when needed.
 
 ## `projects.json`
 
-Defines virtual project roots used by the WebUI project and session routes. The application
+Defines virtual project roots used by the Subpolar Agent project and session routes. The application
 integration changes the root used by Pi tools without changing Pi's process directory.
 
 Accepted simple format:
@@ -66,7 +66,7 @@ Supported locations, from lower to higher precedence:
 
 Project-local names override global names. Paths are resolved relative to the
 configuration file's owning directory. Use `/project NAME` in Pi or
-`POST /api/extensions/projects` through the WebUI bridge to activate a root.
+`POST /api/extensions/projects` through the Subpolar Agent bridge to activate a root.
 
 ## `settings.json`
 
@@ -84,8 +84,8 @@ Controls Pi defaults and loads this repository's extensions:
 ```
 
 `defaultModel` selects the default SDK model. `sessionTitleGenModel` is used by
-the WebUI application runtime after a session's first assistant response. The
-WebUI bridge registers the active integrations directly with the Pi SDK; this
+the Subpolar Agent application runtime after a session's first assistant response. The
+Subpolar Agent bridge registers the active integrations directly with the Pi SDK; this
 configuration is not loaded by a Pi CLI process.
 
 Do not put API keys or tokens in `settings.json`.

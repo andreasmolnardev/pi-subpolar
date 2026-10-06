@@ -11,7 +11,7 @@ export function ProjectNotFoundDialog({ projectId }: { projectId?: string }) {
         <DialogHeader>
           <DialogTitle>Project not found</DialogTitle>
           <DialogDescription>
-            {projectId ? `Project ${projectId} is no longer available or has not been configured in this WebUI.` : 'This project is no longer available or has not been configured in this WebUI.'}
+            {projectId ? `Project ${projectId} is no longer available or has not been configured in Subpolar Agent.` : 'This project is no longer available or has not been configured in Subpolar Agent.'}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  createStatelessWebUiRuntime,
+  createStatelessSubpolarAgentRuntime,
   type PocketBaseSdkClient,
-} from '../application/runtime/stateless-webui-runtime.ts'
+} from '../application/runtime/stateless-subpolar-agent-runtime.ts'
 import type { RuntimeExecution } from '../../../packages/subpolar-contracts/src/index.ts'
 import type { ToolGateway } from '../../../packages/subpolar-core/src/index.ts'
 
@@ -49,12 +49,12 @@ const gateway: ToolGateway = {
   call: async (call) => ({ ok: true, status: 'executed', callId: call.callId, toolId: call.toolId, value: null }),
 }
 
-describe('stateless WebUI runtime composition', () => {
+describe('stateless Subpolar Agent runtime composition', () => {
   test('persists run events and replays a terminal result without executing Pi twice', async () => {
     const client = fakeClient()
     const events: unknown[] = []
     let executions = 0
-    const runtime = createStatelessWebUiRuntime({
+    const runtime = createStatelessSubpolarAgentRuntime({
       client,
       ownerId: 'user-1',
       gateway: gateway as never,

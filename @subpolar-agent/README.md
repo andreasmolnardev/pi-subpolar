@@ -1,4 +1,4 @@
-# Pi WebUI
+# Subpolar Agent
 
 Local browser UI for the Pi SDK embedded in this repository. The bridge creates transient in-memory SDK execution contexts from PocketBase-backed session state and forwards typed events over WebSocket.
 
@@ -16,20 +16,20 @@ separate dependency tree here. Start PocketBase and configure `.env` as below,
 then start from any directory:
 
 ```sh
-/path/to/pi-subpolar/start-webui.sh
+/path/to/pi-subpolar/start-subpolar-agent.sh
 ```
 
 Equivalent manual startup (using the repository's absolute path):
 
 ```sh
-bun --env-file=/path/to/pi-subpolar/.env /path/to/pi-subpolar/@webui/bridge.ts
+bun --env-file=/path/to/pi-subpolar/.env /path/to/pi-subpolar/@subpolar-agent/bridge.ts
 # In a second terminal:
-bun run --cwd /path/to/pi-subpolar/@webui dev
+bun run --cwd /path/to/pi-subpolar/@subpolar-agent dev
 ```
 
 Open `http://localhost:5173`.
 
-The bridge binds to `127.0.0.1:4173`. Set `WEBUI_PORT` to change it. Vite proxies `/api` to that port.
+The bridge binds to `127.0.0.1:4173`. Set `SUBPOLAR_AGENT_PORT` to change it. Vite proxies `/api` to that port.
 
 The bridge requires a running PocketBase instance. Copy the repository `.env.example` to
 `.env` and set `POCKETBASE_URL`, `POCKETBASE_EMAIL`, and `POCKETBASE_PASSWORD` to a
@@ -50,7 +50,7 @@ persistence is used.
 
 Core routes live under `/api/sessions/:id` for prompt, state, messages, stats, abort, and arbitrary allowlisted Pi RPC commands. Streaming events use `/api/sessions/:id/events`.
 
-Extension routes live under `/api/extensions`: `projects`, `profiles`, `tools`, `commands`, `usage`, `session-title`, `session-search`, and `openapi-tools`. The old file-backed Pi CLI extension commands are not loaded by the WebUI; use these application routes instead.
+Extension routes live under `/api/extensions`: `projects`, `profiles`, `tools`, `commands`, `usage`, `session-title`, `session-search`, and `openapi-tools`. The old file-backed Pi CLI extension commands are not loaded by Subpolar Agent; use these application routes instead.
 
 Tool routing is centralized under `/api/subpolar-cli/tools/*`.
 Pi built-in file tools `read`, `write`, `edit`, and `ls` require a validated,
@@ -105,7 +105,7 @@ without npm for the Vitest suites.
 
 ## Multi-user operating limits
 
-Provider credentials must belong to the authenticated user. WebUI/proxy inference
+Provider credentials must belong to the authenticated user. Subpolar Agent/proxy inference
 does not fall back to server environment keys or local Pi auth/model files.
 Custom-provider CRUD/discovery is not inference support: unknown/custom inference
 fails closed until an owner-bound secret-loading implementation exists. Proxy

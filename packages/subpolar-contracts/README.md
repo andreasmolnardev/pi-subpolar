@@ -11,7 +11,7 @@ Shared contracts for the Subpolar runtime, adapters, tools, and applications.
 - Operations manifest types and validation helpers.
 - Skill validation, versioning, scope resolution, and an in-memory skill repository.
 
-This package is intentionally implementation-neutral. It defines the interfaces that `@subpolar/runtime`, storage adapters, Pi integration, and applications compose together. It does not import Pi, PocketBase, WebUI, or HTTP implementations.
+This package is intentionally implementation-neutral. It defines the interfaces that `@subpolar/runtime`, storage adapters, Pi integration, and applications compose together. It does not import Pi, PocketBase, Subpolar Agent, or HTTP implementations.
 
 ## Workspace setup
 

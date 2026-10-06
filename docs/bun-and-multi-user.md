@@ -3,7 +3,7 @@
 ## Workspace installation
 
 The repository pins **Bun 1.3.14** in `package.json` and Docker. The root workspace
-contains `@webui` and `packages/*`; `bunfig.toml` selects `linker = "hoisted"`.
+contains `@subpolar-agent` and `packages/*`; `bunfig.toml` selects `linker = "hoisted"`.
 Run installs from the repository root:
 
 ```sh
@@ -14,12 +14,12 @@ bun install --frozen-lockfile
 Use `bun install` at the root only when intentionally updating dependencies and
 `bun.lock`; review those changes together. Do not create separate workspace
 installs or npm lockfiles. Hoisting shares compatible package versions where
-resolution permits, including the Pi SDK used by WebUI and the standalone CLI.
+resolution permits, including the Pi SDK used by Subpolar Agent and the standalone CLI.
 It does **not** guarantee a single copy across incompatible version requirements;
 nested dependencies can still be necessary. The standalone CLI must resolve the
-SDK through its own package resolution, not by reaching into `@webui/node_modules`.
+SDK through its own package resolution, not by reaching into `@subpolar-agent/node_modules`.
 
-`start-webui.sh` checks for root Vite dependencies and runs a frozen root install
+`start-subpolar-agent.sh` checks for root Vite dependencies and runs a frozen root install
 if they are missing. It starts both the bridge and frontend with Bun. Configure
 `.env` and start PocketBase before starting the application:
 
@@ -52,7 +52,7 @@ bun run test:voice
 bun run test:e2e:contract
 ```
 
-Focused checks, from `@webui`:
+Focused checks, from `@subpolar-agent`:
 
 ```sh
 bun x --no-install vitest run server/tests/multi-user-runtime.test.ts server/tests/multi-user-runtime-sessions.test.ts server/tests/multi-user-providers.test.ts --maxWorkers=2
@@ -71,7 +71,7 @@ docker compose -f docker-compose.dev.yaml up --build
 
 The Dockerfile installs the hoisted root workspace with Bun 1.3.14 and the frozen
 lockfile. It copies only the Node executable from the Node 22 Debian image for
-Vitest; it does not install npm. Tests can be run in the WebUI service container
+Vitest; it does not install npm. Tests can be run in the Subpolar Agent service container
 using the same Bun commands above. A shared Compose container does not provide
 per-user OS isolation, and a successful image build is not a security review.
 
@@ -100,7 +100,7 @@ management/discovery consumers of the stdio adapter require separate review.
 
 ### Owned credentials and fail-closed inference
 
-- WebUI inference constructs an owner-bound provider runtime. Account credential
+- Subpolar Agent inference constructs an owner-bound provider runtime. Account credential
   reads verify the owner, account instance, and provider binding. Host environment
   keys, `~/.pi` auth, and local `models.json` configuration are not tenant fallbacks.
 - The shared provider catalog supplies metadata/login discovery, not inference
@@ -116,7 +116,7 @@ management/discovery consumers of the stdio adapter require separate review.
   `SUBPOLAR_PROVIDER_SECRET_KEY`, and protect PocketBase superuser credentials and
   installation/internal tokens. An internal service token is not tenant identity.
 - The standalone CLI is a trusted local host application: its default SDK may use
-  normal local Pi credentials. This is distinct from WebUI's owner-bound runtime;
+  normal local Pi credentials. This is distinct from Subpolar Agent's owner-bound runtime;
   multi-user embedders must inject an isolated `modelRuntime` or trusted factory.
 
 ### No OS sandbox

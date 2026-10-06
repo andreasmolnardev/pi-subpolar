@@ -18,7 +18,7 @@ Next recommended action: finish the request-scoped bridge runtime/approval bindi
 - `subpolar-cli` will use the same core in-process with an ephemeral local adapter by default; explicit local persistence is opt-in.
 - The tools CLI will remain a remote authenticated gateway client and will not embed Pi or the core runtime.
 - Security fixes precede new capability work: ownership, path boundaries, SSRF controls, redaction, approval state transitions, and XSS safety are release gates.
-- Existing WebUI behavior is preserved unless it conflicts with the revised roadmap; compatibility routes remain adapters, not new authorities.
+- Existing Subpolar Agent behavior is preserved unless it conflicts with the revised roadmap; compatibility routes remain adapters, not new authorities.
 
 ## Phase Progress
 
@@ -31,8 +31,8 @@ Requirements:
 - [x] P0A-002 Implement shared policy/approval decision primitives without PocketBase imports.
 - [x] P0A-003 Add local/ephemeral adapter and explicit unsupported-durability errors.
 - [x] P0A-004 Add minimal `subpolar-cli run` using the shared core in-process.
-- [x] P0A-005 Define PocketBase composition seam and parity fixtures (package-level fake-client parity; WebUI wiring remains open).
-- [x] P0A-006 Add an injected run/executor seam with explicit non-recoverable cancellation semantics; durable WebUI run recovery remains open.
+- [x] P0A-005 Define PocketBase composition seam and parity fixtures (package-level fake-client parity; Subpolar Agent wiring remains open).
+- [x] P0A-006 Add an injected run/executor seam with explicit non-recoverable cancellation semantics; durable Subpolar Agent run recovery remains open.
 
 Implementation tasks:
 - [ ] P0A-001 Create `packages/subpolar-contracts` package and tests.
@@ -44,7 +44,7 @@ Implementation tasks:
 Verification:
 - [ ] Unit tests for policy precedence, approval decisions, redaction, and unsupported capabilities.
 - [x] Identical fixture decisions through local and PocketBase compositions (package/fake-client scope).
-- [x] CLI starts with PocketBase, WebUI, HTTP, and Docker unavailable (fixture executor scope).
+- [x] CLI starts with PocketBase, Subpolar Agent, HTTP, and Docker unavailable (fixture executor scope).
 - [x] Independent architecture verification for the bounded slice.
 
 Commits:
@@ -53,9 +53,9 @@ Commits:
 
 Remaining problems:
 - Current bridge still owns Pi lifecycle and process-global state.
-- Current tool implementation is PocketBase-bound and remains the WebUI authority until migrated.
+- Current tool implementation is PocketBase-bound and remains the Subpolar Agent authority until migrated.
 - Pi-backed executor composition and a concrete PocketBase adapter are still required for the Phase 0A exit criteria.
-- Package-level run seam and PocketBase adapter now exist, but WebUI still uses its legacy bridge lifecycle and the CLI still uses the explicit fixture executor.
+- Package-level run seam and PocketBase adapter now exist, but Subpolar Agent still uses its legacy bridge lifecycle and the CLI still uses the explicit fixture executor.
 
 ### Phase 0 - Contracts, Runtime, Security, and Recovery
 
@@ -86,7 +86,7 @@ Verification:
 Commits:
 - bfe4ee5 — feat(core): add shared foundation and security contracts (security/contract slice)
 
-### Phase 1-3 - WebUI, Personalization, Git, and Review
+### Phase 1-3 - Subpolar Agent, Personalization, Git, and Review
 
 Status: IMPLEMENTED WITH LIVE UI FOLLOW-UPS
 
@@ -125,7 +125,7 @@ Requirements:
 
 ### Phase 10-13 - Integrations, Skills, Automations, Notifications
 
-Status: IMPLEMENTED WITH WEBUI CONTEXT FOLLOW-UPS
+Status: IMPLEMENTED WITH SUBPOLAR_AGENT CONTEXT FOLLOW-UPS
 
 Requirements:
 - [ ] P10-001 Secure MCP/OpenAPI/tool registry operations and context modes.
@@ -149,7 +149,7 @@ Status: IMPLEMENTED WITH LIVE DEPLOYMENT FOLLOW-UPS
 
 Requirements:
 - [ ] P15-001 Versioned migrations, backup/restore, retention, resources, structured diagnostics.
-- [x] P16-001 Disposable PocketBase/WebUI E2E harness and adapter parity suite (contract/parity and opt-in live gate implemented; authenticated live run pending).
+- [x] P16-001 Disposable PocketBase/Subpolar Agent E2E harness and adapter parity suite (contract/parity and opt-in live gate implemented; authenticated live run pending).
 - [ ] P16-002 Browser, runtime, CLI, security, subagent/worktree, memory, browser-tool, voice, and container gates (focused gates implemented; full authenticated deployment gate pending).
 
 ## Active Subagents
@@ -157,7 +157,7 @@ Requirements:
 | Agent | Assignment | Branch/Worktree | Status | Expected output |
 |---|---|---|---|---|
 | audit-core | Phase 0A/0 architecture audit | main read-only | COMPLETE | Evidence-based gap report |
-| audit-webui | Phase 1-3 WebUI audit | main read-only | COMPLETE | Lifecycle/UI gap report |
+| audit-subpolar-agent | Phase 1-3 Subpolar Agent audit | main read-only | COMPLETE | Lifecycle/UI gap report |
 | audit-capabilities | Phase 4-13/security audit | main read-only | COMPLETE | Security and capability gap report |
 | audit-cli | Phase 14-16 audit | main read-only | COMPLETE | CLI/verification gap report |
 | impl-core | P0A contracts/core/local adapter/CLI smoke path | main isolated file scope | COMPLETE - VERIFIED WITH NOTES | Implemented packages, tests, and limitations |
@@ -165,19 +165,19 @@ Requirements:
 | verify-core | Independent P0A/CLI review | main read-only | COMPLETE - FAIL FINDINGS CORRECTED | Initial 17-test review and correction requirements |
 | verify-security | Independent P0 security review | main read-only | COMPLETE - FAIL FINDINGS CORRECTED | Initial security review and correction requirements |
 | impl-security-followup | DNS, custom-provider, approval, internal ownership fixes | main serialized server scope | COMPLETE - VERIFIED WITH NOTES | Focused security corrections |
-| verify-foundation | Reverify corrected core/security slices | main read-only | COMPLETE - VERIFIED WITH NOTES | Focused tests/builds pass; full WebUI suite remains environment-blocked |
+| verify-foundation | Reverify corrected core/security slices | main read-only | COMPLETE - VERIFIED WITH NOTES | Focused tests/builds pass; full Subpolar Agent suite remains environment-blocked |
 | impl-tools-cli | P14 remote-only tools gateway CLI | main new-package scope | COMPLETE - VERIFIED WITH NOTES | 19 CLI tests/build; server registration credentials remain open |
 | impl-contracts | P0 versioned capability/health/error contract | main server-contract scope | COMPLETE - VERIFIED WITH NOTES | v1 contract/health tests; full dependency suite unavailable |
 | impl-run-seam | P0A shared run/executor contract and core service | main package scope | COMPLETE - VERIFIED WITH NOTES | 54 aggregate package tests; Pi executor wiring remains open |
-| impl-pocketbase-adapter | P0A PocketBase adapter contract/parity fixture | main new-package scope | COMPLETE - VERIFIED WITH NOTES | Owner-scoped adapter/parity tests; WebUI wiring remains open |
-| impl-new-routes | P1 canonical new-session route resolution | main WebUI routing scope | COMPLETE - VERIFIED WITH NOTES | Focused route/type/build verification |
-| impl-first-send | P1 immediate first-send composer flow | main WebUI composer scope | COMPLETE - VERIFIED WITH NOTES | Immediate send, permission/profile/model persistence |
+| impl-pocketbase-adapter | P0A PocketBase adapter contract/parity fixture | main new-package scope | COMPLETE - VERIFIED WITH NOTES | Owner-scoped adapter/parity tests; Subpolar Agent wiring remains open |
+| impl-new-routes | P1 canonical new-session route resolution | main Subpolar Agent routing scope | COMPLETE - VERIFIED WITH NOTES | Focused route/type/build verification |
+| impl-first-send | P1 immediate first-send composer flow | main Subpolar Agent composer scope | COMPLETE - VERIFIED WITH NOTES | Immediate send, permission/profile/model persistence |
 | fix-delivery-bridge | P1 delivery replay/profile/idempotency corrections | main bridge scope | COMPLETE - VERIFIED WITH NOTES | 81+ server tests, ownership/idempotency/replay checks |
 | fix-delivery-ux | P1 interrupted handoff retry UX | main SessionDetail scope | COMPLETE - VERIFIED WITH NOTES | Retry/discard/in-flight tests |
 | fix-session-agent-tests | P1 persisted session-agent test/runtime boundary | main session-agent scope | COMPLETE - VERIFIED WITH NOTES | 18 focused hook tests |
 | impl-queue | P1 durable steering/follow-up queue controls | main composer/bridge scope | COMPLETE - VERIFIED WITH NOTES | Atomic claims, legal transitions, UI/API tests |
 | impl-pi-executor | P0A Pi-backed executor composition | main package scope | COMPLETE - VERIFIED WITH NOTES | 40 package tests; host Pi integration remains open |
-| impl-e2e-harness | P16 disposable WebUI/PocketBase harness | main test-infra scope | COMPLETE - VERIFIED WITH NOTES | Contract smoke/harness scaffolding; live E2E not run |
+| impl-e2e-harness | P16 disposable Subpolar Agent/PocketBase harness | main test-infra scope | COMPLETE - VERIFIED WITH NOTES | Contract smoke/harness scaffolding; live E2E not run |
 | impl-cursor-replay | P0 durable event cursor replay/reconnect | main bridge/event scope | COMPLETE - VERIFIED WITH NOTES | Cursor/replay tests; live reconnect E2E not run |
 | impl-gateway-credentials | P14 scoped remote gateway credentials | main auth/tools scope | COMPLETE - VERIFIED WITH NOTES | 96 server + 19 CLI tests; live remote auth not run |
 | impl-attachments | P1 chat context attachments | main composer/attachment scope | COMPLETE - VERIFIED WITH NOTES | Attachment helper tests, type/build checks; live uploads unverified |
@@ -199,20 +199,20 @@ Requirements:
 
 - Initial revised-roadmap audit completed 2026-09-19.
 - Existing tool gateway, approval flow, agent runtime, session context, transcript projection, and provider flow tests identified as characterization coverage.
-- Added and corrected the dependency-free shared core/local adapter/CLI foundation and the first WebUI security hardening slice; independent verification is pending.
+- Added and corrected the dependency-free shared core/local adapter/CLI foundation and the first Subpolar Agent security hardening slice; independent verification is pending.
 - Verified bounded checkpoint after independent review: 37 focused server/transcript tests, 36 package tests, 8 Bun-native server tests, 2 frontend security tests, and successful Bun bridge/package builds.
 - Checkpoint committed as bfe4ee5 and independently verified with notes.
-- Run/adapter checkpoint independently verified: 54 package tests, all entrypoint builds, recovery/ownership/atomicity/redaction probes pass; WebUI production build remains blocked by existing settings-component type errors.
+- Run/adapter checkpoint independently verified: 54 package tests, all entrypoint builds, recovery/ownership/atomicity/redaction probes pass; Subpolar Agent production build remains blocked by existing settings-component type errors.
 - f2c19bc committed and verified as the run/adapter checkpoint.
 - 8b40180 committed and independently verified as the canonical routing/first-send checkpoint.
 - Phase 1 focused checkpoint independently verified: 87 Vitest tests, 81 Bun server tests, bridge/app typechecks, and direct Vite build passed; full build remains blocked by unrelated settings errors.
 - Queue/Pi/E2E checkpoint independently verified: 40 package tests, 9 queue/bridge/E2E contract tests, atomic queue corrections, and source/build checks pass; live services unavailable.
 - 1b4019a committed and verified as the queue/Pi/E2E checkpoint.
 - Cursor/gateway checkpoint independently verified: 27 focused cursor/credential/CLI tests and 37 package tests pass; live service/E2E unavailable.
-- Attachment/appearance checkpoint verified: 6 focused tests, bridge build, and diff checks pass; live upload/vision/website and full WebUI typecheck remain environment-limited.
+- Attachment/appearance checkpoint verified: 6 focused tests, bridge build, and diff checks pass; live upload/vision/website and full Subpolar Agent typecheck remain environment-limited.
 - df1fd00 committed and verified as the attachment/appearance checkpoint.
-- Agent profile/context checkpoint verified: 9 focused server tests and bridge typecheck pass; full WebUI build remains blocked by unrelated settings errors.
-- Git read checkpoint verified: focused Git tests and 101 native server tests pass; bridge/WebUI typechecks and bridge build pass; mutations intentionally excluded.
+- Agent profile/context checkpoint verified: 9 focused server tests and bridge typecheck pass; full Subpolar Agent build remains blocked by unrelated settings errors.
+- Git read checkpoint verified: focused Git tests and 101 native server tests pass; bridge/Subpolar Agent typechecks and bridge build pass; mutations intentionally excluded.
 - e66da09 committed and verified as the Git read checkpoint.
 - Tasks/subagent/worktree checkpoint independently verified: 20 focused tests, bridge typecheck/build, fail-closed capability ceiling, approval resume, ownership, atomic transitions, and custom-root worktree checks pass; live PocketBase unavailable.
 - 61f32e1 committed and verified as the Tasks/subagent/worktree checkpoint.
@@ -226,11 +226,11 @@ Requirements:
 
 ## Known Bugs
 
-- WebUI still has legacy process-global session metadata and Pi lifecycle outside the new package run seam; durable cross-process run recovery is not implemented.
+- Subpolar Agent still has legacy process-global session metadata and Pi lifecycle outside the new package run seam; durable cross-process run recovery is not implemented.
 - Cursor replay, attachments, and session pagination have focused implementations; assistant suggestions and live reconnect remain incomplete/unverified.
-- Live cursor reconnect and scoped gateway credential deployment remain unverified without PocketBase/WebUI services.
+- Live cursor reconnect and scoped gateway credential deployment remain unverified without PocketBase/Subpolar Agent services.
 - Git API/UI and several hooks/tests are orphaned.
-- The disposable harness and opt-in live gate exist, but authenticated PocketBase/WebUI/Pi execution has not run in this environment.
+- The disposable harness and opt-in live gate exist, but authenticated PocketBase/Subpolar Agent/Pi execution has not run in this environment.
 - `subpolar-cli` preserves the explicit local fixture default; complete Pi-backed standalone composition remains open.
 - Full application test execution must use the configured Vitest/jsdom environment; raw Bun execution of all frontend tests is not a valid substitute.
 
@@ -239,13 +239,13 @@ Requirements:
 - Session metadata is split between PocketBase, SQLite, Pi JSONL, and process-global maps.
 - Existing OpenAPI document describes a compatibility API rather than versioned Subpolar contracts.
 - Dynamic PocketBase schema setup is not a migration/rollback system.
-- Root and WebUI manifests lack a normal test script; dependencies are not installed in the current environment.
+- Root and Subpolar Agent manifests lack a normal test script; dependencies are not installed in the current environment.
 - Legacy filesystem profile/background extensions remain potential competing authorities.
 
 ## Integration Conflicts
 
-- Shared edits to `@webui/bridge.ts`, `server/tools.ts`, and `server/pocketbase.ts` must be serialized.
-- Core package work must not import current WebUI server modules; use explicit contracts and composition adapters.
+- Shared edits to `@subpolar-agent/bridge.ts`, `server/tools.ts`, and `server/pocketbase.ts` must be serialized.
+- Core package work must not import current Subpolar Agent server modules; use explicit contracts and composition adapters.
 - Security hardening must preserve existing local development startup behavior while making deployment exposure explicit.
 
 ## Verification Evidence
@@ -254,11 +254,11 @@ Requirements:
 - Git worktree was clean at audit start.
 - Automated tests/typechecks could not be executed during audit because installed JS/Bun dependencies were unavailable (`tsc`/Vitest modules missing).
 - No roadmap requirement is currently independently verified against a disposable deployment.
-- Bounded checkpoint verification after implementation: dependency-free tests/builds pass; full WebUI Vitest/typecheck/build remains unavailable or has unrelated existing failures.
+- Bounded checkpoint verification after implementation: dependency-free tests/builds pass; full Subpolar Agent Vitest/typecheck/build remains unavailable or has unrelated existing failures.
 - Run/adapter checkpoint verification: 54 package tests, all package entrypoint builds, and independent recovery/ownership/atomicity/redaction probes pass.
 
 ## Next Actions
 
-1. Centralize WebUI Pi lifecycle and durable cross-restart run recovery through the extracted run seam.
-2. Migrate WebUI skill routes/context assembly from filesystem authority to the durable skill repository.
-3. Run authenticated disposable PocketBase/WebUI/Pi/browser/voice E2E and close deployment-only findings.
+1. Centralize Subpolar Agent Pi lifecycle and durable cross-restart run recovery through the extracted run seam.
+2. Migrate Subpolar Agent skill routes/context assembly from filesystem authority to the durable skill repository.
+3. Run authenticated disposable PocketBase/Subpolar Agent/Pi/browser/voice E2E and close deployment-only findings.

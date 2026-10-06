@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createToolRoutingExtension } from '../../subpolar/extensions/tool-routing.ts'
 import { hasPendingApprovalWaiter, notifyApprovalResolution } from '../application/tools/approval-execution.ts'
 
-describe('WebUI tool routing boundary', () => {
+describe('Subpolar Agent tool routing boundary', () => {
   it('exposes web search directly and routes its call under canonical web.search ID', async () => {
     const registered = new Map<string, { execute: (id: string, input: unknown) => Promise<unknown> }>()
     const gateway = { call: vi.fn(async () => ({ ok: true, value: { results: [] } })) }

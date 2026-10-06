@@ -1,5 +1,5 @@
 /**
- * Legacy Pi CLI extension; not loaded by the WebUI. Background execution uses
+ * Legacy Pi CLI extension; not loaded by Subpolar Agent. Background execution uses
  * application automation/subagent runs rather than native Pi session files.
  */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";

@@ -1,6 +1,6 @@
 # Project and session metadata migration
 
-`@webui/server/project-store.ts` is the bridge-facing repository for moving project/session **metadata** from the legacy SQLite tables to PocketBase. It does not replace Pi's session store.
+`@subpolar-agent/server/project-store.ts` is the bridge-facing repository for moving project/session **metadata** from the legacy SQLite tables to PocketBase. It does not replace Pi's session store.
 
 ## Ownership model
 

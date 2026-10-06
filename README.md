@@ -2,7 +2,7 @@
 Turning Pi into a general-purpose agent
 
 What I learnt from this:
-Pi is a coding agent. While I could make the webui thing work, compatibility feels a bit forced.
+Pi is a coding agent. While I could make the Subpolar Agent work, compatibility feels a bit forced.
 
 ## Core Principles
 - Isolation: Stateless where possible
@@ -26,7 +26,7 @@ This repository extends Pi into a local, general-purpose agent platform:
   manage providers through the master agent.
 - **Model integration:** expose the selected Pi model through an optional
   OpenAI-compatible blank proxy.
-- **Local WebUI:** a browser client connected to the embedded Pi SDK with chat,
+- **Local Subpolar Agent:** a browser client connected to the embedded Pi SDK with chat,
   streaming transcripts, tool-call rendering, session resume/fork/clone,
   model and thinking-level selection, usage statistics, activity/unread
   indicators, settings, and extension management.
@@ -35,18 +35,18 @@ This repository extends Pi into a local, general-purpose agent platform:
   tool-call audit history.
 - **Tool routing:** Pi built-in tools and registered external tools pass through a
   PocketBase-backed registry and policy gateway before execution.
-- **Operational improvements:** a one-command WebUI startup flow, typed
+- **Operational improvements:** a one-command Subpolar Agent startup flow, typed
   bridge endpoints, live thinking markers, and more reliable transcript
   projection and large-prompt handling.
 
-Pi remains the agent and session engine embedded in Subpolar; the WebUI is its
+Pi remains the agent and session engine embedded in Subpolar; the Subpolar Agent is its
 browser presentation layer. Application integrations live under
-[`@webui/subpolar`](./@webui/subpolar) and are loaded through the Pi SDK. See
-[`WEBUI_FEATURES.md`](./WEBUI_FEATURES.md) for the WebUI feature scope.
+[`@subpolar-agent/subpolar`](./@subpolar-agent/subpolar) and are loaded through the Pi SDK. See
+[`SUBPOLAR_AGENT_FEATURES.md`](./SUBPOLAR_AGENT_FEATURES.md) for the Subpolar Agent feature scope.
 
 ## Install and validate
 
-Use **Bun 1.3.14** from the repository root. `@webui` and `packages/*` are one
+Use **Bun 1.3.14** from the repository root. `@subpolar-agent` and `packages/*` are one
 workspace; `bunfig.toml` selects the hoisted linker and `bun.lock` is the lockfile.
 
 ```sh
@@ -60,7 +60,7 @@ bun run test:server
 bun run test:voice
 ```
 
-Install once at the root, not separately in `@webui` or individual packages.
+Install once at the root, not separately in `@subpolar-agent` or individual packages.
 Hoisting shares compatible dependencies; incompatible versions may still need
 nested copies. It is not a universal deduplication guarantee.
 Vitest suites require a supported Node runtime on `PATH` (Node 22.12+ on the
@@ -69,10 +69,10 @@ without forcing Vitest onto Bun. Bun remains the package manager and application
 runtime; npm is not required.
 See [Bun and multi-user operations](docs/bun-and-multi-user.md) for details.
 
-## WebUI
+## Subpolar Agent
 
-`@webui` is a local browser UI backed by an in-process Pi SDK session manager. Read
-`WEBUI_FEATURES.md` for feature scope and `@webui/README.md` for startup and
+`@subpolar-agent` is a local browser UI backed by an in-process Pi SDK session manager. Read
+`SUBPOLAR_AGENT_FEATURES.md` for feature scope and `@subpolar-agent/README.md` for startup and
 endpoint details.
 
 Start PocketBase first, then start the bridge and Vite together from any directory:
@@ -80,7 +80,7 @@ Start PocketBase first, then start the bridge and Vite together from any directo
 ```sh
 cp /path/to/pi-subpolar/.env.example /path/to/pi-subpolar/.env
 # Set POCKETBASE_URL, POCKETBASE_EMAIL, and POCKETBASE_PASSWORD in .env
-/path/to/pi-subpolar/start-webui.sh
+/path/to/pi-subpolar/start-subpolar-agent.sh
 ```
 
 Open `http://localhost:5173`. The first unauthenticated visit opens the PocketBase-backed
@@ -88,7 +88,7 @@ setup flow; subsequent application routes require a valid `pb_auth` session cook
 
 ### Current multi-user limits
 
-WebUI inference requires the authenticated user's **owned provider accounts**;
+Subpolar Agent inference requires the authenticated user's **owned provider accounts**;
 server environment keys and local Pi auth/model files are not a tenant fallback.
 Custom-provider CRUD/discovery exists, but custom-provider inference is not wired
 up and fails closed. Proxy clients need an owner token and an account-qualified
@@ -118,7 +118,7 @@ validation results, and remaining deployment/design gates across the feature wor
 
 ### Docker development
 
-Docker Compose runs PocketBase and the WebUI in separate containers. Create the local
+Docker Compose runs PocketBase and the Subpolar Agent in separate containers. Create the local
 configuration first, and set the PocketBase superuser credentials:
 
 ```sh

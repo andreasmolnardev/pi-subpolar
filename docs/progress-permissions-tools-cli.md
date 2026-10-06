@@ -2,9 +2,9 @@
 
 ## Ownership and authority
 
-The original parity slice changes only `packages/subpolar-tools/src/cli.ts`, `@webui/server/routes/tools.ts`, `@webui/server/routes/gateway.ts`, the new `@webui/server/tests/gateway-parity-progress.test.ts`, and this document. The handoffs 1/2 closure additionally owns `@webui/server/bridge-request-handler.ts`, **only the SSE stream section** of `@webui/server/routes/legacy.ts`, and new `@webui/server/tests/gateway-bridge-scoped.test.ts`. It does not write `bridge-runtime.ts` or other agents' files. Existing uncommitted work and other agents' edits are preserved. There are no existing `@webui/server/core/tool*.ts` or `approval*.ts` files.
+The original parity slice changes only `packages/subpolar-tools/src/cli.ts`, `@subpolar-agent/server/routes/tools.ts`, `@subpolar-agent/server/routes/gateway.ts`, the new `@subpolar-agent/server/tests/gateway-parity-progress.test.ts`, and this document. The handoffs 1/2 closure additionally owns `@subpolar-agent/server/bridge-request-handler.ts`, **only the SSE stream section** of `@subpolar-agent/server/routes/legacy.ts`, and new `@subpolar-agent/server/tests/gateway-bridge-scoped.test.ts`. It does not write `bridge-runtime.ts` or other agents' files. Existing uncommitted work and other agents' edits are preserved. There are no existing `@subpolar-agent/server/core/tool*.ts` or `approval*.ts` files.
 
-The execution authority remains `packages/subpolar-core/src/index.ts` (`createPolicyGateway`/`createGateway`). WebUI composes it in `@webui/server/application/tools/tools.ts:createCoreToolGateway` with owner-bound approval, audit, and idempotency adapters. HTTP routes do credential/ownership boundary checks; they do not execute adapters directly or implement another policy engine. `packages/subpolar-tools/src/cli.ts` remains an HTTP client without core/runtime imports. The standalone registry in `packages/subpolar-tools/src/index.ts` is unchanged and is not introduced as a second bridge authority.
+The execution authority remains `packages/subpolar-core/src/index.ts` (`createPolicyGateway`/`createGateway`). Subpolar Agent composes it in `@subpolar-agent/server/application/tools/tools.ts:createCoreToolGateway` with owner-bound approval, audit, and idempotency adapters. HTTP routes do credential/ownership boundary checks; they do not execute adapters directly or implement another policy engine. `packages/subpolar-tools/src/cli.ts` remains an HTTP client without core/runtime imports. The standalone registry in `packages/subpolar-tools/src/index.ts` is unchanged and is not introduced as a second bridge authority.
 
 ## Fixed
 
@@ -24,19 +24,19 @@ All calls in these tests are local stubs or in-memory ports. No server was start
 
 The new parity suite tests persisted scope for list/query/describe/call/continuation, cross-user session access, an actual approval-service cross-user approval-ID denial, global registration isolation, redacted responses, rejected-decision retry behavior, and legacy/CLI continuation context parity. It also exercises the **existing core** for deny-over-approval-over-allow and pending/approved concurrent retry idempotency with input/output/JSON-encoded audit redaction. CLI tests cover invalid, expired, revoked, permission-denied, and scope-denied structured errors and the core 202 approval shape.
 
-Core idempotency coverage here is in-memory within one gateway. It does not establish multi-process guarantees or durable WebUI continuation correctness.
+Core idempotency coverage here is in-memory within one gateway. It does not establish multi-process guarantees or durable Subpolar Agent continuation correctness.
 
 Commands (each bounded to 60 seconds):
 
 ```sh
-# From @webui:
+# From @subpolar-agent:
 bun x --no-install vitest run server/tests/gateway-parity-progress.test.ts server/tests/approval-flow.test.ts server/tests/approval-event.test.ts server/tests/approval-execution.test.ts server/tests/security-redaction.test.ts server/tests/tool-routing.test.ts
 
 # From repository root (these suites use bun:test):
 bun test packages/subpolar-tools/test
-bun test @webui/server/tests/gateway-credentials.test.ts packages/subpolar-core/test/gateway.test.ts
+bun test @subpolar-agent/server/tests/gateway-credentials.test.ts packages/subpolar-core/test/gateway.test.ts
 
-# From @webui, targeted strict typecheck:
+# From @subpolar-agent, targeted strict typecheck:
 bun run --bun tsc --noEmit --strict --noUnusedLocals --noUnusedParameters --skipLibCheck --module preserve --moduleResolution bundler --target ES2022 --allowImportingTsExtensions --types node server/tests/gateway-parity-progress.test.ts
 ```
 
@@ -55,8 +55,8 @@ Earlier parity-slice `tsconfig.bridge.json` runs reported errors in provider run
 
 1. **CLOSED locally — bridge gateway principal allowlist.** The request coordinator rejects every unsupported gateway method/path with `403 GATEWAY_ROUTE_DENIED` before domain dispatch, for both scoped and unscoped gateway credentials. A gateway bearer never falls back to cookie/user identity, including invalid, unavailable, or null authentication results. Existing user authentication and exact internal-token handling remain intact. This is a principal boundary; existing route checks and core execution remain authoritative. Exact supported surface and public exceptions are documented below.
 2. **CLOSED locally — SSE persisted scope and credential owner.** Gateway subscriptions use `gatewayCredential.ownerId` even if a user identity is also supplied. Query `sessionId`, when supplied, must resolve to that owner's persisted session; project and enabled agent name (ID/name lookup, with the existing master fallback) are derived from persistence before the existing `assertGatewayAccess(..., 'events', context)`. Missing context fails closed for session/project/agent-scoped credentials. Replay requires matching durable owner/session metadata. Live delivery retains the inspected runtime owner filter and adds a subscription-bound session filter. No runtime file or second permission policy was added. See limitations below.
-3. **Application/core owners — durable approval continuation.** `continueCoreApprovedTool` currently consumes in-process approval input before calling core and maps every non-approved record to pending, including rejected/expired records. Retry after consuming input may require configured encrypted persisted input; this slice preserves identity but does not fix input lifetime, expiration mapping, or durable claiming. WebUI gateway composition uses owner-bound idempotency but does not wire the core continuation/approval-claim ports. Prove concurrent continuation across independently constructed gateways/processes with the actual persistence adapter and migrations before claiming durable exactly-once behavior.
-4. **Application/core owners — approval request binding.** Core validates approved call/tool IDs; WebUI approval store loading is owner-bound. Inspect and enforce session/agent/input binding as well: reusing the original call ID must not apply an approval to a changed input or another session owned by the same user. No new authority was added in the route to compensate for this.
+3. **Application/core owners — durable approval continuation.** `continueCoreApprovedTool` currently consumes in-process approval input before calling core and maps every non-approved record to pending, including rejected/expired records. Retry after consuming input may require configured encrypted persisted input; this slice preserves identity but does not fix input lifetime, expiration mapping, or durable claiming. Subpolar Agent gateway composition uses owner-bound idempotency but does not wire the core continuation/approval-claim ports. Prove concurrent continuation across independently constructed gateways/processes with the actual persistence adapter and migrations before claiming durable exactly-once behavior.
+4. **Application/core owners — approval request binding.** Core validates approved call/tool IDs; Subpolar Agent approval store loading is owner-bound. Inspect and enforce session/agent/input binding as well: reusing the original call ID must not apply an approval to a changed input or another session owned by the same user. No new authority was added in the route to compensate for this.
 5. **CLOSED locally — scoped discovery and search completeness.** `searchToolsForAgent(..., query, projectId?, permissionOverride?, includeOnDemand = false)` now uses `listToolsForAgent` with effective project/permission context before existing ranking/capping. The route's post-filter intersection is removed, so effective-context candidates absent from baseline search are not omitted and excluded candidates do not consume the 12-result cap. List/describe/search resolve the owned persisted session without client agent/permission hints, authorize actual resolved agent/project scope, and forward non-default durable permission only. Project IDs use resolved `project.id` with stored `session.projectId` fallback. Explicit list still includes on-demand tools; standard search does not. This closes propagation/completeness only: it does not make project policy a privilege grant or change capability ceilings, core authority, execution, or approval state. Exact real-policy coverage and validation are below.
 6. **Bridge/tool capability owner — caller capability assertions.** The call route still forwards caller-supplied capability names to core metadata, as before this slice. Audit how internal adapters authorize those values; a user-submitted capability string must not create a grant. Derive grants from authenticated/persisted context in the owning composition layer.
 7. **CLI/bridge wait semantics.** CLI sends `waitForApproval` for `--wait`; the owned route currently returns pending rather than implementing a wait. No open-ended polling or live wait was added. HTTP approval continuation also remains subject to the durable-input limitation above.
@@ -75,7 +75,7 @@ All other gateway-principal paths/methods are denied, including providers, proje
 
 The inspected `bridge-runtime.ts:broadcastSse` already discards missing owner IDs and selects clients by `client.userId === userId`; it has no session delivery filter. Without modifying that file, the SSE subscription's live `enqueue` accepts only complete JSON SSE frames whose `properties.sessionID` matches the authorized persisted session, dropping absent/malformed/mismatched session context. Owner identity on live frames remains enforced by that existing broadcaster, not inferred from event payloads. Replay uses durable `ownerId`/`sessionId` metadata. Connected counts are session-filtered for gateway session subscriptions; subscription-generated reset/connected/heartbeat control frames bypass the data-frame filter. Unscoped gateway credentials without a requested session retain owner-wide `events` subscriptions. Credentials with only project/agent scope still require an owned session, and subscribe only to that session rather than all project/agent sessions.
 
-Bounded to 60 seconds, from `@webui`:
+Bounded to 60 seconds, from `@subpolar-agent`:
 
 ```sh
 bun x --no-install vitest run server/tests/gateway-bridge-scoped.test.ts server/tests/gateway-parity-progress.test.ts server/tests/new-session-route.test.ts
@@ -91,11 +91,11 @@ No live PocketBase schema, migrations, deployed SSE behavior, credential deploym
 
 ## Handoff 5: discovery closure and verification
 
-This closure edits only list/search/describe handling in `@webui/server/routes/tools.ts`, `searchToolsForAgent` in `@webui/server/application/tools/tools.ts`, related `gateway-parity-progress.test.ts` tests, and progress paragraphs here and in `progress-integrations-routing.md` #1. Prior work is preserved; execution, continuation, legacy approval handling, bridge composition, and other agents' tests remain unchanged.
+This closure edits only list/search/describe handling in `@subpolar-agent/server/routes/tools.ts`, `searchToolsForAgent` in `@subpolar-agent/server/application/tools/tools.ts`, related `gateway-parity-progress.test.ts` tests, and progress paragraphs here and in `progress-integrations-routing.md` #1. Prior work is preserved; execution, continuation, legacy approval handling, bridge composition, and other agents' tests remain unchanged.
 
 The parity suite now has **49 tests**. New regressions invoke real discovery/policy/search functions over in-memory records for durable `none`, default-permission semantics, effective-context candidates absent from baseline search under session `allow_all`, project/agent capability ceilings, ranking before the full 12-result cap, and standard on-demand exclusion versus explicit list/describe. Boundary tests cover actual resolved agent and project authorization instead of hints/stored profile IDs, and legacy scoped credentials' approvals permission checks.
 
-Commands from `@webui`, each bounded to 60 seconds:
+Commands from `@subpolar-agent`, each bounded to 60 seconds:
 
 ```sh
 bun x --no-install vitest run server/tests/gateway-parity-progress.test.ts server/tests/integrations-routing-progress.test.ts src/api/integrations-routing-progress.test.ts server/tests/tool-routing.test.ts server/tests/approval-flow.test.ts server/tests/approval-event.test.ts server/tests/approval-execution.test.ts server/tests/security-redaction.test.ts

@@ -4,9 +4,9 @@
 
 Owned changes only:
 
-- `@webui/server/application/session-context.ts`: reject a returned project's explicit `userId` when it differs from the authenticated identity; verify every resolved agent matches the selected name/ID, including new sessions and default selection. Preserve `SESSION_AGENT_MISMATCH` for stored profile mismatches. Default session permission remains `ask`.
-- `@webui/server/routes/agents.ts`: validate create/update names, profile enums, policy booleans, object shapes, tool/skill context modes, and project override shapes before writing. Malformed values now return 400 rather than being ignored or persisted for later fallback. Valid primary/subagent modes and explicit model/template/context settings are preserved. No new browser, memory, registered-tool, or subagent privileges are added.
-- `@webui/server/tests/profiles-memory-skills-progress.test.ts`: new focused route/context, owner/scope, privilege-default, and four-mode skill tests.
+- `@subpolar-agent/server/application/session-context.ts`: reject a returned project's explicit `userId` when it differs from the authenticated identity; verify every resolved agent matches the selected name/ID, including new sessions and default selection. Preserve `SESSION_AGENT_MISMATCH` for stored profile mismatches. Default session permission remains `ask`.
+- `@subpolar-agent/server/routes/agents.ts`: validate create/update names, profile enums, policy booleans, object shapes, tool/skill context modes, and project override shapes before writing. Malformed values now return 400 rather than being ignored or persisted for later fallback. Valid primary/subagent modes and explicit model/template/context settings are preserved. No new browser, memory, registered-tool, or subagent privileges are added.
+- `@subpolar-agent/server/tests/profiles-memory-skills-progress.test.ts`: new focused route/context, owner/scope, privilege-default, and four-mode skill tests.
 
 No changes to settings, runtime, persistence, core, auth, shared, bridges, dependencies, or unrelated concurrent work. No memory content has been added to any prompt. No new operations abstraction was needed.
 
@@ -16,7 +16,7 @@ No changes to settings, runtime, persistence, core, auth, shared, bridges, depen
 
 - Durable application profiles live in the PocketBase `agents` collection. `listAgents()` and `loadAgentRuntime()` normalize model, thinking, approval mode, template, tool/skill modes and policies; `effectiveAgentConfiguration()` applies project overrides.
 - General defaults use `ask`; coding/plan/reviewer currently use `auto` with write/edit/bash disabled. Memory, browser, and subagent booleans default to false, registered policies to an empty map. Legacy/non-template profiles and the master agent retain existing special-case tool behavior; this work does **not** assert every default tool is denied.
-- Project overrides reduce tool and skill mode exposure. **Remaining gap:** `@webui/server/application/tools/tools.ts:effectiveAgentConfiguration()` spreads project policy booleans and builtin/registered maps over agent policies. A project can therefore set `memory`, `browser`, `subagent`, or a denied map entry to true even when false at agent level. Tools/runtime owner must implement policy intersection/deny precedence and test all opt-in capabilities; route shape validation does not solve that ceiling violation.
+- Project overrides reduce tool and skill mode exposure. **Remaining gap:** `@subpolar-agent/server/application/tools/tools.ts:effectiveAgentConfiguration()` spreads project policy booleans and builtin/registered maps over agent policies. A project can therefore set `memory`, `browser`, `subagent`, or a denied map entry to true even when false at agent level. Tools/runtime owner must implement policy intersection/deny precedence and test all opt-in capabilities; route shape validation does not solve that ceiling violation.
 - Effective-source metadata is normalized separately in `toAgent()` / `toAgentDefinition()`. It is not consistently derived from which explicit record fields were present. Runtime owner should test explicit model/thinking/approval provenance versus template/default, not merely values round-tripped by CRUD. Project mode overrides mark both tools and skills as project-sourced even if only one changed.
 - `loadAgentRuntime():buildToolPolicyRuntime()` and execution's `evaluateAgentToolPolicy()` use different checks. The former does not apply all memory/browser opt-in, `none`, and approval-deny checks that execution applies. Runtime owner should align visible/active tools with executable permissions and test plan/reviewer and disabled capabilities. No claim of corrected runtime exposure here.
 - The shared session-context resolver accepts owned enabled agents independent of primary/subagent mode; this is not changed because execution callers can legitimately resolve subagents. Primary routing already filters subagents in `bridge-runtime.ts:sessionRoutingCandidates()`. `src/components/agent/AgentQuickSelect.tsx` filters primary/all and hidden entries but does not independently filter disabled agents; UI/hook contract work remains if disabled profiles reach this component.
@@ -24,13 +24,13 @@ No changes to settings, runtime, persistence, core, auth, shared, bridges, depen
 
 ### Memory
 
-- `@webui/server/persistence/memory.ts:PocketBaseMemoryService` persists `memory_records`, with authenticated owner, user/agent/project scopes, bounded queries, versions and tombstones. It independently rejects cross-owner and wrong agent/project mutation access, even if storage returns unfiltered rows.
+- `@subpolar-agent/server/persistence/memory.ts:PocketBaseMemoryService` persists `memory_records`, with authenticated owner, user/agent/project scopes, bounded queries, versions and tombstones. It independently rejects cross-owner and wrong agent/project mutation access, even if storage returns unfiltered rows.
 - `memoryPolicyAllows()` requires explicit opt-in and makes plan/reviewer mutation tools unavailable. This is distinct from storage visibility: the repository itself is not the opt-in enforcement layer.
 - Memory is a tool capability, not implicit prompt hydration. Inspected `loadAgentRuntime()` composes agent prompt plus rendered skills, not fetched memory. No live PocketBase, concurrency/CAS, or prompt end-to-end guarantee was established by this task.
 
 ### Skills and settings integration handoff
 
-- Durable routes are **already** in `@webui/server/routes/settings.ts` at `/api/settings/skills`, using `createOwnerBoundSkillStore()`. No additional route migration was performed or is required just to connect the durable repository.
+- Durable routes are **already** in `@subpolar-agent/server/routes/settings.ts` at `/api/settings/skills`, using `createOwnerBoundSkillStore()`. No additional route migration was performed or is required just to connect the durable repository.
 - Owner-bound store delegates to `packages/subpolar-persistance-pocketbase/src/index.ts` for head/history CRUD and effective resolution. Tests exercise that adapter with a fake PocketBase transport, not an in-memory skill repository and not a live server. Owner/scope filters and four exposure modes work in the executed repository tests.
 - `resolveSkillRuntimeContext()` restricts repository exposure with agent modes. Always-loaded bodies are included; discoverable skills expose metadata unless explicitly selected; explicit-only skills require selection; disabled skills stay excluded. Explicit IDs cannot select another agent/project's skills. Runtime integration tests are present but dependency-blocked (below).
 - **Settings integration owner:** reject invalid supplied `scope`/`mode` rather than silently defaulting to global/discoverable; validate `agentId` / `projectId` / `repoId` against authenticated-owner durable agent/project repositories before scoped CRUD. `createOwnerBoundSkillStore()` binds record ownership, but does not prove referenced agent/project IDs belong to that owner. Coordinate route changes with persistence owner and existing UI clients; this task did not edit `settings.ts`.
@@ -43,11 +43,11 @@ Executed:
 
 1. From repository root:
    ```sh
-   bun test @webui/server/tests/profiles-memory-skills-progress.test.ts --test-name-pattern 'context defaults|stored permissions|profile writes|malformed profile|durable memory excludes|durable skill repository'
+   bun test @subpolar-agent/server/tests/profiles-memory-skills-progress.test.ts --test-name-pattern 'context defaults|stored permissions|profile writes|malformed profile|durable memory excludes|durable skill repository'
    ```
    **6 passed, 2 filtered out, 0 failed, 54 expectations.** Covers explicit project-owner rejection, agent/session ownership and selection, stored permission immutability across ask/none/allow_all, both profile modes, cross-owner update/delete refusal, malformed settings rejection before writes, memory scope read/update/tombstone isolation, durable skill scope/owner isolation and all four modes.
 
-2. From `@webui`:
+2. From `@subpolar-agent`:
    ```sh
    ./node_modules/.bin/vitest run server/tests/session-context.test.ts
    ```
@@ -55,7 +55,7 @@ Executed:
 
 3. Full new progress file plus owner-bound skill-store tests:
    ```sh
-   bun test @webui/server/tests/profiles-memory-skills-progress.test.ts @webui/server/tests/subpolar-skill-store.test.ts
+   bun test @subpolar-agent/server/tests/profiles-memory-skills-progress.test.ts @subpolar-agent/server/tests/subpolar-skill-store.test.ts
    ```
    **8 passed, 2 failed.** Both runtime-facing progress tests fail to import the installed Pi SDK because `proper-lockfile` is missing. They are not marked skipped or claimed as passing. The existing owner-bound skill-store tests both passed. An initial run also including `memory.test.ts` had the same dependency import blocker.
 
@@ -63,7 +63,7 @@ After the integration/dependency owner repairs the installation, rerun the full 
 
 ## Security handoff completion (subsequent bounded pass)
 
-This pass edited only `@webui/server/application/tools/tools.ts`, the skills section of `@webui/server/routes/settings.ts`, `@webui/server/persistence/subpolar-skill-store.ts`, skill functions in `packages/subpolar-persistance-pocketbase/src/index.ts`, two new focused tests, and this document. Existing concurrent changes, including MCP/registered-tool owner filtering in `accessibleToolRecords()`, were preserved. No bridge, provider, frontend, runtime-core, or dependency edits were made.
+This pass edited only `@subpolar-agent/server/application/tools/tools.ts`, the skills section of `@subpolar-agent/server/routes/settings.ts`, `@subpolar-agent/server/persistence/subpolar-skill-store.ts`, skill functions in `packages/subpolar-persistance-pocketbase/src/index.ts`, two new focused tests, and this document. Existing concurrent changes, including MCP/registered-tool owner filtering in `accessibleToolRecords()`, were preserved. No bridge, provider, frontend, runtime-core, or dependency edits were made.
 
 ### Exact fixes
 
@@ -80,11 +80,11 @@ All commands bounded to 120 seconds. The previously blocked Pi SDK imports now s
 
 From repository root:
 ```sh
-bun test @webui/server/tests/security-handoffs.test.ts @webui/server/tests/profiles-memory-skills-progress.test.ts @webui/server/tests/memory.test.ts @webui/server/tests/skill-context.test.ts @webui/server/tests/subpolar-skill-store.test.ts @webui/server/tests/subagent-control.test.ts @webui/server/tests/tools-registry.test.ts packages/subpolar-contracts/test/skills.test.ts packages/subpolar-persistance-pocketbase/test/pocketbase-adapter.test.ts
+bun test @subpolar-agent/server/tests/security-handoffs.test.ts @subpolar-agent/server/tests/profiles-memory-skills-progress.test.ts @subpolar-agent/server/tests/memory.test.ts @subpolar-agent/server/tests/skill-context.test.ts @subpolar-agent/server/tests/subpolar-skill-store.test.ts @subpolar-agent/server/tests/subagent-control.test.ts @subpolar-agent/server/tests/tools-registry.test.ts packages/subpolar-contracts/test/skills.test.ts packages/subpolar-persistance-pocketbase/test/pocketbase-adapter.test.ts
 ```
 **57 passed, 0 failed, 316 expectations, 9 files.** New regressions cover all five capability ceilings, wildcard/legacy/allow_all bypass attempts, unchanged legacy defaults, scope fallback removal, duplicate scoped selection, global historical selection, unfiltered cross-owner history deletion, invalid route enums and foreign/missing agent/project/repo references. An initial new plan-memory fixture omitted explicit context exposure and failed one assertion; the fixture was corrected to enable query/write context modes, and the complete command passed. Existing tests were not edited.
 
-From `@webui` using its configured Vitest environment:
+From `@subpolar-agent` using its configured Vitest environment:
 ```sh
 ./node_modules/.bin/vitest run server/tests/security-handoffs-runtime.test.ts server/tests/agent-runtime.test.ts server/tests/session-context.test.ts server/tests/tool-routing.test.ts
 ```

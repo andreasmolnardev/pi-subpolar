@@ -98,7 +98,7 @@ function operationParameters(document: AnyObject, pathItem: AnyObject, operation
 }
 
 function bridgeUrl(): string {
-  return `http://127.0.0.1:${Number(process.env.WEBUI_PORT ?? 4173)}`
+  return `http://127.0.0.1:${Number(process.env.SUBPOLAR_AGENT_PORT ?? 4173)}`
 }
 
 async function registerOperation(providerName: string, provider: Provider, document: AnyObject, path: string, method: string, operation: AnyObject, cwd: string): Promise<void> {

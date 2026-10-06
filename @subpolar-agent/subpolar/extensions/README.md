@@ -1,9 +1,9 @@
 # Pi extensions
 
-The WebUI's extension boundary is limited to the active tool integrations:
+Subpolar Agent's extension boundary is limited to the active tool integrations:
 `list-tools.ts`, `openapi-tools.ts`, and bridge-owned `tool-routing.ts`. The
 remaining sections document standalone Pi CLI extensions. Session state,
-projects, profiles, search, titles, usage, and skills are owned by the WebUI
+projects, profiles, search, titles, usage, and skills are owned by the Subpolar Agent
 application boundary rather than file-backed compatibility extensions.
 
 ## Background sessions
@@ -62,7 +62,7 @@ Use `/permissions` in the TUI to inspect or change a rule. The web agent editor 
 ## Registered tools
 
 `list-tools.ts` adds `/list-tools`, which shows the registered tools exposed by
-the WebUI tool registry and their availability to the active profile.
+the Subpolar Agent tool registry and their availability to the active profile.
 
 ## Blank proxy
 

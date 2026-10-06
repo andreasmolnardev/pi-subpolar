@@ -3,8 +3,8 @@
 .env.*
 !.env.example
 node_modules
-@webui/node_modules
-@webui/dist
+@subpolar-agent/node_modules
+@subpolar-agent/dist
 pocketbase/pb_data
 .DS_Store
 *.log

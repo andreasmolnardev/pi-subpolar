@@ -19,7 +19,7 @@ Relevant upstream source/API:
 - `packages/ai/src/api/openai-responses.ts`: direct-token request detection and unsupported-field omissions at the normal OpenAI endpoint.
 - Coding-agent `SettingsManager.getOrCreateDeviceId()`: native persistent installation UUID, ignoring project device IDs.
 
-Direct dependencies are pinned exactly in `@webui/package.json`; the coordinated lockfile and installed dependency tree contain:
+Direct dependencies are pinned exactly in `@subpolar-agent/package.json`; the coordinated lockfile and installed dependency tree contain:
 
 | Package | Installed version |
 | --- | --- |
@@ -36,12 +36,12 @@ The upgrade was installed with scripts disabled; no further dependency installat
 - Catalog method labels prefer native `oauth.loginLabel` and fall back to the OAuth name. The dialog consumes those labels; subscription choices still start the native `oauth` flow.
 - Kept the normal OpenAI API-key choice alongside ChatGPT login, and preserved a separate Codex provider with native browser/device-code prompts. Corrected method-status classification so offering subscription OAuth does not mislabel an authenticated API-key account as subscription-authenticated.
 - Passed native `LoginOptions` through the owner-bound login controller. The bridge reuses one native settings manager for its persistent installation UUID, including overlapping first-use calls; no ad-hoc UUID per login and no copied OAuth implementation.
-- Fixed account-alias inference delegation. The native adapter receives the original provider identity (`openai`), activating its direct-token behavior; streamed partial/final messages and completed results retain the account-qualified provider identity used by WebUI selections and transcripts. Deferred delegation uses the same native identity mapping.
+- Fixed account-alias inference delegation. The native adapter receives the original provider identity (`openai`), activating its direct-token behavior; streamed partial/final messages and completed results retain the account-qualified provider identity used by Subpolar Agent selections and transcripts. Deferred delegation uses the same native identity mapping.
 - Updated the owned adapter to Pi 1.0.2's provider-facing `TranscriptContext` contract. High-level `ModelRuntime` calls continue to normalize regular `Context` into the native transcript.
 
 ## Verified by automated tests
 
-`@webui/server/tests/provider-auth.test.ts`:
+`@subpolar-agent/server/tests/provider-auth.test.ts`:
 
 - Native normal-OpenAI provider exposes the sign-in label and API-key alternative; Codex remains a separate provider.
 - Native authorization URL carries dynamic registration client ID, installation UUID, PKCE, and `chatgpt.tokens.use.direct` scope.
@@ -54,19 +54,19 @@ The upgrade was installed with scripts disabled; no further dependency installat
 - ChatGPT requests omit native-unsupported temperature/output-token/cache-option fields; API-key requests retain temperature and output-token settings.
 - Native installation ID is a UUID, stays stable in one manager, survives settings flush/reload, and does not inherit a committed project's device ID.
 
-`@webui/src/components/settings/ProviderSettings.test.tsx`:
+`@subpolar-agent/src/components/settings/ProviderSettings.test.tsx`:
 
 - The prominent action starts normal `openai` OAuth with an optional account label.
 - The normal API-key alternative starts `openai` API-key login.
 - Codex remains independently selectable; native device-code selection, device authorization display and manual-redirect response forwarding still work.
 - Conversation and routing defaults submit account-qualified selections such as `openai~personal/gpt-test`.
 
-`@webui/server/tests/provider-model-state.test.ts` and `provider-login-flow-store.test.ts` cover recent/favorite state persistence, malformed selection rejection, and owner-bound persistent login-flow storage.
+`@subpolar-agent/server/tests/provider-model-state.test.ts` and `provider-login-flow-store.test.ts` cover recent/favorite state persistence, malformed selection rejection, and owner-bound persistent login-flow storage.
 
 ## Model/thinking behavior and remaining work
 
 - Account-qualified catalog selection and native model lookup are verified; a different owner cannot resolve another owner's selected model.
-- Native supported-thinking metadata includes medium for the tested reasoning model, and native inference receives the requested effort. This does **not** verify every model's supported levels or a complete per-model thinking selector in WebUI.
+- Native supported-thinking metadata includes medium for the tested reasoning model, and native inference receives the requested effort. This does **not** verify every model's supported levels or a complete per-model thinking selector in Subpolar Agent.
 - In the inspected bridge, conversation defaults are read separately from routing/session-naming defaults, and routing/title generation selects from the owner's provider runtime. The settings UI exposes compaction, summary and tool-summary defaults too; consumption of those three preferences was **not established by this task**. They must not be presented as fully implemented behavior merely because the UI saves them.
 - The inspected SDK session supports model/thinking RPC changes and transcript hydration, but full composer → RPC → durable transcript → restart behavior was not exercised here. Confirm per-model level clamping, retained selections after restart, and model-switch behavior in the session/composer owners' scopes.
 - The model-state route preserves stored `variant` data, but no variant/thinking update API or complete catalog-to-picker thinking-variant plumbing was implemented here.
@@ -78,7 +78,7 @@ The upgrade was installed with scripts disabled; no further dependency installat
 
 The intentional major-version migration in the owned adapter is `Context` → provider-facing `TranscriptContext`. Calling native provider methods directly elsewhere may require equivalent normalization; calling the higher-level `ModelRuntime` retains its regular-context API. This work did not modify `src/pi.ts`, shared packages, or other owners' runtime adapters. Image/classifier expansion and other new Pi 1.0 model APIs are not part of this change.
 
-Latest targeted validation, from `@webui`:
+Latest targeted validation, from `@subpolar-agent`:
 
 ```sh
 npm exec -- vitest run server/tests/provider-auth.test.ts server/tests/provider-login-flow-store.test.ts server/tests/provider-model-state.test.ts src/components/settings/ProviderSettings.test.tsx --reporter=dot --maxWorkers=1 --testTimeout=15000

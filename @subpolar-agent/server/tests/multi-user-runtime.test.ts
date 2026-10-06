@@ -6,7 +6,7 @@ import type { ProviderAccount } from '../persistence/provider-accounts.ts'
 import { assertTenantSession, tenantSessionKey } from '../application/runtime/tenant-runtime.ts'
 import { authenticateProxyRuntime, proxyModel } from '../application/runtime/owner-bound-proxy.ts'
 import { createBridgeRequestHandler } from '../bridge-request-handler.ts'
-import { createStatelessWebUiRuntime } from '../application/runtime/stateless-webui-runtime.ts'
+import { createStatelessSubpolarAgentRuntime } from '../application/runtime/stateless-subpolar-agent-runtime.ts'
 
 const account: ProviderAccount = { instanceId: 'same-account', providerType: 'openai', displayName: 'Test', authType: 'api_key', status: 'active', metadata: {}, hasCredential: true, createdAt: 1, updatedAt: 1 }
 function service(): ProviderRuntimeAccountService {
@@ -104,7 +104,7 @@ describe('multi-user caller boundary', () => {
   it.each(['principal', 'session', 'run'])('rejects a retargeted resolved %s before execution or persistence', async (mismatch) => {
     const collection = vi.fn()
     const execute = vi.fn()
-    const runtime = createStatelessWebUiRuntime({ ownerId: 'alice', client: { collection } as never, gateway: {} as never, execute,
+    const runtime = createStatelessSubpolarAgentRuntime({ ownerId: 'alice', client: { collection } as never, gateway: {} as never, execute,
       resolveContext: async () => ({ principal: { id: mismatch === 'principal' ? 'bob' : 'alice', kind: 'user' }, sessionId: mismatch === 'session' ? 'foreign' : 'same', requestId: 'req', runId: mismatch === 'run' ? 'foreign' : 'run' }),
     })
     await expect(runtime.runPrompt({ ownerId: 'alice', sessionId: 'same', runId: 'run', requestId: 'req', prompt: 'stub' })).rejects.toThrow('tenant or run mismatch')
@@ -114,7 +114,7 @@ describe('multi-user caller boundary', () => {
 
   it('rejects a stateless caller owner mismatch before touching the database', async () => {
     const collection = vi.fn()
-    const runtime = createStatelessWebUiRuntime({ ownerId: 'alice', client: { collection } as never, gateway: {} as never, resolveContext: vi.fn(), execute: vi.fn() })
+    const runtime = createStatelessSubpolarAgentRuntime({ ownerId: 'alice', client: { collection } as never, gateway: {} as never, resolveContext: vi.fn(), execute: vi.fn() })
     await expect(runtime.runPrompt({ ownerId: 'bob', sessionId: 'same', runId: 'run', requestId: 'req', prompt: 'stub' })).rejects.toThrow('owner mismatch')
     expect(collection).not.toHaveBeenCalled()
   })

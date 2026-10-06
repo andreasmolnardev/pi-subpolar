@@ -1,4 +1,4 @@
-# WebUI API Contracts
+# Subpolar Agent API Contracts
 
 Phase 0 exposes the dependency-free contract identifier `subpolar-api.v1`.
 Versioned endpoints are under `/api/v1`; new responses include the request

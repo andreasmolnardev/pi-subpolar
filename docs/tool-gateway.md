@@ -1,11 +1,11 @@
 # Core tool gateway
 
-WebUI composes `packages/subpolar-core` directly. The core gateway owns canonical
+Subpolar Agent composes `packages/subpolar-core` directly. The core gateway owns canonical
 lookup, input validation, database-derived policy, approval state, idempotency,
-and audit decisions. WebUI supplies the execution adapter and transport context.
+and audit decisions. Subpolar Agent supplies the execution adapter and transport context.
 
 ```ts
-import { createCoreToolGateway } from './@webui/server/index.ts'
+import { createCoreToolGateway } from './@subpolar-agent/server/index.ts'
 
 const gateway = await createCoreToolGateway(client, userId)
 const result = await gateway.call(
@@ -30,7 +30,7 @@ for the existing legacy continuation implementation and is not authoritative.
 
 The Pi routing extension and `/api/subpolar-cli/tools/call` both call this core
 interface directly. HTTP authentication, gateway credential scopes, session
-ownership checks, SSE publication, and the transport response remain WebUI
+ownership checks, SSE publication, and the transport response remain Subpolar Agent
 responsibilities. The executor in `tools.ts` only invokes Pi, subagent, memory,
 browser, web, HTTP/OpenAPI, MCP, and registered tool implementations after the
 core gateway has admitted the call.

@@ -2,7 +2,7 @@
 
 ## Decision
 
-Do **not** enable a server-side long-running process service or expose start/list/log/stop/restart through the WebUI, agent tools, browser, or gateway in the current shared-host deployment. No process service or API wiring was added.
+Do **not** enable a server-side long-running process service or expose start/list/log/stop/restart through the Subpolar Agent, agent tools, browser, or gateway in the current shared-host deployment. No process service or API wiring was added.
 
 Owner- and workspace-scoped records would scope application metadata, not the host process. This repository explicitly has no per-tenant OS sandbox or isolated worker dispatch. Its workspace path checks protect selected application file operations; they do not constrain programs started by a child process from reading host files, using inherited host capabilities, consuming host resources, or creating descendants.
 

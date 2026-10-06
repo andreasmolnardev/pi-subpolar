@@ -2,7 +2,7 @@
 
 ## Scope and validation status
 
-Implemented within `@webui/server/voice/**`, `@webui/src/api/{stt,tts,voice}.ts`, and voice tests. The dedicated `@webui/server/voice/routes.ts` was changed with explicit permission. No general server routes, auth files, root README, dependencies, or cloud providers were changed. No `src/components/voice/**` directory exists.
+Implemented within `@subpolar-agent/server/voice/**`, `@subpolar-agent/src/api/{stt,tts,voice}.ts`, and voice tests. The dedicated `@subpolar-agent/server/voice/routes.ts` was changed with explicit permission. No general server routes, auth files, root README, dependencies, or cloud providers were changed. No `src/components/voice/**` directory exists.
 
 **Real speech recognition/synthesis has not been tested.** No live bridge/PocketBase deployment or installed speech engine was contacted, no model was downloaded, and no real recordings were processed. Tests use disconnected backends, mocked HTTP responses, and short-lived Node executables emitting synthetic bytes/JSON. Executable discovery is not a model-health check.
 
@@ -47,11 +47,11 @@ Wrappers run with the bridge's account/environment, without a shell, and must ow
 From the repository root, with Node dependencies installed and Bun available:
 
 ```sh
-npm --prefix @webui install
-bun --env-file=.env @webui/bridge.ts
+npm --prefix @subpolar-agent install
+bun --env-file=.env @subpolar-agent/bridge.ts
 ```
 
-Alternatively `./start-webui.sh` launches both bridge and Vite, loads a root `.env` if present, and waits for bridge health. The bridge binds `127.0.0.1`; its default port is `4173` (`WEBUI_PORT` overrides it). Run persistent startup commands yourself; they were not run during this task.
+Alternatively `./start-subpolar-agent.sh` launches both bridge and Vite, loads a root `.env` if present, and waits for bridge health. The bridge binds `127.0.0.1`; its default port is `4173` (`SUBPOLAR_AGENT_PORT` overrides it). Run persistent startup commands yourself; they were not run during this task.
 
 Example `.env` deployment template (replace paths, labels, and credentials with your actual local installation; these are **not** tested or preinstalled paths):
 
@@ -106,7 +106,7 @@ Exactly-at-limit byte counts are allowed; multipart overhead still counts agains
 
 ## Reproducible validation
 
-Run from `@webui` (tested with Node `v22.23.2`; Bun `1.3.14` was present but no live Bun voice server was run):
+Run from `@subpolar-agent` (tested with Node `v22.23.2`; Bun `1.3.14` was present but no live Bun voice server was run):
 
 ```sh
 ./node_modules/.bin/vitest run --config server/voice/vitest.config.ts --reporter=dot

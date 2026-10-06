@@ -2,7 +2,7 @@
 
 ## Scope
 
-Changes are confined to `@webui/server/application/automations/**`, the automations/notifications/inbox routes, automation/notification client APIs, their tests, and this report. No bridge-runtime, shared core, persistence implementation, router, service-worker, or other agents' work was changed. This is a focused gap-fix and verification pass, **not a claim of full feature completion**.
+Changes are confined to `@subpolar-agent/server/application/automations/**`, the automations/notifications/inbox routes, automation/notification client APIs, their tests, and this report. No bridge-runtime, shared core, persistence implementation, router, service-worker, or other agents' work was changed. This is a focused gap-fix and verification pass, **not a claim of full feature completion**.
 
 ## Implemented in this pass
 
@@ -54,7 +54,7 @@ No live PocketBase/bridge/Pi restart or external notification provider was exerc
 
 ## Validation
 
-From `@webui`:
+From `@subpolar-agent`:
 
 ```sh
 npx vitest run --maxWorkers=2 --testTimeout=15000 server/tests/automation-inbox.test.ts server/tests/automation-task.test.ts server/tests/automations-routes.test.ts src/api/automations.test.ts src/api/notifications.test.ts src/components/automations/AutomationJobDialog.assistant.test.tsx src/components/automations/__tests__/PromptsTab.test.tsx server/tests/approval-execution.test.ts server/tests/approval-flow.test.ts server/tests/tool-routing.test.ts server/tests/session-context.test.ts

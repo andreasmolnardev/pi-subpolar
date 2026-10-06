@@ -20,7 +20,7 @@ From the repository root, use Bun 1.3.14 and `bun install --frozen-lockfile`.
 The hoisted workspace shares compatible dependencies, but incompatible versions
 may still require nested copies. Do not install separately in this package.
 
-Adapter availability is not a sandbox guarantee. The WebUI shared-host gateway
+Adapter availability is not a sandbox guarantee. The Subpolar Agent shared-host gateway
 disables arbitrary shell and MCP stdio, and registered CLI is disabled by default.
 Host applications must enforce their own execution boundary; live two-user
 verification remains outstanding. See

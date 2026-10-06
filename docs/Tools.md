@@ -23,7 +23,7 @@ Agent tool grants configure access independently of tool discovery. `allow` perm
 
 Approval is part of the central tool runtime, not an adapter feature. An adapter does not decide whether a call is allowed: the registry's risk and approval settings and the active agent/session policy determine whether it may execute. A denied call must return a denial to the model; an allowed call proceeds to the adapter and returns its result.
 
-When a call needs approval, the router emits a `permission.asked` event and keeps the model-facing tool call pending while the WebUI waits for the user's decision. Approval resumes execution and returns its result; rejection returns a denial. The WebUI decision uses the permission HTTP endpoint while the event stream delivers the approval card.
+When a call needs approval, the router emits a `permission.asked` event and keeps the model-facing tool call pending while the Subpolar Agent waits for the user's decision. Approval resumes execution and returns its result; rejection returns a denial. The Subpolar Agent decision uses the permission HTTP endpoint while the event stream delivers the approval card.
 
 ## Tool adapters
 

@@ -11,8 +11,8 @@ Branch: `feature/session-worktree-review`. Implementation is organized into feat
 | 3. Local voice | Bounded process/input/output execution; cancellation escalation; response-body deadlines; unconfigured TTS returns 503 rather than false timeout | Real speech models, recordings, playback and authenticated deployment | [Voice](progress-voice.md) |
 | 4. Tools CLI | Session-scoped discovery, structured auth errors and core approval-required responses | Live gateway credentials, durable continuation and wait semantics | [Permissions and tools CLI](progress-permissions-tools-cli.md) |
 | 5. Agent profiles | Validated CRUD/context identity; project policy ceilings cannot enable agent-denied capabilities | Full effective-settings provenance and runtime policy parity | [Profiles, memory, skills](progress-profiles-memory-skills.md) |
-| 6. Projects/Git, 7. Subagents/worktrees, 15. Parallel review | Session changes pill, diff review, named snapshot staging areas, independent commits, editor/quick-open; HEAD/local/cached-remote base picker, SHA-pinned clean checkout and owned new session; safe cleanup tests; structured read-only Git tools; repository/issues/PR/checks panel with issue context and start-session actions | Authenticated policy-aware remote fetch, push/finish lifecycle, result integration/merging and atomic concurrent attachment | [Worktrees](progress-worktrees.md), [workspace UI](../@webui/src/components/workspace/README.md) |
-| Git provider integrations | Owner-scoped encrypted GitHub/Gitea PAT accounts, GitHub-only migration of legacy preference secrets, sanitized remote identity matching, read-only repository/branch/issue/PR/check browsing; provider creation capability is explicitly false | PR creation/mutation routes, authenticated Git fetch/push, pagination, live provider verification; configure `SUBPOLAR_PROVIDER_SECRET_KEY` before bridge startup | [Provider implementation](../@webui/server/git/PROVIDERS.md) |
+| 6. Projects/Git, 7. Subagents/worktrees, 15. Parallel review | Session changes pill, diff review, named snapshot staging areas, independent commits, editor/quick-open; HEAD/local/cached-remote base picker, SHA-pinned clean checkout and owned new session; safe cleanup tests; structured read-only Git tools; repository/issues/PR/checks panel with issue context and start-session actions | Authenticated policy-aware remote fetch, push/finish lifecycle, result integration/merging and atomic concurrent attachment | [Worktrees](progress-worktrees.md), [workspace UI](../@subpolar-agent/src/components/workspace/README.md) |
+| Git provider integrations | Owner-scoped encrypted GitHub/Gitea PAT accounts, GitHub-only migration of legacy preference secrets, sanitized remote identity matching, read-only repository/branch/issue/PR/check browsing; provider creation capability is explicitly false | PR creation/mutation routes, authenticated Git fetch/push, pagination, live provider verification; configure `SUBPOLAR_PROVIDER_SECRET_KEY` before bridge startup | [Provider implementation](../@subpolar-agent/server/git/PROVIDERS.md) |
 | 8. Registry/OpenAPI | Owner/shared registry isolation, effective discovery policy, explicit on-demand inspection, fail-closed selective OpenAPI drafts | Complete shared compiler, source refresh and integration configuration | [Integrations and routing](progress-integrations-routing.md) |
 | 9. Automations | Scheduling/concurrency/retry corrections, owner-bound completion, cancellation projection, correct partial updates/history filtering | Distributed leases, active Pi recovery and terminal outbox reconciliation | [Automations/inbox](progress-automations-inbox.md) |
 | 10. Notifications/inbox | Preference persistence fixed; client-forged authoritative inbox records denied; owner-scoped cancellation delivery | Standards-compliant Web Push/email, preference enforcement and functional inbox/run navigation | [Automations/inbox](progress-automations-inbox.md) |
@@ -57,7 +57,7 @@ Current follow-up validation:
 
 No live two-user deployment or real GitHub/Gitea credential, OAuth, fetch/push, or PR mutation verification was performed.
 - `git diff --check`: passed.
-- Root and WebUI resolve Pi AI to the same root `node_modules` package.
+- Root and Subpolar Agent resolve Pi AI to the same root `node_modules` package.
 
 Vitest is invoked through Bun but uses its supported Node runtime; no npm is needed. Docker build validation timed out during provisioning after 120 seconds. No live two-user deployment or real provider sign-in/inference was tested. Application ownership fences are not OS isolation: hostile-tenant coding execution and multi-replica guarantees remain unimplemented, and custom-provider inference fails closed.
 
@@ -65,8 +65,8 @@ Vitest is invoked through Bun but uses its supported Node runtime; no npm is nee
 
 The earlier parent integration pass ran:
 
-- `npm --prefix @webui run build`: passed, including frontend TypeScript and production Vite build. Vite reports large-bundle warnings; no bundle optimization was attempted.
-- `npm --prefix @webui run bridge:typecheck`: passed after correcting new test typing and moving browser-only tests into the frontend tree.
+- `npm --prefix @subpolar-agent run build`: passed, including frontend TypeScript and production Vite build. Vite reports large-bundle warnings; no bundle optimization was attempted.
+- `npm --prefix @subpolar-agent run bridge:typecheck`: passed after correcting new test typing and moving browser-only tests into the frontend tree.
 - `npx tsc --noEmit -p tsconfig.app.json`: passed.
 - `npx vitest run src --maxWorkers=4`: **927 tests passed across 102 files**. The initial full run exposed an incomplete SessionDetail mobile-hook mock after adding the worktree dialog; using a partial mock corrected it without disabling feature coverage.
 - `npm run test:core`: **120 tests passed across 16 files**.

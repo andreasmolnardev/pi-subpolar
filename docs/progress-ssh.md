@@ -10,7 +10,7 @@ executor, automatic trust, or second permission authority was introduced.
 
 ## Repository inspection
 
-- `@webui/src/api/ssh.ts` previously posted
+- `@subpolar-agent/src/api/ssh.ts` previously posted
   `{ requestId, response: 'accept' | 'reject' }` to
   `POST /api/ssh/host-key/respond` and assumed a `{ success, error? }` response.
   This is a legacy **client expectation**, not an implemented backend contract.
@@ -30,7 +30,7 @@ executor, automatic trust, or second permission authority was introduced.
   The host-key dialog is in `src/components/ssh`, outside the owned UI scope,
   and was not modified. Its accept button may still render; the API helper now
   refuses approval explicitly and cannot silently trust a key.
-- `@webui/package.json` declares no SSH transport dependency. Existing remote
+- `@subpolar-agent/package.json` declares no SSH transport dependency. Existing remote
   tool adapters are not a verified SSH connection facility. No dependency was
   added, and an OS `ssh` subprocess was not introduced as a substitute.
 - The existing shared gateway is composed by `createCoreToolGateway` in
@@ -39,7 +39,7 @@ executor, automatic trust, or second permission authority was introduced.
 
 ## Implemented
 
-### `@webui/server/application/ssh-policy.ts`
+### `@subpolar-agent/server/application/ssh-policy.ts`
 
 - Strict, owner-bound remote profile validation: profile ID, owner, name,
   hostname/IP, explicit port, username, opaque server credential reference, and
@@ -65,7 +65,7 @@ executor, automatic trust, or second permission authority was introduced.
   be described, but no connection is made. Deployment network restrictions and
   DNS/address binding remain prerequisites for a future transport.
 
-### `@webui/src/api/ssh.ts`
+### `@subpolar-agent/src/api/ssh.ts`
 
 - Host-key acceptance fails before any network request with
   `SSH_TRANSPORT_UNAVAILABLE` until a real authenticated trust flow exists.

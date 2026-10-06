@@ -1085,7 +1085,7 @@ function coreToolDefinition(tool: ToolDefinition): CoreToolDefinition {
     enabled: tool.enabled,
     risk: coreToolRisk(tool.risk),
     metadata: {
-      webuiDefinition: JSON.stringify(tool),
+      subpolarAgentDefinition: JSON.stringify(tool),
       adapter: tool.adapter,
       target: tool.target,
       operation: tool.operation,
@@ -1106,10 +1106,10 @@ export function validateToolInput(input: unknown, definition: CoreToolDefinition
 
 function coreDefinitionTool(definition: CoreToolDefinition): ToolDefinition {
   try {
-    const parsed = JSON.parse(definition.metadata?.webuiDefinition ?? '')
+    const parsed = JSON.parse(definition.metadata?.subpolarAgentDefinition ?? '')
     return toTool(parsed)
   } catch {
-    throw new Error(`Tool definition is missing its WebUI execution metadata: ${definition.id}`)
+    throw new Error(`Tool definition is missing its Subpolar Agent execution metadata: ${definition.id}`)
   }
 }
 
@@ -1135,7 +1135,7 @@ function coreApprovalRecord(record: Record<string, unknown>, approvalId: string,
   }
 }
 
-function createWebUiApprovalStore(client: PocketBase, ownerId: string, onApproval?: (approval: CoreApprovalRecord) => void | Promise<void>): ApprovalStore {
+function createSubpolarAgentApprovalStore(client: PocketBase, ownerId: string, onApproval?: (approval: CoreApprovalRecord) => void | Promise<void>): ApprovalStore {
   const flow = createApprovalFlow(client)
   const find = async (approvalId: string): Promise<Record<string, unknown> | undefined> => {
     const byId = await client.collection('tool_approvals').getOne(approvalId).catch(() => null)
@@ -1197,7 +1197,7 @@ export async function createCoreToolGateway(client: PocketBase, ownerId: string,
   })
   const auditPort: AuditPort = createPocketBaseAuditPort(adapter, ownerId)
   const idempotency = createPocketBaseIdempotencyPort(adapter, ownerId)
-  const approvalStore = createWebUiApprovalStore(client, ownerId, options.onApproval)
+  const approvalStore = createSubpolarAgentApprovalStore(client, ownerId, options.onApproval)
   const resolvePolicy: PolicyResolver = async (definition, context) => {
     const agentName = context.metadata?.agentName ?? context.agentId ?? 'master'
     const agent = agentName === 'master'
