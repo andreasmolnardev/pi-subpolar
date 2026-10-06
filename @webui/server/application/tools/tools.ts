@@ -19,6 +19,7 @@ import {
 import { escapeFilter } from '../../persistence/pocketbase.ts'
 import { createApprovalFlow } from './approval-flow.ts'
 import { createMcpAdapter, resolveMcpToolReference, type McpToolReference } from './mcp-adapter.ts'
+import { discoverMcpServer } from './mcp-discovery.ts'
 import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse } from '../../core/network-policy.ts'
 import { redactSensitive, redactSensitiveText } from '../../core/security-redaction.ts'
 import { decryptApprovalInput, encryptApprovalInput, takePendingApprovalInput } from './approval-execution.ts'
@@ -224,6 +225,7 @@ const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>>
   { tool_id: 'delete_registered_tool', namespace: 'builtin', description: 'Delete an owned registered tool', adapter: 'internal', target: 'tool-registry', operation: 'delete', input_schema: { type: 'object', properties: { tool_id: { type: 'string', minLength: 1, maxLength: 160 } }, required: ['tool_id'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'delete', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
   { tool_id: 'create_cli_tool', namespace: 'builtin', description: 'Create an approved workspace-bounded CLI tool', adapter: 'internal', target: 'tool-registry', operation: 'create-cli', input_schema: { type: 'object', properties: { tool_id: { type: 'string', maxLength: 160 }, namespace: { type: 'string', maxLength: 64 }, description: { type: 'string', maxLength: 1000 }, executable: { type: 'string', enum: [...allowedCliExecutables] }, fixed_args: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 256 } }, max_args: { type: 'integer', minimum: 0, maximum: 32 }, timeout_ms: { type: 'integer', minimum: 100, maximum: 120000 }, max_output_bytes: { type: 'integer', minimum: 1024, maximum: 1048576 } }, required: ['tool_id', 'namespace', 'description', 'executable'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
   { tool_id: 'search-tool', namespace: 'builtin', description: 'Search tools available to the active agent', adapter: 'internal', target: 'tool-router', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
+  { tool_id: 'discover-mcp', namespace: 'builtin', description: 'Temporarily connect to an MCP server and inspect the tools it exposes. Use this when an MCP endpoint is known but has not been registered as a Subpolar integration. This only discovers capabilities; it does not register, enable, or execute them.', adapter: 'internal', target: 'mcp-discovery', operation: 'discover', input_schema: { type: 'object', properties: { url: { type: 'string', minLength: 1, maxLength: 2048 }, transport: { type: 'string', enum: ['http', 'streamable-http', 'sse'] }, headers: { type: 'object', additionalProperties: { type: 'object', properties: { env: { type: 'string', pattern: '^[A-Za-z_][A-Za-z0-9_]*$' } }, required: ['env'], additionalProperties: false } }, protocolVersion: { type: 'string', maxLength: 64 }, timeoutMs: { type: 'integer', minimum: 100, maximum: 15000 } }, required: ['url'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'external', requires_approval: true, enabled: true, metadata: {} },
   { tool_id: 'web.search', namespace: 'builtin', description: 'Search the public web using the configured search provider', adapter: 'internal', target: 'web', operation: 'search', input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 1000 }, resultCount: { type: 'integer', minimum: 1, maximum: 10 }, contextSize: { type: 'integer', minimum: 1, maximum: 32000 } }, required: ['query'], additionalProperties: false }, output_schema: { type: 'object', properties: { results: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' }, snippet: { type: 'string' } }, required: ['title', 'url', 'snippet'] } } }, required: ['results'] }, risk: 'external', requires_approval: false, enabled: true, metadata: { capability: 'web' } },
   { tool_id: 'web.fetch', namespace: 'builtin', description: 'Fetch bounded text content from a public web page', adapter: 'internal', target: 'web', operation: 'fetch', input_schema: { type: 'object', properties: { url: { type: 'string', minLength: 1, maxLength: 2048 }, maxCharacters: { type: 'integer', minimum: 1, maximum: 20000 } }, required: ['url'], additionalProperties: false }, output_schema: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' }, content: { type: 'string' } }, required: ['url', 'title', 'content'] }, risk: 'external', requires_approval: true, enabled: true, metadata: { capability: 'web' } },
   { tool_id: 'read', namespace: 'builtin', description: 'Read files from the selected project', adapter: 'internal', target: 'pi', operation: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } }, required: ['path'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: {} },
@@ -550,7 +552,7 @@ export async function ensureUserDefaults(client: PocketBase, userId: string): Pr
   const policies = await client.collection('agent_tool_policies').getFullList({ filter: `user_id = "${escapeFilter(userId)}" && agent_id = "${escapeFilter(agent.id)}"` })
   const existingTools = new Set(policies.map((item) => String(item.tool_id)))
   for (const seed of toolSeeds) {
-    if (existingTools.has(seed.tool_id)) continue
+    if (seed.tool_id === 'discover-mcp' || existingTools.has(seed.tool_id)) continue
     await client.collection('agent_tool_policies').create({
       user_id: userId,
       agent_id: agent.id,
@@ -1299,6 +1301,7 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     return webSearch(input as WebSearchInput, { networkPolicy, providers: configuredProviders })
   }
   if (tool.target === 'web' && tool.operation === 'fetch') return webFetch(input as WebFetchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
+  if (tool.target === 'mcp-discovery' && tool.operation === 'discover') return discoverMcpServer(input as Parameters<typeof discoverMcpServer>[0])
   const root = await ownedToolWorkspace(client, cwd, context)
   const args = recordObject(input)
   const path = args.path ?? (tool.operation === 'ls' ? '.' : undefined)
@@ -1319,7 +1322,7 @@ export async function invokeExternalTool(client: PocketBase, tool: ToolDefinitio
   const unavailable = executionUnavailable(tool)
   if (unavailable) throw new Error(unavailable)
   if (tool.adapter === 'internal') {
-    if (['pi', 'memory', 'browser', 'web', 'web-search', 'subagent', 'agent-profiles', 'tool-registry', 'cli', 'git'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
+    if (['pi', 'memory', 'browser', 'web', 'web-search', 'subagent', 'agent-profiles', 'tool-registry', 'cli', 'git', 'mcp-discovery'].includes(tool.target)) return invokeInternalTool(client, tool, input, cwd, callId, context)
     return { routed: true, toolId: tool.tool_id, operation: tool.operation, input }
   }
   if (tool.adapter === 'mcp') {

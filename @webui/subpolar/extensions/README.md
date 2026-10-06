@@ -36,10 +36,14 @@ The OpenAPI document can be JSON, YAML, or an embedded object. Each operation
 with an `operationId` is registered centrally as `provider/operationId`, for
 example `web/search`. The operation's query, path, header, and JSON body
 parameters are retained by the bridge adapter. External tools are not
-registered as individual Pi functions; use `search-tool` to discover them and
-`subpolar-tools` to describe or call them. Configure `baseUrl` to override the
-first OpenAPI server. Tool policy, approvals, auditing, credentials, and HTTP
-execution all happen in the bridge.
+registered as individual Pi functions; use `search-tool` to discover already
+registered tools and `subpolar-tools` to describe or call them. The separate
+`discover-mcp` tool temporarily runs `tools/list` against a known, unregistered
+HTTP/SSE endpoint and returns its advertised schemas only. It does not register,
+trust, enable, or execute those tools; registration and normal resolver-backed
+calls remain separate. Configure `baseUrl` to override the first OpenAPI server.
+Tool policy, approvals, auditing, credentials, and HTTP execution all happen in
+the bridge.
 
 
 ## Permissions

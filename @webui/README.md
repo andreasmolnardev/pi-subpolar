@@ -61,7 +61,21 @@ through `subpolar-tools`; `search-tool` discovers them with a required query. Th
 creates approval records for writes and commands, waits for approval, and writes an audit
 record for every decision. The `search-tool` Pi tool requires a non-empty query and
 returns `tool | description | usage` rows. The `subpolar-tools` Pi tool exposes
-list/describe/call for registered external tools.
+list/describe/call for registered external tools. The separately assignable
+`discover-mcp` tool temporarily inspects a known MCP HTTP/SSE endpoint with
+`tools/list`; it does not register the server or make discovered tools callable.
+It accepts environment-backed header references for authentication (secrets are
+never passed inline), allows explicit private/homelab endpoints, and applies
+bounded timeouts, response sizes, tool counts, and redirects. Use `search-tool`
+for tools already registered in
+Subpolar, `discover-mcp` to inspect an unregistered server, and the registered
+integration flow plus `subpolar-tools` for subsequent authorized execution.
+
+Example: when asked to inspect `http://192.168.1.40:8080/mcp`, an agent calls
+`discover-mcp` and may receive `get_state`, `turn_on`, `turn_off`, and
+`list_entities`. The server remains unregistered; those capabilities stay out of
+`search-tool` and cannot be called through `subpolar-tools` until registered and
+authorized through the normal integration flow.
 
 PocketBase stores users, preferences, agent profiles, tool definitions, policies,
 approvals, tool-call audit records, canonical Subpolar runs/run events, and rich

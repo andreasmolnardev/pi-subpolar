@@ -437,6 +437,7 @@ export class HttpMcpTransport implements McpTransport {
   private endpointResolve?: (url: URL) => void
   private endpointReject?: (error: unknown) => void
   private sessionId?: string
+  private cancelEventStream?: () => Promise<void>
   private started = false
   private closed = false
 
@@ -491,6 +492,9 @@ export class HttpMcpTransport implements McpTransport {
     if (!this.endpoint || this.closed) throw new McpAdapterError('MCP_CONNECTION_ERROR', `MCP ${this.kind} transport is closed`, { serverKey: serverKeyFor(this.config) })
     jsonBytes(request, 'MCP request', this.limits.maxInputBytes)
     const pending = this.expect(request.id, request.method, timeoutMs)
+    // The network request is awaited before `pending` below; handle early protocol/timeout
+    // failures immediately so rejected pending RPCs do not surface as unhandled rejections.
+    void pending.catch(() => undefined)
     try {
       const response = await fetchWithNetworkPolicy(this.endpoint, {
         method: 'POST',
@@ -544,6 +548,7 @@ export class HttpMcpTransport implements McpTransport {
     if (this.closed) return
     this.closed = true
     this.streamAbort.abort()
+    await this.cancelEventStream?.()
     this.endpointReject?.(new McpAdapterError('MCP_CONNECTION_ERROR', 'MCP HTTP/SSE transport was closed', { serverKey: serverKeyFor(this.config) }))
     this.fail(new McpAdapterError('MCP_CONNECTION_ERROR', 'MCP HTTP/SSE transport was closed', { serverKey: serverKeyFor(this.config) }))
   }
@@ -596,6 +601,7 @@ export class HttpMcpTransport implements McpTransport {
 
   private async consumeSse(body: ReadableStream<Uint8Array>): Promise<void> {
     const reader = body.getReader()
+    this.cancelEventStream = () => reader.cancel().then(() => undefined).catch(() => undefined)
     const decoder = new TextDecoder()
     let buffer = ''
     try {
@@ -615,7 +621,10 @@ export class HttpMcpTransport implements McpTransport {
       }
       const tail = decoder.decode()
       if (tail.trim()) this.onSseEvent(parseSseEvent(buffer + tail))
-    } finally { reader.releaseLock() }
+    } finally {
+      this.cancelEventStream = undefined
+      reader.releaseLock()
+    }
   }
 
   private onSseEvent(event: SseEvent): void {
