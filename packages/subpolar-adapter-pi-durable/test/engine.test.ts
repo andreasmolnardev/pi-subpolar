@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import type { RuntimeExecution } from "@subpolar/contracts";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import type { RuntimeExecution, ToolDefinition, ToolCall } from "@subpolar/contracts";
 import { PiDurableAgentEngine } from "../src/index.ts";
 import { openBunSqliteDatabase } from "../src/sqlite.ts";
 
@@ -99,6 +99,104 @@ test("initializes, configures, submits, waits, and reopens the owner/session map
   expect(await reopened.recover("owner-a", "session-a", "stable-request-1")).toBe(result.submissionId);
   expect(await reopened.recover("owner-b", "session-a", "stable-request-1")).toBeUndefined();
   await reopened.close();
+});
+
+test("invokes one registered Durable tool with stable Subpolar identity and returns its result to the model", async () => {
+  const { faux, models } = setupModels();
+  const toolResult = { ok: true, value: "tool-result" };
+  let followUpMessages: unknown;
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("demo.echo", { text: "hello from model" }, { id: "model-call-1" }), { stopReason: "toolUse" }),
+    (context) => {
+      followUpMessages = context.messages;
+      return fauxAssistantMessage("model used tool result");
+    },
+  ]);
+  const tool: ToolDefinition = {
+    id: "demo.echo",
+    namespace: "demo",
+    description: "Echo text for the test.",
+    inputSchema: {
+      type: "object",
+      properties: { text: { type: "string" } },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    enabled: true,
+    risk: "low",
+  };
+  const calls: ToolCall[] = [];
+  const run = execution("stable-request-tool");
+  run.tools = {
+    async call(call) {
+      calls.push(call);
+      return toolResult;
+    },
+  };
+  const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models, tools: [tool] });
+  const conversationId = await engine.configure("owner-a", "session-a", {
+    model: { provider: "faux", modelId: "faux-1" },
+  });
+
+  await engine.submit({
+    ownerId: "owner-a",
+    sessionId: "session-a",
+    requestId: "stable-request-tool",
+    runId: "stable-run-tool",
+    prompt: "Call the echo tool.",
+  }, run);
+  const result = await engine.wait("owner-a", "session-a", "stable-request-tool");
+
+  expect(result).toMatchObject({ status: "done", output: "model used tool result" });
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatchObject({
+    toolId: "demo.echo",
+    input: { text: "hello from model" },
+    runId: "stable-run-tool",
+    requestId: "stable-request-tool",
+    idempotencyKey: `pi-durable:${conversationId}:stable-request-tool:model-call-1`,
+    callId: `pi-durable:${conversationId}:stable-request-tool:model-call-1`,
+  });
+  expect(JSON.stringify(followUpMessages)).toContain('"role":"toolResult"');
+  expect(JSON.stringify(followUpMessages)).toContain("tool-result");
+  expect(faux.state.callCount).toBe(2);
+  await engine.close();
+});
+
+test("does not invoke disabled or unregistered Durable tool names", async () => {
+  const { faux, models } = setupModels();
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("demo.disabled", { text: "disabled" }, { id: "model-call-disabled" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("demo.missing", { text: "missing" }, { id: "model-call-missing" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("no gateway tool was invoked"),
+  ]);
+  const disabledTool: ToolDefinition = {
+    id: "demo.disabled",
+    namespace: "demo",
+    description: "Disabled test tool.",
+    inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+    enabled: false,
+    risk: "low",
+  };
+  const calls: ToolCall[] = [];
+  const run = execution("request-unavailable-tools");
+  run.tools = { async call(call) { calls.push(call); return { ok: true }; } };
+  const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models, tools: [disabledTool] });
+  await engine.configure("owner-a", "session-a", { model: { provider: "faux", modelId: "faux-1" } });
+
+  await engine.submit({
+    ownerId: "owner-a",
+    sessionId: "session-a",
+    requestId: "request-unavailable-tools",
+    runId: "run-unavailable-tools",
+    prompt: "Do not call unavailable tools.",
+  }, run);
+  const result = await engine.wait("owner-a", "session-a", "request-unavailable-tools");
+
+  expect(result).toMatchObject({ status: "done", output: "no gateway tool was invoked" });
+  expect(calls).toEqual([]);
+  expect(faux.state.callCount).toBe(3);
+  await engine.close();
 });
 
 test("abort is scoped to the mapped owner/session conversation", async () => {
