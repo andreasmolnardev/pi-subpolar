@@ -181,4 +181,8 @@ async function fetchWrapperBlob(
   return blob
 }
 
+export async function fetchForSubpolarClient(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  return fetchWithTimeout(String(input), init)
+}
+
 export { fetchWrapper, fetchWrapperVoid, fetchWrapperBlob }

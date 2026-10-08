@@ -1,4 +1,5 @@
-import { fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
+import { fetchWrapper, fetchWrapperVoid, fetchForSubpolarClient } from './fetchWrapper'
+import { SubpolarClient } from '@subpolar/client'
 import { API_BASE_URL } from '@/config'
 import type { GeneralChatStatus, GeneralChatInitRequest } from '@subpolar/shared/types'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
@@ -23,9 +24,13 @@ export function hasProjectId(project: Project): project is Project & { id: numbe
   return typeof project.id === 'number' && Number.isFinite(project.id)
 }
 
+const sharedApiClient = new SubpolarClient({
+  baseUrl: API_BASE_URL || globalThis.location?.origin || 'http://localhost',
+  fetch: fetchForSubpolarClient,
+})
+
 export async function listProjects(): Promise<Project[]> {
-  const res = await fetchWrapper<{ projects: Project[] }>(`${API_BASE_URL}/api/projects`)
-  return res.projects
+  return await sharedApiClient.listProjects() as unknown as Project[]
 }
 
 export async function getProject(id: number): Promise<Project> {
@@ -43,8 +48,7 @@ export async function getProject(id: number): Promise<Project> {
     }
   }
 
-  const res = await fetchWrapper<{ project: Project }>(`${API_BASE_URL}/api/projects/${id}`)
-  return res.project
+  return await sharedApiClient.getProject(id) as unknown as Project
 }
 
 export async function createProject(data: {
