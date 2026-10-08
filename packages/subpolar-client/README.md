@@ -38,7 +38,7 @@ for await (const event of client.events({ sessionId: session.id })) {
 - Projects and sessions: CRUD, paginated/filterable session listing, transcripts, session update, message delivery, run start, and abort. Owner-scoped run inspection is available through `/api/runs/:runId`.
 - Events: owner-scoped SSE at `/api/sse/stream`, including replay cursor and optional session filter. Pass `sessionId` to scope events to a session.
 - Approvals: pending approval list (optionally session-filtered), lookup within that list, and session-bound decisions.
-- Worktrees: session branch sources, explicitly approved worktree creation, task worktree lookup, and repository discovery.
+- Worktrees and repository: session branch sources, explicitly approved worktree creation, task worktree lookup, repository discovery, and owner-scoped repository status.
 
 The `run()` helper calls the existing message-delivery endpoint and then its corresponding `/runs` endpoint. It does not poll or synthesize live run state; use `events()` to observe server events.
 

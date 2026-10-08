@@ -168,6 +168,21 @@ export interface SessionMessage extends JsonRecord {
   createdAt?: number
   metadata?: JsonRecord
 }
+export interface RepositoryRead {
+  root: string
+  gitDir: string
+  bare: boolean
+  head: string | null
+}
+export interface RepositoryStatus {
+  branch: string | null
+  ahead: number
+  behind: number
+  entries: Array<{ path: string; originalPath?: string; index: string; worktree: string; untracked: boolean; renamed: boolean }>
+  omitted: Array<{ path: string; reason: 'PATH_DENIED' }>
+  truncated: boolean
+}
+export interface RepositoryStatusResponse { repository: RepositoryRead; status: RepositoryStatus; requestId: string }
 export interface WorktreeSources { repositoryId: string; branches: unknown[]; providerRepository?: unknown; [key: string]: unknown }
 export interface Worktree {
   id: string
@@ -370,6 +385,9 @@ export class SubpolarClient {
   }
   repository(projectId: string): Promise<JsonRecord> {
     return this.request(`/api/projects/${encodeURIComponent(projectId)}/repository`)
+  }
+  repositoryStatus(projectId: string): Promise<RepositoryStatusResponse> {
+    return this.request(`/api/projects/${encodeURIComponent(projectId)}/repository/status`)
   }
 
   /** Subscribe to owner-scoped SSE events. The server optionally filters by sessionId. */

@@ -116,6 +116,19 @@ describe('SubpolarClient', () => {
     expect(new URL(calls[0]!.url).pathname).toBe('/api/runs/run%2Fone')
   })
 
+  test('reads owner-scoped repository status with the typed response contract', async () => {
+    const payload = {
+      repository: { root: '/workspace/project', gitDir: '/workspace/project/.git', bare: false, head: 'abc123' },
+      status: { branch: 'main', ahead: 1, behind: 0, entries: [{ path: 'file.ts', index: ' ', worktree: 'M', untracked: false, renamed: false }], omitted: [], truncated: false },
+      requestId: 'req-1',
+    }
+    const { client, calls } = mockClient(() => Response.json(payload))
+    expect(await client.repositoryStatus('project/one')).toEqual(payload)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.method).toBe('GET')
+    expect(new URL(calls[0]!.url).pathname).toBe('/api/projects/project%2Fone/repository/status')
+  })
+
   test('starts a run through message delivery and the implemented runs endpoint', async () => {
     const { client, calls } = mockClient(async (request) => {
       if (request.url.endsWith('/messages')) return Response.json({ messageID: 'msg-1', state: 'pending' }, { status: 201 })

@@ -20,6 +20,7 @@ Commands:
   runs inspect <RUN_ID>
   tools list [--agent ID] | tools policies set <AGENT_ID> --policy TOOL_ID=allow|deny|approval [...]
   worktrees create <PROJECT_ID> --branch NAME --source-ref REF --expected-sha SHA
+  repository status <PROJECT_ID>
   approvals list | approvals inspect <ID> | approvals decision <ID> --session ID --response approve|reject|once|always
   settings inspect | settings update --key VALUE [--key VALUE ...]`
 
@@ -239,6 +240,8 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
       const sourceRef = required(optionValue(rest, '--source-ref'), '--source-ref')
       const expectedSha = required(optionValue(rest, '--expected-sha'), '--expected-sha')
       data = await client.createWorktree(projectId, { approved: true, branch, sourceRef, expectedSha })
+    } else if (group === 'repository' && action === 'status') {
+      data = await client.repositoryStatus(required(rest[0], 'PROJECT_ID'))
     } else if (group === 'approvals' && action === 'list') data = await client.approvals(optionValue(rest, '--session'))
     else if (group === 'approvals' && action === 'inspect') {
       const approvalId = required(rest[0], 'APPROVAL_ID'); const sessionId = optionValue(rest, '--session')

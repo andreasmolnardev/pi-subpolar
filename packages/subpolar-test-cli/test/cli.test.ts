@@ -82,7 +82,7 @@ describe('@subpolar/test-cli', () => {
         const request = new Request(input, init); requests.push(request)
         if (request.url.endsWith('/messages')) return response({ messageID: 'm-1', state: 'pending' }, 201)
         if (request.url.endsWith('/runs')) return response({ runId: 'r-1', state: 'running' })
-        if (request.url.includes('/api/sse/stream')) { streamSignal = init?.signal; return new Response('id: 2\nevent: tool_call\ndata: {"name":"lookup"}\n\n', { headers: { 'content-type': 'text/event-stream' } }) }
+        if (request.url.includes('/api/sse/stream')) { streamSignal = init?.signal ?? undefined; return new Response('id: 2\nevent: tool_call\ndata: {"name":"lookup"}\n\n', { headers: { 'content-type': 'text/event-stream' } }) }
         throw new Error(`Unexpected request ${request.url}`)
       },
     })
@@ -205,6 +205,21 @@ describe('@subpolar/test-cli', () => {
     expect(worktreeCode).toBe(0)
     expect(requests[1]!.url).toContain('/api/projects/project-1/repository/worktrees')
     expect(await requests[1]!.json()).toEqual({ approved: true, branch: 'debug', sourceRef: 'main', expectedSha: 'abc123' })
+  })
+
+  test('reads project repository status through the shared client operation', async () => {
+    const out: string[] = []; let request: Request | undefined
+    const code = await runCli(['repository', 'status', 'project/one', '--json'], {
+      io: { stdout: (value) => out.push(value) },
+      fetch: async (input, init) => {
+        request = new Request(input, init)
+        return response({ repository: { root: '/workspace/project', gitDir: '/workspace/project/.git', bare: false, head: 'abc123' }, status: { branch: 'main', ahead: 0, behind: 0, entries: [], omitted: [], truncated: false }, requestId: 'req-1' })
+      },
+    })
+    expect(code).toBe(0)
+    expect(request?.method).toBe('GET')
+    expect(request?.url).toContain('/api/projects/project%2Fone/repository/status')
+    expect(JSON.parse(out[0]!).data.status.branch).toBe('main')
   })
 
   test('updates agent tool policies through the client', async () => {
