@@ -91,6 +91,12 @@ describe('SubpolarClient', () => {
     expect(await calls[0]?.json()).toEqual({ title: 'new' })
   })
 
+  test('inspects an owner-scoped tool call through the session route', async () => {
+    const { client, calls } = mockClient(() => Response.json({ callID: 'call/1', tool: 'web.search', error: null, output: 'results' }))
+    expect(await client.inspectToolCall('session/one', 'call/1')).toMatchObject({ callID: 'call/1', tool: 'web.search', output: 'results' })
+    expect(new URL(calls[0]!.url).pathname).toBe('/api/sessions/session%2Fone/tool-calls/call%2F1')
+  })
+
   test('creates projects and sessions using server request shapes', async () => {
     const { client, calls } = mockClient(async (request) => {
       if (new URL(request.url).pathname === '/api/projects') return Response.json({ id: 1, name: 'demo' }, { status: 201 })

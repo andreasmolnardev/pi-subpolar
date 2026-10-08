@@ -9,9 +9,10 @@ export async function handleLegacyRoute(context: BridgeRequestContext): Promise<
     const eventUserId = gatewayCredential ? gatewayCredential.ownerId : authenticatedUser?.id
     if (!eventUserId) return deps.json({ error: { code: 'GATEWAY_OWNER_REQUIRED', message: 'An authenticated owner is required' } }, 401)
     let eventSessionId: string | undefined
+    const requestedSessionId = url.searchParams.get('sessionId')?.trim()
     if (gatewayCredential) {
       try {
-        const sessionId = url.searchParams.get('sessionId')?.trim()
+        const sessionId = requestedSessionId
         let scope = {}
         if (sessionId) {
           const database = await deps.applicationDatabase()
@@ -29,6 +30,11 @@ export async function handleLegacyRoute(context: BridgeRequestContext): Promise<
         if (error instanceof deps.GatewayAuthError) return deps.gatewayErrorResponse(error)
         return deps.json({ error: { code: 'GATEWAY_EVENTS_UNAVAILABLE', message: 'Event authorization unavailable' } }, 503)
       }
+    } else if (requestedSessionId) {
+      const database = await deps.applicationDatabase()
+      const session = await deps.createProjectSessionRepository(database).getSessionById(requestedSessionId)
+      if (!session || session.userId !== eventUserId) return deps.json({ error: 'Session not found' }, 404)
+      eventSessionId = session.id
     }
     const after = url.searchParams.get('after') ?? request.headers.get('last-event-id')
     const replay = await (await deps.runtimeStore()).replayEvents(eventUserId, after)

@@ -10,6 +10,7 @@ bun run --cwd packages/subpolar-test-cli start -- --url http://localhost:4173 pr
 bun run --cwd packages/subpolar-test-cli start -- sessions create --title "Debug session"
 bun run --cwd packages/subpolar-test-cli start -- sessions send SESSION_ID "hello" --follow
 bun run --cwd packages/subpolar-test-cli start -- sessions inspect SESSION_ID --json
+bun run --cwd packages/subpolar-test-cli start -- sessions tool-call SESSION_ID CALL_ID --json
 bun run --cwd packages/subpolar-test-cli start -- approvals list --session SESSION_ID
 bun run --cwd packages/subpolar-test-cli start -- worktrees create PROJECT_ID --branch debug --source-ref main --expected-sha SHA
 bun run --cwd packages/subpolar-test-cli start -- tools policies set master --policy=shell=deny
@@ -33,14 +34,14 @@ Exit codes: `0` success, `1` request/runtime failure, `2` usage error, `3` timeo
 - `sessions list [--project ID] [--search TEXT]` and `sessions delete SESSION_ID`.
 - `sessions create` with optional `--title`, `--project`, `--directory`, `--agent`, `--model`, `--thinking`, `--permission`, and `--worktree`.
 - `sessions send SESSION_ID MESSAGE [--follow]` — send a message and start its run; `--follow` then streams session events.
-- `sessions inspect SESSION_ID`, `sessions messages SESSION_ID`, `sessions events SESSION_ID [--after ID] [--limit N]`, `sessions errors SESSION_ID`, `sessions update SESSION_ID [--title TEXT] [--archived true|false] [--model PROVIDER/MODEL]`, and `sessions abort SESSION_ID`.
+- `sessions inspect SESSION_ID`, `sessions messages SESSION_ID`, `sessions events SESSION_ID [--after ID] [--limit N]`, `sessions tool-call SESSION_ID CALL_ID`, `sessions errors SESSION_ID`, `sessions update SESSION_ID [--title TEXT] [--archived true|false] [--model PROVIDER/MODEL]`, and `sessions abort SESSION_ID`.
 - `worktrees create PROJECT_ID --branch NAME --source-ref REF --expected-sha SHA` uses the authenticated repository/worktree API; session creation can attach an owned worktree using `--repository ID --worktree ID`.
 - `tools policies set AGENT_ID --policy=TOOL_ID=allow|deny|approval [...]` replaces the selected agent's policies through the authenticated settings API.
 - `runs inspect RUN_ID` inspects a run using the owner-scoped server route.
 - `approvals list [--session ID]`, `approvals inspect ID [--session ID]`, and `approvals decision ID --session ID --response approve|reject|once|always`.
 - `tools list [--agent ID]`, `agents inspect ID`, approvals list/inspect/decision, and settings inspect/update use the installed client's actual API operations. Agent inspection is derived from the authorized agent listing. Approval inspection can only find currently pending approvals because the server has no approval-by-ID history endpoint.
 
-The current `@subpolar/client` includes session, status, project/model/agent listing, worktree creation, tool listing/policy replacement, settings inspection/update, approval list/decision, and owner-scoped SSE operations. No direct HTTP fallback is used. Authentication uses standard bearer tokens or browser-style cookies; CLI sign-in/token persistence is not implemented yet, so supply a user token with `--token`, `SUBPOLAR_TOKEN`, or a named environment/profile.
+The current `@subpolar/client` includes session, status, project/model/agent listing, worktree creation, tool-call inspection, tool listing/policy replacement, settings inspection/update, approval list/decision, and owner-scoped SSE operations. No direct HTTP fallback is used. Authentication uses standard bearer tokens or browser-style cookies; CLI sign-in/token persistence is not implemented yet, so supply a user token with `--token`, `SUBPOLAR_TOKEN`, or a named environment/profile.
 
 ## Tests
 

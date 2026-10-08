@@ -15,7 +15,7 @@ Commands:
   sessions list [--project ID] [--search TEXT]
   sessions create [--title TEXT] [--project ID] [--repository ID] [--directory PATH] [--agent NAME] [--model ID] [--thinking LEVEL] [--permission MODE] [--worktree ID]
   sessions send <SESSION_ID> <MESSAGE> [--model PROVIDER/MODEL] [--follow]
-  sessions inspect <SESSION_ID> | messages <SESSION_ID> | events <SESSION_ID> [--after ID] [--limit N]
+  sessions inspect <SESSION_ID> | messages <SESSION_ID> | events <SESSION_ID> [--after ID] [--limit N] | tool-call <SESSION_ID> <CALL_ID>
   sessions errors <SESSION_ID> | update <SESSION_ID> [--title TEXT] [--archived true|false] [--model PROVIDER/MODEL] | delete <SESSION_ID> | abort <SESSION_ID>
   runs inspect <RUN_ID>
   tools list [--agent ID] | tools policies set <AGENT_ID> --policy TOOL_ID=allow|deny|approval [...]
@@ -189,7 +189,9 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
       const id = required(rest[0], 'SESSION_ID')
       data = { session: await client.getSession(id), messages: await client.messages(id) }
     } else if (group === 'sessions' && action === 'messages') data = await client.messages(required(rest[0], 'SESSION_ID'))
-    else if (group === 'sessions' && action === 'errors') {
+    else if (group === 'sessions' && action === 'tool-call') {
+      data = await client.inspectToolCall(required(rest[0], 'SESSION_ID'), required(rest[1], 'CALL_ID'))
+    } else if (group === 'sessions' && action === 'errors') {
       const messages = await client.messages(required(rest[0], 'SESSION_ID'))
       data = messages.filter((item) => isRecord(item) && ('error' in item || item.type === 'error'))
     } else if (group === 'sessions' && action === 'events') {

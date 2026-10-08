@@ -323,6 +323,10 @@ export class SubpolarClient {
   async messages(id: string): Promise<SessionMessage[]> {
     return (await this.request<{ messages: SessionMessage[] }>(`/api/sessions/${encodeURIComponent(id)}/messages`)).messages
   }
+  inspectToolCall(sessionId: string, callId: string): Promise<JsonRecord> {
+    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/tool-calls/${encodeURIComponent(callId)}`)
+  }
+
   sendMessage(id: string, content: string, options: { messageID?: string; metadata?: JsonRecord } = {}): Promise<MessageDelivery> {
     return this.request(`/api/sessions/${encodeURIComponent(id)}/messages`, this.json('POST', { content, ...options }))
   }

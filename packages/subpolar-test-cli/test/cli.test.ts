@@ -142,6 +142,16 @@ describe('@subpolar/test-cli', () => {
     expect(urls[0]).toContain('/api/sessions/s1/messages')
   })
 
+  test('inspects a specific session tool call through the shared client', async () => {
+    let url = ''
+    const code = await runCli(['sessions', 'tool-call', 's1', 'call/1', '--json'], {
+      io: { stdout: () => undefined },
+      fetch: async (input) => { url = String(input); return response({ callID: 'call/1', tool: 'web.search', error: null, output: 'results' }) },
+    })
+    expect(code).toBe(0)
+    expect(url).toContain('/api/sessions/s1/tool-calls/call%2F1')
+  })
+
   test('lists and decides approvals through client methods', async () => {
     const requests: Request[] = []
     const code = await runCli(['approvals', 'decision', 'a1', '--session', 's1', '--response', 'approve', '--json'], {

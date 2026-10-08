@@ -183,6 +183,43 @@ describe('gateway events persisted scope and delivery', () => {
     expect(deps.sseClients.size).toBe(0)
   })
 
+  it('filters normal-user event replay to the requested owned session', async () => {
+    const { deps, request, session } = fixture()
+    session.userId = 'cookie-owner'
+    const replayEvents = vi.fn(async () => ({ reset: false, events: [
+      { id: 1, ownerId: 'cookie-owner', sessionId: 'session', payload: { marker: 'requested-session' } },
+      { id: 2, ownerId: 'cookie-owner', sessionId: 'other-session', payload: { marker: 'other-session' } },
+    ] }))
+    deps.runtimeStore.mockResolvedValue({ replayEvents })
+    const req = request('/api/sse/stream?sessionId=session&after=0', 'GET', undefined, 'Bearer user-token')
+    const response = await handleLegacyRoute({
+      request: req,
+      url: new URL(req.url),
+      path: ['api', 'sse', 'stream'],
+      correlationId: 'request',
+      deps,
+      authenticatedUser: { id: 'cookie-owner' },
+      gatewayCredential: null,
+      internalRequest: false,
+    } as never)
+
+    expect(response?.status).toBe(200)
+    expect(replayEvents).toHaveBeenCalledWith('cookie-owner', '0')
+    const reader = response!.body!.getReader()
+    let text = new TextDecoder().decode((await reader.read()).value)
+    expect(text).toContain('requested-session')
+    expect(text).not.toContain('other-session')
+    const client = [...deps.sseClients][0]!
+    const frame = (sessionID: string, marker: string) => deps.encoder.encode(`id: 3\ndata: ${JSON.stringify({ properties: { sessionID }, marker })}\n\n`)
+    client.enqueue(frame('other-session', 'other-live-session'))
+    client.enqueue(frame('session', 'requested-live-session'))
+    text += new TextDecoder().decode((await reader.read()).value)
+    text += new TextDecoder().decode((await reader.read()).value)
+    expect(text).toContain('requested-live-session')
+    expect(text).not.toContain('other-live-session')
+    await reader.cancel()
+  })
+
   it('preserves owner-wide unscoped subscriptions', async () => {
     const { handle, request, deps } = fixture()
     const response = await handle(request('/api/sse/stream'))

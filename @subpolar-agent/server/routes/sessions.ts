@@ -321,15 +321,23 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       if (path.length === 5 && path[3] === 'tool-calls' && request.method === 'GET') {
         const callID = decodeURIComponent(path[4] ?? '')
         const payload = deps.entriesPayload(await deps.sendRpc(id, { type: 'get_entries' }, ownedRecord))
-        for (const entry of payload.entries) {
+        const entries = Array.isArray(payload.entries) ? payload.entries : []
+        for (const entry of entries) {
           const message = deps.object(deps.object(entry).message)
-          if (message.role === 'toolResult' && message.toolCallId === callID) {
-            return deps.json({ callID, tool: message.toolName ?? null, input: deps.redactSensitive(deps.object(message.input)), output: deps.redactSensitiveText(deps.sessionMessageText(message)), details: deps.redactSensitive(deps.object(message.details)), error: message.isError ? deps.redactSensitiveText(deps.sessionMessageText(message)) : null })
-          }
+          if (message.role !== 'toolResult' || message.toolCallId !== callID) continue
+          const invocation = entries
+            .map((candidate) => deps.object(deps.object(candidate).message))
+            .flatMap((candidate) => Array.isArray(candidate.content) ? candidate.content : [])
+            .map((part) => deps.object(part))
+            .find((part) => part.type === 'toolCall' && (part.id === callID || part.callID === callID))
+          const input = invocation ? invocation.arguments : message.input
+          return deps.json({ callID, tool: message.toolName ?? invocation?.name ?? null, input: deps.redactSensitive(deps.object(input)), output: deps.redactSensitiveText(deps.sessionMessageText(message)), details: deps.redactSensitive(deps.object(message.details)), error: message.isError ? deps.redactSensitiveText(deps.sessionMessageText(message)) : null })
         }
         return deps.json({ callID, output: '', details: {}, error: null }, 404)
       }
       if (path.length === 4 && path[3] === 'messages' && request.method === 'POST') {
+        const ownerId = ownedRecord.userId
+        if (!ownerId) return deps.json({ error: 'Session owner is unavailable' }, 400)
         const sessionProject = await deps.ownedSessionProject(ownershipClient, ownerId, ownedRecord)
         const cwd = ownedRecord.directory ?? sessionProject?.path
         try {
@@ -341,8 +349,6 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
         const metadata = deps.object(input.metadata)
         const record = ownedRecord
         const content = typeof input.content === 'string' ? input.content : ''
-        const ownerId = record.userId
-        if (!ownerId) return deps.json({ error: 'Session owner is unavailable' }, 400)
         const requestedAgent = typeof metadata.agent === 'string' && metadata.agent.trim() ? metadata.agent.trim() : undefined
         const requestedPermission = deps.requestedMetadataPermission(metadata)
         if (requestedPermission === null) return deps.json({ error: 'Invalid permission override' }, 400)
