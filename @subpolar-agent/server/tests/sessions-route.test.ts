@@ -73,6 +73,54 @@ describe('handleSessionsRoute', () => {
     })
   })
 
+  it('inspects Durable tool calls from the persisted owner-scoped transcript', async () => {
+    const ownerId = 'owner-a'
+    const callID = 'pi-durable:conversation:request:model-call'
+    const record = { id: 'session-1', userId: ownerId, directory: '/workspace', project: 'General Chat' }
+    const entries = [
+      { id: 'pi-durable:session-1:call:0', parentId: null, message: { role: 'assistant', content: [{ type: 'toolCall', id: callID, name: 'web_search', arguments: { query: 'Pi Durable npm version' } }] } },
+      { id: 'pi-durable:session-1:result:0', parentId: 'pi-durable:session-1:call:0', message: { role: 'toolResult', toolCallId: callID, toolName: 'web_search', content: [{ type: 'text', text: 'official results' }], isError: false } },
+    ]
+    const url = new URL(`http://localhost/api/sessions/session-1/tool-calls/${encodeURIComponent(callID)}`)
+    const routeContext = {
+      request: new Request(url.href),
+      url,
+      path: ['api', 'sessions', 'session-1', 'tool-calls', callID],
+      correlationId: 'test-request',
+      authenticatedUser: { id: ownerId },
+      gatewayCredential: null,
+      internalRequest: false,
+      deps: {
+        applicationDatabase: async () => ({}),
+        ownedSessionRecord: async () => record,
+        runtimeStore: async () => ({}),
+        transcriptHistory: async (sessionId: string, selection: unknown) => {
+          expect(sessionId).toBe('session-1')
+          expect(selection).toBe(record)
+          return { entries, leafId: entries[1]!.id, messages: [] }
+        },
+        sendRpc: async () => { throw new Error('Durable history must not use the legacy Pi session') },
+        entriesPayload: (value: unknown) => value,
+        object: (value: unknown) => value && typeof value === 'object' ? value : {},
+        sessionMessageText: (message: { content?: Array<{ text?: string }> }) => message.content?.map((part) => part.text ?? '').join('') ?? '',
+        redactSensitive: (value: unknown) => value,
+        redactSensitiveText: (value: string) => value,
+        json: (body: unknown, status = 200) => Response.json(body, { status }),
+      },
+    } as never
+
+    const response = await handleSessionsRoute(routeContext)
+
+    expect(response?.status).toBe(200)
+    await expect(response?.json()).resolves.toMatchObject({
+      callID,
+      tool: 'web_search',
+      input: { query: 'Pi Durable npm version' },
+      output: 'official results',
+      error: null,
+    })
+  })
+
   it('reserves a user-owned prompt delivery without an ownerId temporal-dead-zone failure', async () => {
     const ownerId = 'owner-a'
     const record = { id: 'session-1', userId: ownerId, directory: '/workspace', project: 'General Chat' }
@@ -112,6 +160,40 @@ describe('handleSessionsRoute', () => {
 
     expect(response?.status).toBe(201)
     await expect(response?.json()).resolves.toEqual(delivery)
+  })
+
+  it('aborts the authenticated owner session after ownership is established and preserves RPC response', async () => {
+    const record = { id: 'session-1', userId: 'owner-a', directory: '/workspace', project: 'General Chat' }
+    const aborts: unknown[][] = []
+    const url = new URL('http://localhost/api/sessions/session-1/abort')
+    const routeContext = {
+      request: new Request(url.href, { method: 'POST' }),
+      url,
+      path: ['api', 'sessions', 'session-1', 'abort'],
+      correlationId: 'test-request',
+      authenticatedUser: { id: 'owner-a' },
+      gatewayCredential: null,
+      internalRequest: false,
+      deps: {
+        applicationDatabase: async () => ({}),
+        ownedSessionRecord: async (_client: unknown, ownerId: string, sessionId: string) => {
+          expect(ownerId).toBe('owner-a')
+          expect(sessionId).toBe('session-1')
+          return record
+        },
+        runtimeStore: async () => ({}),
+        abortActiveDurableSession: (...args: unknown[]) => aborts.push(args),
+        sendRpc: async () => ({ aborted: true }),
+        json: (body: unknown, status = 200) => Response.json(body, { status }),
+        redactedDiagnostic: () => 'redacted',
+      },
+    } as never
+
+    const response = await handleSessionsRoute(routeContext)
+
+    expect(aborts).toEqual([['owner-a', 'session-1']])
+    expect(response?.status).toBe(200)
+    await expect(response?.json()).resolves.toEqual({ aborted: true })
   })
 
   it('returns MODEL_UNAVAILABLE instead of masking it with a ReferenceError', async () => {

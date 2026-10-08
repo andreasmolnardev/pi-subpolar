@@ -320,7 +320,10 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       }
       if (path.length === 5 && path[3] === 'tool-calls' && request.method === 'GET') {
         const callID = decodeURIComponent(path[4] ?? '')
-        const payload = deps.entriesPayload(await deps.sendRpc(id, { type: 'get_entries' }, ownedRecord))
+        const transcript = typeof deps.transcriptHistory === 'function' ? await deps.transcriptHistory(id, ownedRecord) : undefined
+        const payload = transcript?.entries?.length
+          ? transcript
+          : deps.entriesPayload(await deps.sendRpc(id, { type: 'get_entries' }, ownedRecord))
         const entries = Array.isArray(payload.entries) ? payload.entries : []
         for (const entry of entries) {
           const message = deps.object(deps.object(entry).message)
@@ -573,7 +576,10 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
         if (typeof input.message !== 'string' || !input.message.trim()) return deps.json({ error: 'Prompt message is required' }, 400)
         return deps.json(await deps.sendRpc(id, { type: 'prompt', message: input.message, ...(typeof input.streamingBehavior === 'string' ? { streamingBehavior: input.streamingBehavior } : {}) }, ownedRecord))
       }
-      if (path.length === 4 && path[3] === 'abort' && request.method === 'POST') return deps.json(await deps.sendRpc(id, { type: 'abort' }, ownedRecord))
+      if (path.length === 4 && path[3] === 'abort' && request.method === 'POST') {
+        deps.abortActiveDurableSession(ownerId, id)
+        return deps.json(await deps.sendRpc(id, { type: 'abort' }, ownedRecord))
+      }
       return deps.json({ error: 'Not found' }, 404)
     } catch (error) {
       console.warn(`Session request failed: ${deps.redactedDiagnostic(error)}`)

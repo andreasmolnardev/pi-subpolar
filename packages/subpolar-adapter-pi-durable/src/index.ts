@@ -10,6 +10,7 @@ import {
   type AgentEvent,
   watchEvents,
   type AgentEventStream,
+  type EntryRecord,
   type Registry,
   type Submission,
   type ToolExecutionApi,
@@ -79,6 +80,12 @@ export interface PiDurableWaitResult {
   readonly reason?: string;
 }
 
+export interface PiDurableTranscriptEntry {
+  readonly id: EntryRecord["id"];
+  readonly kind: EntryRecord["kind"];
+  readonly messages: NonNullable<EntryRecord["model"]>;
+}
+
 /** Minimal execution-engine boundary used by this adapter. */
 export interface AgentEngine {
   initialize(context?: Context): Promise<void>;
@@ -87,6 +94,7 @@ export interface AgentEngine {
   wait(ownerId: string, sessionId: string, requestId: string, context?: Context): Promise<PiDurableWaitResult>;
   abort(ownerId: string, sessionId: string, context?: Context): Promise<void>;
   recover(ownerId: string, sessionId: string, requestId: string, context?: Context): Promise<number | undefined>;
+  readTranscript(ownerId: string, sessionId: string, context?: Context): Promise<readonly PiDurableTranscriptEntry[]>;
   close(context?: Context): Promise<void>;
 }
 
@@ -410,6 +418,25 @@ export class PiDurableAgentEngine implements AgentEngine {
     if (!record || record.type !== "input") return undefined;
     const submission = await this.#harness!.submission(record.id, context);
     return submission ? record.id : undefined;
+  }
+
+  async readTranscript(ownerId: string, sessionId: string, context = this.#context()): Promise<readonly PiDurableTranscriptEntry[]> {
+    await this.initialize(context);
+    const conversation = await this.#conversation(ownerId, sessionId, context, false);
+    if (!conversation) return [];
+
+    const entries: PiDurableTranscriptEntry[] = [];
+    let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
+    do {
+      const page = await conversation.entries({ order: "ascending" }, 100, cursor, context);
+      entries.push(...page.items.map((entry) => ({
+        id: entry.id,
+        kind: entry.kind,
+        messages: entry.model ?? [],
+      })));
+      cursor = page.next;
+    } while (cursor !== undefined);
+    return entries;
   }
 
   async close(context = this.#context()): Promise<void> {

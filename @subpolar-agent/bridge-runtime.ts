@@ -13,6 +13,7 @@ import { migrateLegacyGitCredentials } from './server/git/legacy-credentials-mig
 
 
 import { entriesPayload, projectEntries, redactTranscriptPayload, type TranscriptMessage } from './transcript/projector'
+import { mergeDurableTranscript } from './transcript/durable-projector.ts'
 
 import listToolsExtension from './subpolar/extensions/list-tools.ts'
 import openapiTools from './subpolar/extensions/openapi-tools.ts'
@@ -220,6 +221,7 @@ let automationWorker: ReturnType<typeof createAutomationWorker> | undefined
 let automationScheduler: ReturnType<typeof setInterval> | undefined
 let automationMaintenanceInitialized = false
 const durableRunQueues = new Map<string, Promise<void>>()
+const activeDurableRunControllers = new Map<string, Set<AbortController>>()
 let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccountService>> | undefined
 let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
 const migratedUsers = new Set<string>()
@@ -1427,7 +1429,43 @@ function durableDatabasePath(ownerId: string, sessionId: string): string {
  * executes its prompt through Pi Durable. PiSdkSession remains for compatibility
  * RPC, WebSocket, and history behavior only.
  */
+function durableRunIdentity(ownerId: string, sessionId: string, runId: string): string {
+  return JSON.stringify([ownerId, sessionId, runId])
+}
+
+function abortActiveDurableSession(ownerId: string, sessionId: string): void {
+  tenantSessionKey(ownerId, sessionId)
+  for (const [key, controllers] of activeDurableRunControllers) {
+    const [activeOwnerId, activeSessionId] = JSON.parse(key) as [string, string, string]
+    if (activeOwnerId === ownerId && activeSessionId === sessionId) {
+      for (const controller of controllers) controller.abort()
+    }
+  }
+}
+
 async function runStatelessPrompt(input: StatelessSubpolarAgentRunInput, owner: SessionRecord, project: Project): Promise<unknown> {
+  const ownerId = owner.userId
+  if (!ownerId) throw new Error('Session owner is unavailable')
+  if (input.ownerId !== ownerId) throw new Error('Runtime owner mismatch')
+  assertTenantSession(ownerId, input.sessionId, owner)
+  const identity = durableRunIdentity(ownerId, input.sessionId, input.runId)
+  const controller = new AbortController()
+  const forwardAbort = () => controller.abort(input.signal?.reason)
+  if (input.signal?.aborted) forwardAbort()
+  else input.signal?.addEventListener('abort', forwardAbort, { once: true })
+  const controllers = activeDurableRunControllers.get(identity) ?? new Set<AbortController>()
+  controllers.add(controller)
+  activeDurableRunControllers.set(identity, controllers)
+  try {
+    return await executeStatelessPrompt({ ...input, signal: controller.signal }, owner, project)
+  } finally {
+    input.signal?.removeEventListener('abort', forwardAbort)
+    controllers.delete(controller)
+    if (controllers.size === 0 && activeDurableRunControllers.get(identity) === controllers) activeDurableRunControllers.delete(identity)
+  }
+}
+
+async function executeStatelessPrompt(input: StatelessSubpolarAgentRunInput, owner: SessionRecord, project: Project): Promise<unknown> {
   const ownerId = owner.userId
   if (!ownerId) throw new Error('Session owner is unavailable')
   if (input.ownerId !== ownerId) throw new Error('Runtime owner mismatch')
@@ -1528,6 +1566,17 @@ async function runStatelessPrompt(input: StatelessSubpolarAgentRunInput, owner: 
           return result.output ?? ''
         } finally {
           execution.request.signal?.removeEventListener('abort', abort)
+          try {
+            const durableTranscript = await engine.readTranscript(ownerId, input.sessionId)
+            const repository = new SessionTranscriptRepository(client)
+            const existing = await repository.get(ownerId, input.sessionId)
+            const merged = mergeDurableTranscript(existing?.entries ?? [], existing?.leafId ?? null, durableTranscript, input.sessionId)
+            if (merged.entries.length !== (existing?.entries.length ?? 0)) {
+              await repository.save(ownerId, input.sessionId, merged.entries, merged.leafId)
+            }
+          } catch (projectionError) {
+            console.warn(`Pi Durable transcript projection failed: ${redactedDiagnostic(projectionError)}`)
+          }
         }
       } finally {
         await engine.close()
@@ -1830,7 +1879,7 @@ const bridgeRequestDependencies = {
   safeProjectPath, generalChatProject, mkdirSync, readdirSync, writeFileSync, statSync, projectsRoot,
   generalChatRoot, resolve, join, existsSync, isPathWithin, resolveNewSessionRoute, NewSessionRouteError, preferenceModel,
   validateModelSelection, modelSelection, normalizeSessionTags, InvalidSessionTagsError, sessionWorkspace,
-  saveState, sessions, rpcSession, sendRpc, runStatelessPrompt, storedSessionResponse, parseModelSelection,
+  saveState, sessions, rpcSession, sendRpc, runStatelessPrompt, abortActiveDurableSession, storedSessionResponse, parseModelSelection,
   parseRoutingModelSelection, routeFirstSessionRequest, generateFirstSessionTitle, localSessionRecord, sessionMessageText, entriesPayload,
   transcriptHistory, messageDeliveryId, queueClientId, MessageDeliveryConflictError,
   replayMessageDeliveryResponse, messageDeliveryResponse, QueueEntryConflictError, QueueEntryTransitionError,

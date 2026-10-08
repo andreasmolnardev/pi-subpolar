@@ -259,6 +259,55 @@ test("invokes one registered Durable tool with stable Subpolar identity and retu
   await engine.close();
 });
 
+test("reads committed transcript entries in chronological order and preserves them after reopen", async () => {
+  const { faux, models } = setupModels();
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("demo_echo", { text: "transcript request" }, { id: "transcript-call-1" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("transcript answer"),
+  ]);
+  const tool: ToolDefinition = {
+    id: "demo.echo",
+    namespace: "demo",
+    description: "Echo text for the transcript test.",
+    inputSchema: {
+      type: "object",
+      properties: { text: { type: "string" } },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    enabled: true,
+    risk: "low",
+  };
+  const run = execution("request-transcript", "run-transcript");
+  run.tools = { async call() { return { ok: true, value: "transcript tool result" }; } };
+  const database = await databasePath();
+  const engine = await PiDurableAgentEngine.initialize({ databasePath: database, models, tools: [tool] });
+  await engine.configure("owner-a", "session-a", { model: { provider: "faux", modelId: "faux-1" } });
+  await engine.submit({
+    ownerId: "owner-a", sessionId: "session-a", requestId: "request-transcript", runId: "run-transcript", prompt: "record this transcript",
+  }, run);
+  await expect(engine.wait("owner-a", "session-a", "request-transcript"))
+    .resolves.toMatchObject({ status: "done", output: "transcript answer" });
+
+  const transcript = await engine.readTranscript("owner-a", "session-a");
+  expect(transcript.length).toBeGreaterThanOrEqual(4);
+  expect(new Set(transcript.map((entry) => entry.id)).size).toBe(transcript.length);
+  const messages = transcript.flatMap((entry) => entry.messages);
+  const relevantMessages = messages.filter((message) => ["user", "assistant", "toolResult"].includes(message.role));
+  expect(relevantMessages.map((message) => message.role)).toEqual(["user", "assistant", "toolResult", "assistant"]);
+  expect(JSON.stringify(relevantMessages)).toContain("transcript request");
+  expect(JSON.stringify(relevantMessages)).toContain("transcript tool result");
+  expect(JSON.stringify(relevantMessages)).toContain("transcript answer");
+  expect(transcript.some((entry) => entry.kind === "pi.user")).toBe(true);
+  expect(transcript.some((entry) => entry.kind === "pi.assistant")).toBe(true);
+  expect(transcript.some((entry) => entry.kind === "pi.tool-result")).toBe(true);
+  await engine.close();
+
+  const reopened = await PiDurableAgentEngine.initialize({ databasePath: database, models, tools: [tool] });
+  expect(await reopened.readTranscript("owner-a", "session-a")).toEqual(transcript);
+  await reopened.close();
+});
+
 test("does not invoke disabled or unregistered Durable tool names", async () => {
   const { faux, models } = setupModels();
   faux.setResponses([

@@ -1,6 +1,6 @@
 # `@subpolar/adapter-pi-durable`
 
-Experimental single-process execution adapter using `@earendil-works/pi-durable@1.1.0` and its portable SQLite storage. Under Bun it provides a serialized async facade over `bun:sqlite`; Node runtimes use Pi Durable's Node SQLite adapter. It implements the current Subpolar `StatelessExecutor` boundary and exposes a small internal `AgentEngine` lifecycle (`initialize`, `configure`, `submit`, `wait`, `abort`, `recover`, `close`). Existing `@subpolar/adapter-pi` and bridge code are untouched.
+Experimental single-process execution adapter using `@earendil-works/pi-durable@1.1.0` and its portable SQLite storage. Under Bun it provides a serialized async facade over `bun:sqlite`; Node runtimes use Pi Durable's Node SQLite adapter. It implements the current Subpolar `StatelessExecutor` boundary and exposes a small internal `AgentEngine` lifecycle (`initialize`, `configure`, `submit`, `wait`, `abort`, `recover`, `readTranscript`, `close`). `readTranscript(ownerId, sessionId)` returns committed conversation entries oldest-first with their Durable IDs, kinds, and model messages, using `Conversation.entries()` pagination; it returns an empty list when the owner/session has no mapped conversation. The canonical HTTP prompt path uses this adapter; legacy Pi remains for compatibility RPC, WebSocket, and existing-session history paths.
 
 ## Authority and isolation
 
