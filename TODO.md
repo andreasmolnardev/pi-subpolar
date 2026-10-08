@@ -18,16 +18,84 @@ Branch: `pi-durable` (created from clean `main` at `339d6e0`). This section reco
 - [ ] Persist General Chat workspaces/transcripts independently of the replaceable agent container. A Compose container recreation removed a just-created session workspace; the server correctly rejected a subsequent prompt as read-only. PocketBase session metadata alone does not preserve the Pi SDK workspace/transcript.
 - [ ] Add isolated real-server integration coverage with deterministic model support, user isolation, tool-policy/approval behavior, cancellation, and server restart/recovery. Current CLI tests are package-level mocked transport tests; live E2E remains opt-in and no restart recovery is verified.
 - [ ] Establish target package exports and dependency boundaries while preserving compatible existing package names; the current contracts canonical-name repair and Durable adapter spike are only partial architecture restoration.
-- [ ] Production Durable composition remains blocked: the Durable Harness captures one fixed Pi `Models` implementation, while `userProviderRuntime(userId)` is owner-scoped. Do not wire a process-global engine to one user's runtime. Define owner-safe provider/runtime lifecycle and SQLite ownership before composition.
-- [ ] Check and pin Pi AI/coding-agent dependency compatibility across the WebUI/server (`1.0.2`) and Durable adapter (`pi-ai ^1.1.0`, Durable `1.1.0`) before passing `ProviderRuntime` as Durable's `Models`; isolated adapter tests use the Durable package's own faux provider and do not prove this host integration.
+- [ ] Production Durable composition remains blocked: the Durable Harness captures one fixed Pi `Models` implementation, while `userProviderRuntime(userId)` is owner-scoped. A process-global engine must not capture one user's runtime. The adapter now rejects mismatched owner/session/request/run identity before submission, but provider lifecycle/composition remains open. Define owner-safe provider/runtime lifecycle and SQLite ownership before composition.
+- [ ] Resolve Pi AI type/runtime compatibility across the WebUI/server (`1.0.2`) and Durable adapter (`pi-ai ^1.1.0`, Durable `1.1.0`). A forced override was tried and reverted because it introduced additional provider type errors across workspace installs; do not use an unchecked production cast. A package integration test currently opens the Harness with Subpolar's owner-scoped `ProviderRuntime` using a test-only cast, but does not prove inference/stream compatibility.
 - [ ] Extract bridge composition/domain responsibilities into packages and verify WebUI uses the shared HTTP/streaming client exclusively. A first project-read slice now uses the shared client, but the WebUI still has many direct API calls and the bridge remains large.
 - [x] Define an initial internal agent-engine/`StatelessExecutor` seam and an experimental Pi Durable adapter backed by single-process SQLite. Added an isolated faux-model tool invocation/result round-trip test through the injected Subpolar tool invoker; resolve provider credential/model/profile/approval integration, gateway binding recovery, event projection, and replay classifications before production wiring.
+- [x] Reject Durable submissions when owner/session/request/run identifiers disagree with the trusted `RuntimeExecution`, before binding an invoker or queuing work; adapter regression test passes.
+- [x] Add a package-level smoke test that opens the Durable Harness with Subpolar's account-scoped provider runtime and verifies account-qualified provider IDs and per-owner credential-store reads. This does not test model inference or recover a server run.
+- [x] Add typed `@subpolar/client` and `subpolar-test-cli repository status PROJECT_ID` operation against the existing authenticated route; client/CLI package tests pass.
 - [ ] Build and test transcript migration preserving tool calls, compaction and existing session access; retain the legacy executor until parity and recovery pass.
 - [ ] Add explicit restart recovery, session reattachment, committed event projection, and interrupted-side-effect tests before execution cutover.
 - [ ] Reconcile `runtime_runs`, `subpolar_runs`/`subpolar_run_events`, and `durable_events` with Pi Durable submission identity and status; current adapter `recover()` is only lookup plumbing and does not reattach a server run.
 - [ ] Replace the adapter's in-memory request-to-tool-invoker binding with a restart-safe, owner/session/request-resolved gateway capability. Durable must never resume an external tool call without revalidating current authorization; tools remain `replay: "unsafe"` until each operation's replay semantics are proven.
 - [ ] Resolve canonical transcript integration/migration before cutover. Durable conversation state is currently separate from `session_transcripts`; preserve old session access and test assistant tool calls/results, compaction, and idempotent retries.
 - [ ] Bridge Durable execution events, cancellation, terminal status, model errors, tool errors, and recovery outcomes into the existing Subpolar run/API/SSE contracts before enabling the production executor switch.
+
+## Pi Durable production wiring plan
+
+Do not enable a production cutover until every phase's exit gate is met. Keep `PiSdkSession` as the default/rollback path until Phase 8; use a development-only opt-in for any earlier live Durable testing. Pi Durable SQLite is single-server/single-storage-owner only. Never claim distributed safety or exactly-once external effects.
+
+### Phase 1 — Confirm dependency and storage contracts
+- [x] Read the pinned Pi Durable 1.1.0 docs/API and verify the current `Harness`, submission, task, and SQLite adapter calls against the installed package.
+- [ ] Resolve the server (`pi-ai`/`pi-coding-agent` 1.0.2) versus Durable adapter (`pi-ai` 1.1.x / Durable 1.1.0) compatibility. The current runtime smoke test requires a test-only type cast because workspace module instances have nominally branded `TranscriptContext` types; an override experiment caused additional type errors and was reverted. Align versions/exports only with passing provider, server, adapter, and build tests; avoid duplicate incompatible Pi AI runtimes.
+- [ ] Specify durable DB location, backup/restore, permissions, retention, and container persistence. Mount/persist the DB outside replaceable container layers; do not reset PocketBase data or existing volumes.
+- [ ] Decide and document a single-server storage ownership model. Reject a second process/owner of the same SQLite database or require explicit external coordination before multi-process deployment.
+- **Exit gate:** provider account runtime implements the exact Pi Durable `Models` contract in the running application; credentials remain outside Durable documents/database; storage survives supported container/server restarts.
+
+### Phase 2 — Owner-scoped engine lifecycle and session configuration
+- [x] Add Durable submission identity validation for owner, session, request, and run before submit/binding.
+- [ ] Design an `AgentEngine` manager at server composition that maps authenticated owner/session context to Durable storage and lifecycle without a process-global engine capturing one user's provider runtime.
+- [ ] Choose and test the isolation model (for example, owner-scoped engine/storage or an explicit credential-safe provider dispatcher). Define concurrency/locking, lazy initialization, shutdown, failed-init cleanup, engine eviction, and storage path derivation.
+- [ ] Resolve model selection from the trusted persisted session/agent configuration; validate provider account ownership, selected model, thinking level, profile, system prompt, skills, cwd/worktree and permission context before configuring the Durable conversation.
+- [ ] Keep provider tokens and account credentials in the existing owner-bound provider service. Never serialize credentials, auth headers, provider runtime objects, or secrets into Durable state/logs.
+- [ ] Add multi-user tests where identical provider/account/model IDs resolve to different credentials and cannot cross-route; include missing/revoked account and model errors.
+- **Exit gate:** two owners can execute concurrently with identical provider/model IDs and remain isolated; one owner's session cannot configure or recover another owner's Durable conversation.
+
+### Phase 3 — Tool and approval gateway parity
+- [ ] Convert the authorized Subpolar tool catalog and JSON schemas to Pi Durable tool definitions without installing unrestricted Pi built-ins or bypassing the central gateway.
+- [ ] Preserve current effective agent/profile/project tool visibility, schema validation, current-policy checks, deny/allow/approval decisions, auditing, redaction, and idempotency keys.
+- [ ] Replace the adapter's in-memory conversation-to-invoker binding with a restart-safe resolver using trusted owner/session/request/run identifiers. Resolve the gateway from current server records at invocation time; do not persist executable capabilities or trust model-supplied identity fields.
+- [ ] After recovery, fail closed if owner, session, run, tool policy, or request cannot be revalidated. Keep tools `replay: "unsafe"` unless a tool-specific test proves safe retry/idempotency; record interrupted side effects for operator inspection rather than re-running blindly.
+- [ ] Define how approvals pause/resume Durable submissions. Approval continuation must reload and revalidate the pending call, policy and session through Subpolar persistence; preserve stable call/request identity and existing approval APIs.
+- [ ] Test allowed, denied, approval-required/approved/rejected, invalid schema, tool error, duplicate call, revoked permission, process interruption before/during/after side effect, and restart behavior.
+- **Exit gate:** every Durable tool invocation crosses the same Subpolar gateway as legacy execution; recovered work never invokes a tool without current authorization.
+
+### Phase 4 — Canonical transcript and existing-session migration
+- [ ] Define one canonical Subpolar transcript projection and reconcile it with Durable conversation history. Preserve assistant tool calls and arguments, tool results/errors, ordering, IDs, usage/thinking metadata, and compaction/branch markers.
+- [ ] Implement an idempotent migration/import path for existing `session_transcripts`; keep the original records readable and preserve all existing sessions. Do not silently replace or truncate history.
+- [ ] Prevent duplicate user/assistant messages when a stable request ID is retried or a submission is recovered. Define which system/profile prompt versions are stored in Durable versus rebuilt from current trusted configuration.
+- [ ] Verify existing sessions can be inspected and continued after migration, including complex transcripts with tool calls and compacted history; document rollback and migration versioning.
+- **Exit gate:** fixture-based legacy-to-Durable transcript tests pass for plain, tool, error, compaction and retry cases, with byte/semantic assertions and no lost old-session access.
+
+### Phase 5 — Runs, committed events, cancellation and recovery
+- [ ] Reconcile `runtime_runs`, `subpolar_runs`, `subpolar_run_events`, `durable_events`, and Durable submission/task IDs. Define a single mapping and legal status transitions for queued/running/approval/interrupted/completed/failed/cancelled.
+- [ ] Project Durable committed text/thinking/tool/status/error events into existing owner/session-scoped HTTP/SSE/WebSocket contracts with replay cursors, redaction, stable correlation IDs, and no cross-session leakage.
+- [ ] Implement server startup reconciliation and run reattachment: identify active Subpolar runs, resolve their Durable submissions, restore trusted runtime/gateway context, and settle/report runs that cannot safely resume.
+- [ ] Wire cancellation and shutdown through the server lifecycle; test cancellation races and interrupted model/tool operations. Ensure observers can reconnect and replay without duplicate or missing committed events.
+- [ ] Test duplicate POSTs/stable request IDs, process restart during model work, restart during tool execution/approval, unknown submissions, terminal results, and persistence failure handling.
+- **Exit gate:** an external harness can restart the Docker development server and the CLI can inspect/reconnect to the same run with correct status, transcript, events, errors and safe side-effect semantics.
+
+### Phase 6 — Real-server test CLI and parity matrix
+- [ ] Use `subpolar-test-cli` and `@subpolar/client` only through public authenticated API/SSE operations; do not add a CLI-specific execution path or public lifecycle/admin endpoint.
+- [ ] Exercise create/send/inspect/messages/events/errors/abort, agents/models/projects/settings, tools and approvals against a running Compose stack using isolated normal user accounts and temporary projects.
+- [ ] Add deterministic mock-model integration via a real server/provider interface for repeatable tests; keep optional real-provider smoke tests separate and secret-safe.
+- [ ] Verify agent/model/thinking/profile/skills/worktree selection, web-search authorization, owner/session isolation, SSE reconnect/replay, idempotency, denial/approval continuation, model/tool failures, cancellation, container restart recovery and legacy-session access.
+- [ ] Keep test data isolated; never print tokens or secret logs, use PocketBase superuser credentials as client auth, or reset/delete existing volumes/data.
+- **Exit gate:** repeatable Docker-backed integration suite and manual CLI parity checklist pass; test CLI provides enough diagnostics to distinguish server, model, tool, approval and recovery failures.
+
+### Phase 7 — Modular composition and WebUI/client parity
+- [ ] Extract provider/engine lifecycle, run/status projection, transcript mapping, and transport composition from `bridge-runtime.ts` into appropriate application/server/adapter packages; keep the bridge as HTTP/WebSocket composition and transport.
+- [ ] Ensure core/contracts remain free of React, Hono, PocketBase and Pi implementation imports; use the existing `@subpolar/*` scope and preserve compatible package names.
+- [ ] Move WebUI session/model/project/tool/approval/history/event operations to `@subpolar/client` over the same authenticated HTTP/stream interfaces used by the test CLI. Remove direct or alternate execution pathways only after route/client parity tests pass.
+- **Exit gate:** dependency-boundary checks, server/client tests, WebUI tests and API parity tests pass; both WebUI and CLI reach agent execution only through the server.
+
+### Phase 8 — Controlled cutover and legacy retirement
+- [ ] Add a server-side development/test feature switch for Durable composition. The switch selects an executor behind the existing `/sessions/:id/runs` API; it must not bypass auth, policy, approvals, or run persistence.
+- [ ] Run legacy and Durable parity fixtures against identical deterministic scenarios; compare response shape, transcript, tools/audits, event order, cancellation, errors and recovery.
+- [ ] Enable Durable by default only after all prior exit gates pass and a rollback procedure is verified. Keep legacy Pi execution available during the rollout; do not dual-execute prompts or side effects.
+- [ ] Remove `PiSdkSession` and redundant transient execution code only after production-style Docker restart/recovery and live CLI acceptance tests pass. Update architecture docs and this TODO with verified limitations and deployment requirements.
+- **Final acceptance:** Pi Durable executes real Subpolar agent sessions through the public server API; owner-scoped providers/tools, existing session history, approvals, event replay, cancellation and supported restart recovery all pass. No distributed or exactly-once guarantees are claimed beyond tested coordination/idempotency.
 
 Validation checkpoint (2026-10-08): root typechecks passed; `test:server` passed 474 tests across 48 files; `test:core` passed 139 tests; production build passed with existing Zod annotation/chunk-size warnings; focused client, CLI, Durable-adapter, session-route, SSE-route, and WebUI repository-read tests passed. The live Compose-backed test used the legacy Pi runtime and confirmed `web.search` execution; it does **not** prove Durable production execution or restart recovery.
 
