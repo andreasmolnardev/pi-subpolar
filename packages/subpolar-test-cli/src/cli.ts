@@ -97,15 +97,12 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
       const headers = new Headers(init.headers)
       headers.set('x-request-id', requestId)
       const requestController = new AbortController()
-      const upstreamSignal = init.signal
-      const abortFromUpstream = () => requestController.abort(upstreamSignal?.reason)
-      upstreamSignal?.addEventListener('abort', abortFromUpstream, { once: true })
       const requestTimer = setTimeout(() => { timedOut = true; requestController.abort(new Error('Request timed out')) }, timeout)
+      const signal = init.signal ? AbortSignal.any([init.signal, requestController.signal]) : requestController.signal
       try {
-        return await (options.fetch ?? fetch)(input, { ...init, headers, signal: requestController.signal })
+        return await (options.fetch ?? fetch)(input, { ...init, headers, signal })
       } finally {
         clearTimeout(requestTimer)
-        upstreamSignal?.removeEventListener('abort', abortFromUpstream)
       }
     }
     const client = (options.client ?? new SubpolarClient({ baseUrl, token: userToken, fetch: transport })) as CliClient

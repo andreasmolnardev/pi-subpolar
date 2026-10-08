@@ -51,13 +51,14 @@ describe('@subpolar/test-cli', () => {
 
   test('sends with stable request and message IDs, and follows typed SSE events', async () => {
     const out: string[] = []; const requests: Request[] = []
+    let streamSignal: AbortSignal | undefined
     const code = await runCli(['sessions', 'send', 's-1', 'hello there', '--follow', '--limit', '1', '--json'], {
       io: { stdout: (value) => out.push(value) },
       fetch: async (input, init) => {
         const request = new Request(input, init); requests.push(request)
         if (request.url.endsWith('/messages')) return response({ messageID: 'm-1', state: 'pending' }, 201)
         if (request.url.endsWith('/runs')) return response({ runId: 'r-1', state: 'running' })
-        if (request.url.includes('/api/sse/stream')) return new Response('id: 2\nevent: tool_call\ndata: {"name":"lookup"}\n\n', { headers: { 'content-type': 'text/event-stream' } })
+        if (request.url.includes('/api/sse/stream')) { streamSignal = init?.signal; return new Response('id: 2\nevent: tool_call\ndata: {"name":"lookup"}\n\n', { headers: { 'content-type': 'text/event-stream' } }) }
         throw new Error(`Unexpected request ${request.url}`)
       },
     })
@@ -68,6 +69,7 @@ describe('@subpolar/test-cli', () => {
     expect(messageBody.messageID).toBe(requestId)
     expect((messageBody.metadata as Record<string, unknown>).requestId).toBe(requestId)
     expect(requests.every((request) => request.headers.get('x-request-id') === requestId)).toBe(true)
+    expect(streamSignal?.aborted).toBe(true)
     expect(requests.findIndex((request) => request.url.includes('/api/sse/stream'))).toBeLessThan(requests.findIndex((request) => request.url.endsWith('/messages')))
     expect(JSON.parse(out[0]!)).toMatchObject({ event: 'stream', type: 'tool_call', id: '2', data: { name: 'lookup' } })
     expect(JSON.parse(out[1]!)).toMatchObject({ event: 'result', ok: true })
