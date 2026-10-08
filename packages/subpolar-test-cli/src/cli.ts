@@ -66,7 +66,6 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
   const stderr = options.io?.stderr ?? ((text: string) => process.stderr.write(text))
   let json = false
   let timedOut = false
-  let timer: ReturnType<typeof setTimeout> | undefined
   let command = 'unknown'
   let requestId = `subpolar-cli-${crypto.randomUUID()}`
   try {
@@ -78,6 +77,7 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
     let timeout = 30_000
     for (let i = 0; i < argv.length; i++) {
       const arg = argv[i]!
+      if (arg === '--') { args.push(...argv.slice(i)); break }
       if (arg === '--url') url = valueAfter(argv, i++, arg)
       else if (arg === '--env') env = valueAfter(argv, i++, arg)
       else if (arg === '--profile') profile = valueAfter(argv, i++, arg)
@@ -93,11 +93,20 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
     const baseUrl = options.baseUrl ?? url ?? (selector ? process.env[`SUBPOLAR_${selector}_URL`] : undefined) ?? process.env.SUBPOLAR_URL ?? DEFAULT_URL
     const userToken = options.token ?? token ?? (selector ? process.env[`SUBPOLAR_${selector}_TOKEN`] : undefined) ?? process.env.SUBPOLAR_TOKEN
     const controller = new AbortController()
-    timer = setTimeout(() => { timedOut = true; controller.abort(new Error('Request timed out')) }, timeout)
     const transport: FetchLike = async (input, init = {}) => {
       const headers = new Headers(init.headers)
       headers.set('x-request-id', requestId)
-      return (options.fetch ?? fetch)(input, { ...init, headers, signal: init.signal ?? controller.signal })
+      const requestController = new AbortController()
+      const upstreamSignal = init.signal
+      const abortFromUpstream = () => requestController.abort(upstreamSignal?.reason)
+      upstreamSignal?.addEventListener('abort', abortFromUpstream, { once: true })
+      const requestTimer = setTimeout(() => { timedOut = true; requestController.abort(new Error('Request timed out')) }, timeout)
+      try {
+        return await (options.fetch ?? fetch)(input, { ...init, headers, signal: requestController.signal })
+      } finally {
+        clearTimeout(requestTimer)
+        upstreamSignal?.removeEventListener('abort', abortFromUpstream)
+      }
     }
     const client = (options.client ?? new SubpolarClient({ baseUrl, token: userToken, fetch: transport })) as CliClient
     const [group, action, ...rest] = args
@@ -134,6 +143,7 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
       const message: string[] = []
       for (let i = 1; i < rest.length; i++) {
         const arg = rest[i]!
+        if (arg === '--') { message.push(...rest.slice(i + 1)); break }
         if (arg === '--follow') continue
         if (['--limit', '--model'].includes(arg)) { valueAfter(rest, i++, arg); continue }
         message.push(arg)
@@ -254,7 +264,7 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
     if (json) stdout(`${JSON.stringify(payload)}\n`)
     else stderr(`Error [${payload.error.code}]: ${payload.error.message}\n`)
     return timedOut ? 3 : usage ? 2 : isUnsupported ? 5 : apiError?.status === 401 || apiError?.status === 403 ? 4 : 1
-  } finally { if (timer) clearTimeout(timer) }
+  }
 }
 
 if (import.meta.main) process.exitCode = await runCli(process.argv.slice(2))

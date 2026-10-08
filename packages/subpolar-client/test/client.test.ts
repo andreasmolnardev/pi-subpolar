@@ -4,7 +4,7 @@ import { SubpolarClient, unsupportedFeatures } from '../src/index.ts'
 function mockClient(handler: (request: Request) => Response | Promise<Response>) {
   const calls: Request[] = []
   const client = new SubpolarClient({
-    baseUrl: 'http://subpolar.test/',
+    baseUrl: 'https://subpolar.test/',
     token: 'test-token',
     fetch: async (input, init) => {
       const request = new Request(input, init)
@@ -16,6 +16,12 @@ function mockClient(handler: (request: Request) => Response | Promise<Response>)
 }
 
 describe('SubpolarClient', () => {
+  test('refuses bearer credentials over non-loopback plaintext HTTP', () => {
+    expect(() => new SubpolarClient({ baseUrl: 'http://subpolar.example', token: 'user-token' }))
+      .toThrow('Bearer tokens require HTTPS except for loopback development servers')
+    expect(() => new SubpolarClient({ baseUrl: 'http://localhost:4173', token: 'user-token' })).not.toThrow()
+  })
+
   test('uses bearer authentication and calls existing discovery routes', async () => {
     const { client, calls } = mockClient(() => Response.json({ contract: { id: 'subpolar-api.v1', version: 'v1' } }))
     await client.capabilities()

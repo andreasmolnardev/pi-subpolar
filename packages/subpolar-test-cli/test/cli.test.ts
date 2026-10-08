@@ -73,6 +73,36 @@ describe('@subpolar/test-cli', () => {
     expect(JSON.parse(out[1]!)).toMatchObject({ event: 'result', ok: true })
   })
 
+  test('preserves option-like prompt text after the argument delimiter', async () => {
+    let messageBody: Record<string, unknown> | undefined
+    const code = await runCli(['sessions', 'send', 's1', '--', 'do not interpret', '--token', 'as credentials'], {
+      io: { stdout: () => undefined }, fetch: async (input, init) => {
+        const request = new Request(input, init)
+        if (request.url.endsWith('/messages')) messageBody = await request.json() as Record<string, unknown>
+        return response(request.url.endsWith('/messages') ? { messageID: 'm1', state: 'pending' } : { state: 'running' })
+      },
+    })
+    expect(code).toBe(0)
+    expect(messageBody?.content).toBe('do not interpret --token as credentials')
+  })
+
+  test('keeps the request timeout from truncating a live event stream', async () => {
+    const out: string[] = []
+    const code = await runCli(['sessions', 'events', 's1', '--limit', '1', '--timeout', '5', '--json'], {
+      io: { stdout: (value) => out.push(value) },
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          setTimeout(() => {
+            controller.enqueue(new TextEncoder().encode(['id: 7', 'event: status', 'data: {"state":"running"}', '', ''].join('\n')))
+            controller.close()
+          }, 20)
+        },
+      }), { headers: { 'content-type': 'text/event-stream' } }),
+    })
+    expect(code).toBe(0)
+    expect(out.join('')).toContain('"type":"status"')
+  })
+
   test('inspects sessions and filters errors using client operations', async () => {
     const urls: string[] = []
     const code = await runCli(['sessions', 'errors', 's1', '--json'], {

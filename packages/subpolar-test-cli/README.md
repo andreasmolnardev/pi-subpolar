@@ -20,9 +20,9 @@ The default server URL is `http://localhost:4173`. Global options may appear any
 - `--url URL` overrides the target URL.
 - `--env NAME` selects `SUBPOLAR_ENV_<NAME>_URL` and `SUBPOLAR_ENV_<NAME>_TOKEN`.
 - `--profile NAME` selects `SUBPOLAR_PROFILE_<NAME>_URL` and `SUBPOLAR_PROFILE_<NAME>_TOKEN`.
-- `--token USER_TOKEN` or `SUBPOLAR_TOKEN` supplies the signed-in user's bearer token. There is no admin-token option.
-- `--timeout MS` sets the request timeout (default 30000 ms). Each invocation uses one stable `x-request-id`; message delivery uses that same value for its message ID and idempotency metadata.
-- Human-readable output is the default. `--json` emits JSON result/error envelopes and JSON Lines stream records. `sessions events` and `sessions send --follow` emit distinct stream event records, then a final result record. Use `--limit N` to stop a stream after N events; otherwise it continues until interrupted.
+- `--token USER_TOKEN` or `SUBPOLAR_TOKEN` supplies the signed-in user's bearer token. There is no admin-token option. Bearer tokens are refused over plaintext HTTP except for loopback development URLs.
+- `--timeout MS` sets the HTTP request timeout (default 30000 ms); once an SSE response is established it does not truncate the live stream. Each invocation uses one stable `x-request-id`; message delivery uses that same value for its message ID and idempotency metadata.
+- Human-readable output is the default. `--json` emits JSON result/error envelopes and JSON Lines stream records. Use `--` after `sessions send SESSION_ID` when the prompt contains standalone option-like words, so they are not parsed as CLI options. `sessions events` and `sessions send --follow` emit distinct stream event records, then a final result record. Use `--limit N` to stop a stream after N events; otherwise it continues until interrupted.
 
 Exit codes: `0` success, `1` request/runtime failure, `2` usage error, `3` timeout, `4` authentication/authorization failure, `5` valid operation not available through the installed `@subpolar/client`.
 

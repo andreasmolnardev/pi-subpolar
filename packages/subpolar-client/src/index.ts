@@ -211,6 +211,14 @@ export class SubpolarClient {
     this.credentials = options.credentials ?? 'include'
     this.defaultHeaders = options.headers ?? {}
     if (!this.baseUrl) throw new TypeError('baseUrl is required')
+    if (this.token) {
+      const target = new URL(this.baseUrl)
+      const loopback = target.hostname === 'localhost' || target.hostname.endsWith('.localhost')
+        || target.hostname === '127.0.0.1' || target.hostname === '[::1]'
+      if (target.protocol !== 'https:' && !loopback) {
+        throw new TypeError('Bearer tokens require HTTPS except for loopback development servers')
+      }
+    }
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
