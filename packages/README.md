@@ -7,14 +7,19 @@ approval persistence remain outside this boundary.
 
 ## Package Boundaries
 
-Installed workspace consumers should import `@subpolar/contracts`,
-`@subpolar/core`, `@subpolar/adapter-local`, `@subpolar/adapter-pi`, and
-`@subpolar/cli` through each
-package's `exports` map. The repository's source-only test path intentionally
-uses relative source imports as a fallback because this checkout has no
-installed workspace links or lockfile. Those imports must stay within these
-packages and must not pull in Subpolar Agent, PocketBase, HTTP, or server modules. Core
-and contracts do not import Pi.
+The canonical contract identity is `@subpolar/contracts`; package manifests and
+imports must use that name. The former `@subpolar/shared` identity is not kept
+as a second workspace package because two names for the same contract package
+would make workspace resolution ambiguous.
+
+The current importable foundation identities are `@subpolar/contracts`,
+`@subpolar/runtime`, `@subpolar/db-local`, `@subpolar/runtime-pi`, and
+`@subpolar/runtime-cli`. These map to the requested modular roles as follows:
+contracts, core, local adapter, Pi adapter, and CLI. Existing import identities
+other than the concrete contracts mismatch remain unchanged for compatibility.
+The repository's test commands use source paths in several packages; their
+imports must stay within the package boundaries and must not pull in Subpolar
+Agent, PocketBase, HTTP, or server modules. Core and contracts do not import Pi.
 
 ## Gateway Semantics
 

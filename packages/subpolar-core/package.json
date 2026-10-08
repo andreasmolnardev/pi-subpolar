@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@subpolar/shared": "workspace:*"
+    "@subpolar/contracts": "workspace:*"
   },
   "exports": {
     ".": "./src/index.ts"

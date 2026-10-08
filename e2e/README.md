@@ -21,7 +21,7 @@ Prerequisites:
 
 - Bun 1.x
 - PocketBase binary on `PATH` (or `E2E_POCKETBASE_BIN`)
-- installed root/Subpolar Agent dependencies, including `@subpolar-agent/node_modules`
+- installed root/workspace dependencies, including `@subpolar/client` and `@subpolar-agent/node_modules`
 - a working bridge and Vite runtime in the current checkout
 
 Run from the repository root:
@@ -46,9 +46,9 @@ E2E_LIVE_PASSWORD=e2e-admin-password-16 \
 npm run test:e2e:live
 ```
 
-Without `E2E_LIVE=true` (set by the script), or without both credential variables, the test is skipped and states that authentication was not attempted. By default the command starts the disposable harness and uses those credentials for its isolated PocketBase bootstrap. Set `E2E_LIVE_BASE_URL` to test an already-running bridge instead; no PocketBase bootstrap or browser UI is started in that mode. `E2E_LIVE_BASE_URL` must point at the bridge, not the Vite page.
+Without `E2E_LIVE=true` (set by the script), or without both credential variables, the test is skipped and states that authentication was not attempted. By default the command starts the disposable harness and uses those credentials for its isolated PocketBase bootstrap. Set `E2E_LIVE_BASE_URL` to test an already-running bridge instead; no PocketBase bootstrap or browser UI is started in that mode. `E2E_LIVE_BASE_URL` must point at the bridge, not the Vite page. The test uses `@subpolar/client` for health/authentication, project/session CRUD, message delivery, and owner-scoped SSE events. A small fetch adapter carries the sign-in cookie because the live test runs outside a browser; it does not pass a bearer token to the client.
 
-The smoke checks versioned health, sign-in, project/session creation, and then probes existing authorization, inbox, notification delivery-status, and task-audit routes. It prints `LIVE verified` only for successful checks and `SKIP live E2E` for unavailable or unconfigured optional paths. It cleans up the created task and project where possible and always cleans up the disposable harness. Service failures are skips, not claims of live verification.
+The smoke asserts the client auth/session identity, project/session creation and listing, message-delivery response, and the SSE client path when an event arrives. The server may emit no event during the bounded three-second observation window; that is reported as a skip rather than a live event verification. It prints `LIVE verified` only for successful checks and `SKIP live E2E` for unavailable or unconfigured service paths. It deletes the created session/project, signs out where possible, and always cleans up the disposable harness. Service failures are skips, not claims of live verification.
 
 ## Scope and limitations
 

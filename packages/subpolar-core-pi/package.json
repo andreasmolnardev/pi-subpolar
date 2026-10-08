@@ -7,6 +7,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@subpolar/shared": "workspace:*"
+    "@subpolar/contracts": "workspace:*"
   }
 }

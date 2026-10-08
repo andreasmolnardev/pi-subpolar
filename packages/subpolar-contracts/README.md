@@ -1,6 +1,6 @@
-# `@subpolar/shared`
+# `@subpolar/contracts`
 
-Shared contracts for the Subpolar runtime, adapters, tools, and applications.
+Canonical shared contracts for the Subpolar runtime, adapters, tools, and applications. The former `@subpolar/shared` workspace identity is retired; consumers should import `@subpolar/contracts`.
 
 ## What it contains
 

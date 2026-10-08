@@ -1,32 +1,45 @@
+import { SubpolarApiError, SubpolarClient } from '@subpolar/client'
 import { expect, test } from 'bun:test'
 import { startHarness, type Harness } from './harness'
 
 const timeoutMs = 10_000
 const liveEnabled = process.env.E2E_LIVE === 'true'
 
-type Json = Record<string, unknown>
-
 function skip(message: string): void {
   console.log(`SKIP live E2E: ${message}`)
 }
 
-async function request(baseUrl: string, path: string, init: RequestInit = {}): Promise<{ response: Response; body: Json | Json[] | null }> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const response = await fetch(`${baseUrl}${path}`, { ...init, signal: controller.signal })
-    const body = await response.json().catch(() => null) as Json | Json[] | null
-    return { response, body }
-  } finally {
-    clearTimeout(timer)
+function cookieFetch(timeout = timeoutMs): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+  let cookie = ''
+  return async (input, init = {}) => {
+    const headers = new Headers(init.headers)
+    if (cookie) headers.set('cookie', cookie)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeout)
+    try {
+      const response = await fetch(input, { ...init, headers, signal: init.signal ?? controller.signal })
+      const setCookie = response.headers.get('set-cookie')
+      if (setCookie) cookie = setCookie.split(';', 1)[0] ?? ''
+      return response
+    } finally {
+      clearTimeout(timer)
+    }
   }
 }
 
-function object(value: Json | Json[] | null): Json {
-  return value && !Array.isArray(value) ? value : {}
+async function nextEvent(client: SubpolarClient, sessionId: string) {
+  const controller = new AbortController()
+  const iterator = client.events({ sessionId, signal: controller.signal })
+  const timer = setTimeout(() => controller.abort(), 3_000)
+  try {
+    return await iterator.next()
+  } finally {
+    clearTimeout(timer)
+    await iterator.return(undefined).catch(() => undefined)
+  }
 }
 
-test.skipIf(!liveEnabled)('live disposable bridge smoke', async () => {
+test.skipIf(!liveEnabled)('live disposable bridge smoke through @subpolar/client', async () => {
   const email = process.env.E2E_LIVE_EMAIL?.trim()
   const password = process.env.E2E_LIVE_PASSWORD
   if (!email || !password) {
@@ -36,92 +49,86 @@ test.skipIf(!liveEnabled)('live disposable bridge smoke', async () => {
 
   let harness: Harness | undefined
   let baseUrl = process.env.E2E_LIVE_BASE_URL?.replace(/\/$/, '')
-  let cookie = ''
+  let client: SubpolarClient | undefined
   let projectId: number | undefined
-  let taskId: string | undefined
+  let sessionId: string | undefined
   try {
     if (!baseUrl) {
       try {
         harness = await startHarness()
-        baseUrl = harness.baseUrl
+        baseUrl = harness.bridgeUrl
       } catch (error) {
         skip(`PocketBase/bridge/Subpolar Agent unavailable (${error instanceof Error ? error.message : String(error)})`)
         return
       }
     }
 
-    const health = await request(baseUrl, '/api/v1/health')
-    if (!health.response.ok) {
-      skip(`bridge health unavailable (HTTP ${health.response.status})`)
-      return
-    }
-    expect(object(health.body).status).not.toBe('unknown')
+    // Deliberately use cookie auth only: the client must never receive a bearer/admin token.
+    client = new SubpolarClient({ baseUrl, fetch: cookieFetch(), credentials: 'include' })
+    try {
+      const health = await client.health()
+      expect(health.status).not.toBe('unknown')
+      const auth = await client.signIn(email, password)
+      expect(auth.user).toBeDefined()
+      expect(auth.user.id).toBeTruthy()
 
-    const auth = await request(baseUrl, '/api/auth/sign-in/email', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    })
-    if (!auth.response.ok) {
-      skip(`configured credentials were not accepted (HTTP ${auth.response.status})`)
-      return
+      const currentSession = await client.authSession()
+      expect(currentSession.user?.id).toBe(auth.user.id)
+    } catch (error) {
+      if (error instanceof SubpolarApiError) {
+        skip(`health/authentication unavailable (HTTP ${error.status}${error.code ? `, ${error.code}` : ''})`)
+        return
+      }
+      throw error
     }
-    cookie = auth.response.headers.get('set-cookie')?.split(';', 1)[0] ?? ''
-    if (!cookie) {
-      skip('authentication returned no session cookie')
-      return
-    }
-    const headers = { cookie, 'content-type': 'application/json' }
+
     const name = `live-smoke-${Date.now()}`
-    const project = await request(baseUrl, '/api/projects', { method: 'POST', headers, body: JSON.stringify({ name }) })
-    if (!project.response.ok) {
-      skip(`project creation unavailable (HTTP ${project.response.status})`)
-      return
+    try {
+      const project = await client.createProject({ name })
+      expect(project.name).toBe(name)
+      expect(typeof project.id).toBe('number')
+      projectId = project.id
+
+      const session = await client.createSession({ project: projectId, title: 'Live client smoke' })
+      expect(session.id).toBeTruthy()
+      expect(session.project === undefined || String(session.project) === String(projectId)).toBe(true)
+      sessionId = session.id
+
+      const listed = await client.listSessions({ project: String(projectId) })
+      expect(listed.sessions.some((candidate) => candidate.id === session.id)).toBe(true)
+      expect((await client.getSession(session.id)).id).toBe(session.id)
+
+      const messageId = `e2e-${Date.now()}`
+      const delivery = await client.sendMessage(session.id, 'E2E client integration ping', { messageID: messageId })
+      expect(delivery.messageID).toBe(messageId)
+      expect(delivery.state).toBeTruthy()
+
+      try {
+        const event = await nextEvent(client, session.id)
+        if (event.done) skip('SSE stream ended before returning an event')
+        else {
+          expect(event.value).toHaveProperty('rawData')
+          console.log(`LIVE verified: client auth/session/project/send/events (${event.value.event ?? 'message event'})`)
+        }
+      } catch (error) {
+        if (error instanceof SubpolarApiError) skip(`client SSE events unavailable (HTTP ${error.status})`)
+        else if (error instanceof Error && error.name === 'AbortError') skip('client SSE opened but emitted no event within 3 seconds')
+        else throw error
+      }
+    } catch (error) {
+      if (error instanceof SubpolarApiError) {
+        skip(`client project/session/message flow unavailable (HTTP ${error.status}${error.code ? `, ${error.code}` : ''})`)
+      } else {
+        throw error
+      }
     }
-    const projectBody = object(project.body)
-    const projectRecord = object(projectBody.project ? projectBody.project as Json : projectBody)
-    projectId = typeof projectRecord.id === 'number' ? projectRecord.id : undefined
-    if (projectId === undefined) {
-      skip('project endpoint returned no numeric project id')
-      return
-    }
-
-    const session = await request(baseUrl, '/api/sessions', { method: 'POST', headers, body: JSON.stringify({ project: projectId, title: 'Live smoke' }) })
-    if (!session.response.ok) {
-      skip(`session creation unavailable (HTTP ${session.response.status})`)
-      return
-    }
-    const sessionRecord = object(object(session.body).session as Json | null)
-    const sessionId = typeof sessionRecord.id === 'string' ? sessionRecord.id : undefined
-    if (!sessionId) {
-      skip('session endpoint returned no session id')
-      return
-    }
-    console.log(`LIVE verified: health, authentication, project ${projectId}, session ${sessionId}`)
-
-
-    const inbox = await request(baseUrl, '/api/inbox', { headers })
-    if (inbox.response.ok && Array.isArray(object(inbox.body).items)) console.log('LIVE verified: inbox status is readable')
-    else skip(`inbox status unavailable (HTTP ${inbox.response.status})`)
-
-    const notifications = await request(baseUrl, '/api/notifications/delivery-status?limit=1', { headers })
-    if (notifications.response.ok && Array.isArray(object(notifications.body).deliveries)) console.log('LIVE verified: notification delivery status is readable')
-    else skip(`notification status unavailable (HTTP ${notifications.response.status})`)
-
-    const task = await request(baseUrl, '/api/tasks', { method: 'POST', headers, body: JSON.stringify({ title: 'Live smoke audit', state: 'draft', projectId, sessionId }) })
-    if (task.response.ok) {
-      taskId = typeof object(object(task.body).task as Json | null).id === 'string' ? String(object(object(task.body).task as Json).id) : undefined
-      if (taskId) {
-        const audit = await request(baseUrl, `/api/tasks/${encodeURIComponent(taskId)}/audit`)
-        if (audit.response.ok && Array.isArray(object(audit.body).audit)) console.log('LIVE verified: task audit is readable')
-        else skip(`task audit unavailable (HTTP ${audit.response.status})`)
-      } else skip('task endpoint returned no task id; audit not verified')
-    } else skip(`task/audit setup unavailable (HTTP ${task.response.status})`)
   } catch (error) {
+    if (error instanceof Error && error.name === 'AssertionError') throw error
     skip(`live service became unavailable (${error instanceof Error ? error.message : String(error)})`)
   } finally {
-    if (baseUrl && cookie && taskId) await request(baseUrl, `/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' } }).catch(() => undefined)
-    if (baseUrl && cookie && projectId !== undefined) await request(baseUrl, `/api/projects/${projectId}`, { method: 'DELETE', headers: { cookie } }).catch(() => undefined)
+    if (client && sessionId) await client.deleteSession(sessionId).catch(() => undefined)
+    if (client && projectId !== undefined) await client.deleteProject(projectId).catch(() => undefined)
+    if (client) await client.signOut().catch(() => undefined)
     await harness?.cleanup()
   }
 })

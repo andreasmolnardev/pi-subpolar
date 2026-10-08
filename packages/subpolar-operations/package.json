@@ -10,6 +10,6 @@
     "test": "bun test test"
   },
   "dependencies": {
-    "@subpolar/shared": "workspace:*"
+    "@subpolar/contracts": "workspace:*"
   }
 }
