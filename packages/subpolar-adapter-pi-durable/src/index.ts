@@ -13,6 +13,8 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { Models, TSchema } from "@earendil-works/pi-ai";
+
+export type PiDurableModels = Models;
 import { Type } from "typebox";
 import { defineDoc, type Storage } from "@earendil-works/pi-durable";
 import type { SqliteOptions } from "./sqlite.ts";
@@ -246,6 +248,22 @@ export class PiDurableAgentEngine implements AgentEngine {
   }
 
   async submit(request: PiDurableRequest, execution: RuntimeExecution, context = this.#context()): Promise<number> {
+    const runtime = execution.context;
+    if (request.ownerId !== runtime.principal.id || (execution.request.principal && request.ownerId !== execution.request.principal.id)) {
+      throw new Error("Pi Durable request owner does not match the RuntimeExecution principal");
+    }
+    if (request.sessionId !== runtime.sessionId || (execution.request.sessionId !== undefined && request.sessionId !== execution.request.sessionId)) {
+      throw new Error("Pi Durable request session does not match the RuntimeExecution session");
+    }
+    if (request.requestId !== runtime.requestId) {
+      throw new Error("Pi Durable request ID does not match the RuntimeExecution request");
+    }
+    if (runtime.runId !== undefined && request.runId !== runtime.runId) {
+      throw new Error("Pi Durable request run ID does not match the RuntimeExecution run");
+    }
+    if (request.runId !== execution.request.runId) {
+      throw new Error("Pi Durable request run ID does not match the runtime request run");
+    }
     await this.initialize(context);
     const conversation = await this.#conversation(request.ownerId, request.sessionId, context);
     if (!conversation) throw new Error("Conversation mapping unexpectedly returned no conversation");

@@ -20,10 +20,10 @@ function setupModels() {
   return { faux, models };
 }
 
-function execution(requestId: string): RuntimeExecution {
+function execution(requestId: string, runId = `run-${requestId}`): RuntimeExecution {
   return {
     request: {
-      runId: `run-${requestId}`,
+      runId,
       requestId,
       prompt: "hello durable agent",
       principal: { id: "owner-a", kind: "user" },
@@ -31,6 +31,7 @@ function execution(requestId: string): RuntimeExecution {
     },
     context: {
       requestId,
+      runId,
       principal: { id: "owner-a", kind: "user" },
       sessionId: "session-a",
       model: "faux/faux-1",
@@ -81,7 +82,7 @@ test("initializes, configures, submits, waits, and reopens the owner/session map
     requestId: "stable-request-1",
     runId: "stable-run-1",
     prompt: "hello durable agent",
-  }, execution("stable-request-1"));
+  }, execution("stable-request-1", "stable-run-1"));
   await expect(engine.configure("owner-a", "session-a", { model: { provider: "faux", modelId: "faux-1" } })).rejects.toThrow("already active");
   await expect(engine.submit({
     ownerId: "owner-a",
@@ -89,7 +90,7 @@ test("initializes, configures, submits, waits, and reopens the owner/session map
     requestId: "different-request",
     runId: "different-run",
     prompt: "must not overlap",
-  }, execution("different-request"))).rejects.toThrow("different Durable execution is already active");
+  }, execution("different-request", "different-run"))).rejects.toThrow("different Durable execution is already active");
   const result = await engine.wait("owner-a", "session-a", "stable-request-1");
   expect(result).toMatchObject({ status: "done", output: "persisted answer", conversationId });
   await engine.close();
@@ -99,6 +100,29 @@ test("initializes, configures, submits, waits, and reopens the owner/session map
   expect(await reopened.recover("owner-a", "session-a", "stable-request-1")).toBe(result.submissionId);
   expect(await reopened.recover("owner-b", "session-a", "stable-request-1")).toBeUndefined();
   await reopened.close();
+});
+
+test("rejects mismatched gateway identity before binding or submitting work", async () => {
+  const { faux, models } = setupModels();
+  faux.setResponses([fauxAssistantMessage("identity check passed")]);
+  const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models, tools: [] });
+  await engine.configure("owner-a", "session-a", { model: { provider: "faux", modelId: "faux-1" } });
+  const request = {
+    ownerId: "owner-b",
+    sessionId: "session-a",
+    requestId: "identity-request",
+    runId: "identity-run",
+    prompt: "hello",
+  };
+
+  await expect(engine.submit(request, execution("identity-request", "identity-run")))
+    .rejects.toThrow("request owner does not match the RuntimeExecution principal");
+  await expect(engine.recover("owner-b", "session-a", "identity-request")).resolves.toBeUndefined();
+
+  await engine.submit({ ...request, ownerId: "owner-a" }, execution("identity-request", "identity-run"));
+  await expect(engine.wait("owner-a", "session-a", "identity-request"))
+    .resolves.toMatchObject({ status: "done", output: "identity check passed" });
+  await engine.close();
 });
 
 test("invokes one registered Durable tool with stable Subpolar identity and returns its result to the model", async () => {
@@ -126,7 +150,7 @@ test("invokes one registered Durable tool with stable Subpolar identity and retu
     risk: "low",
   };
   const calls: ToolCall[] = [];
-  const run = execution("stable-request-tool");
+  const run = execution("stable-request-tool", "stable-run-tool");
   run.tools = {
     async call(call) {
       calls.push(call);
@@ -179,7 +203,7 @@ test("does not invoke disabled or unregistered Durable tool names", async () => 
     risk: "low",
   };
   const calls: ToolCall[] = [];
-  const run = execution("request-unavailable-tools");
+  const run = execution("request-unavailable-tools", "run-unavailable-tools");
   run.tools = { async call(call) { calls.push(call); return { ok: true }; } };
   const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models, tools: [disabledTool] });
   await engine.configure("owner-a", "session-a", { model: { provider: "faux", modelId: "faux-1" } });
