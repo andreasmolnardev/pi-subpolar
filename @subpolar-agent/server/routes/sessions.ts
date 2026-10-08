@@ -255,7 +255,14 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
         }
       }
       const store = await deps.runtimeStore()
-      if (path.length === 3 && request.method === 'GET') return deps.json(deps.storedSessionResponse(ownedRecord, await deps.createProjectSessionRepository(ownershipClient).listProjects(ownerId)))
+      if (path.length === 3 && request.method === 'GET') {
+        const projects = await deps.createProjectSessionRepository(ownershipClient).listProjects(ownerId)
+        const project = await deps.ownedSessionProject(ownershipClient, ownerId, ownedRecord)
+        const cwd = ownedRecord.directory ?? project?.path
+        let workspaceAvailable = false
+        try { workspaceAvailable = Boolean(cwd && deps.statSync(cwd).isDirectory()) } catch { /* Missing workspace is a transcript-only session. */ }
+        return deps.json({ ...deps.storedSessionResponse(ownedRecord, projects), workspaceAvailable })
+      }
       if (path.length === 3 && request.method === 'PATCH') {
         const input = await deps.body(request)
         let tags: string[] | undefined
@@ -310,6 +317,13 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
         return deps.json({ callID, output: '', details: {}, error: null }, 404)
       }
       if (path.length === 4 && path[3] === 'messages' && request.method === 'POST') {
+        const sessionProject = await deps.ownedSessionProject(ownershipClient, ownerId, ownedRecord)
+        const cwd = ownedRecord.directory ?? sessionProject?.path
+        try {
+          if (!cwd || !deps.statSync(cwd).isDirectory()) return deps.json({ error: 'Session workspace is missing; its transcript is read-only', code: 'WORKSPACE_MISSING' }, 409)
+        } catch {
+          return deps.json({ error: 'Session workspace is missing; its transcript is read-only', code: 'WORKSPACE_MISSING' }, 409)
+        }
         const input = await deps.body(request)
         const metadata = deps.object(input.metadata)
         const record = ownedRecord

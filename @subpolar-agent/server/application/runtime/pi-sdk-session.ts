@@ -77,6 +77,7 @@ export type PiSdkSessionHost<TClient = unknown> = {
   internalToken: string
   parseModelSelection: (value: string | undefined) => SessionModelSelection | undefined
   loadTranscript: (client: TClient, userId: string, sessionId: string) => Promise<{ entries: unknown[]; leafId: string | null }>
+  isWorkspaceAvailable?: (cwd: string) => boolean
   saveTranscript: (client: TClient, userId: string, sessionId: string, entries: readonly unknown[], leafId: string | null) => Promise<void>
   acknowledgeQueueReceipt: (
     record: SessionRecord,
@@ -130,7 +131,9 @@ export class PiSdkSession<TClient = unknown> {
   private runtimePermissionOverride?: PermissionOverride
   private generationStatus: 'busy' | 'idle' = 'idle'
   private session!: AgentSession
+  private sessionManager!: SessionManager
   private modelRuntime!: ProviderRuntime
+  private workspaceAvailable = true
   private closed = false
 
   constructor(
@@ -158,6 +161,12 @@ export class PiSdkSession<TClient = unknown> {
     const client = await host.getClient()
     const userId = this.record.userId
     if (!userId) throw new Error('Session has no authenticated owner')
+    const sessionCwd = this.record.directory ?? this.project.path
+    this.workspaceAvailable = host.isWorkspaceAvailable?.(sessionCwd) ?? true
+    const persistedTranscript = await host.loadTranscript(client, userId, this.record.id)
+    this.sessionManager = SessionManager.inMemory(sessionCwd, { id: this.record.id })
+    hydrateSessionManager(this.sessionManager, persistedTranscript)
+    if (!this.workspaceAvailable) return
     await host.prepareUser(client, userId)
     const context = await host.resolveContext(client, userId, this.record.id)
     this.runtimeAgentName = context.agentName
@@ -165,10 +174,7 @@ export class PiSdkSession<TClient = unknown> {
     this.record.profile = context.agentName
     if (context.session?.permissionOverride !== undefined) this.record.permissionOverride = context.session.permissionOverride
     const runtime = await host.loadRuntime(client, userId, context)
-    const persistedTranscript = await host.loadTranscript(client, userId, this.record.id)
-    const sessionCwd = this.record.directory ?? this.project.path
-    const sessionManager = SessionManager.inMemory(sessionCwd, { id: this.record.id })
-    hydrateSessionManager(sessionManager, persistedTranscript)
+    const sessionManager = this.sessionManager
     const settingsManager = SettingsManager.inMemory()
     const resourceLoader = new DefaultResourceLoader({
       cwd: sessionCwd,
@@ -284,6 +290,23 @@ export class PiSdkSession<TClient = unknown> {
     if (this.closed) throw new Error('Session is closed')
     const type = command.type
     let data: unknown
+    if (!this.workspaceAvailable) {
+      if (type === 'get_entries' || type === 'get_messages') {
+        data = { entries: this.sessionManager.getEntries(), leafId: this.sessionManager.getLeafId() }
+      } else if (type === 'get_state') {
+        const entries = this.sessionManager.getEntries()
+        data = { sessionId: this.record.id, workspaceAvailable: false, isStreaming: false, messages: entries.filter((entry) => entry.type === 'message').map((entry) => entry.message) }
+      } else if (type === 'get_last_assistant_text') {
+        const messages = this.sessionManager.getEntries().filter((entry) => entry.type === 'message').map((entry) => entry.message)
+        const last = [...messages].reverse().find((message) => message.role === 'assistant')
+        data = last ? sessionMessageText(last) : ''
+      } else if (type === 'get_commands') {
+        data = []
+      } else {
+        throw new Error('Session workspace is missing; transcript is read-only')
+      }
+      return { type: 'response', id: String(command.id ?? ''), success: true, data }
+    }
     switch (type) {
       case 'prompt': await this.session.prompt(String(command.message ?? '')); break
       case 'steer': {
@@ -308,8 +331,8 @@ export class PiSdkSession<TClient = unknown> {
       }
       case 'set_thinking_level': this.session.setThinkingLevel(String(command.level ?? 'medium') as never); break
       case 'get_available_thinking_levels': data = this.session.getAvailableThinkingLevels(); break
-      case 'get_entries': data = { entries: this.session.sessionManager.getEntries(), leafId: this.session.sessionManager.getLeafId() }; break
-      case 'get_messages': data = { entries: this.session.sessionManager.getEntries(), leafId: this.session.sessionManager.getLeafId() }; break
+      case 'get_entries': data = { entries: this.sessionManager.getEntries(), leafId: this.sessionManager.getLeafId() }; break
+      case 'get_messages': data = { entries: this.sessionManager.getEntries(), leafId: this.sessionManager.getLeafId() }; break
       case 'get_state': data = { sessionId: this.session.sessionId, model: this.session.model, thinkingLevel: this.session.thinkingLevel, isStreaming: this.session.isStreaming, messages: this.session.messages }; break
       case 'get_session_stats': data = this.session.getSessionStats(); break
       case 'get_last_assistant_text': data = this.session.getLastAssistantText(); break
@@ -336,11 +359,17 @@ export class PiSdkSession<TClient = unknown> {
     return this.transcriptWrite
   }
 
-  get entries() { return this.session.sessionManager.getEntries() }
-  get leafId() { return this.session.sessionManager.getLeafId() }
+  get entries() { return this.sessionManager.getEntries() }
+  get leafId() { return this.sessionManager.getLeafId() }
+  get isWorkspaceAvailable() { return this.workspaceAvailable }
   get agentName() { return this.runtimeAgentName }
   get permissionOverride() { return this.runtimePermissionOverride }
-  getLastAssistantText() { return this.session.getLastAssistantText() }
+  getLastAssistantText() {
+    if (this.workspaceAvailable) return this.session.getLastAssistantText()
+    const messages = this.sessionManager.getEntries().filter((entry) => entry.type === 'message').map((entry) => entry.message)
+    const last = [...messages].reverse().find((message) => message.role === 'assistant')
+    return last ? sessionMessageText(last) : ''
+  }
 
   close(): void {
     this.closed = true

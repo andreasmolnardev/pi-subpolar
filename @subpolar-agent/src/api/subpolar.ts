@@ -31,10 +31,11 @@ type SendPromptResponse = paths['/session/{sessionID}/message']['post']['respons
 type LspStatusResponse = paths['/lsp']['get']['responses']['200']['content']['application/json']
 type LspStatus = LspStatusResponse[number]
 
-type LegacySession = SessionListResponse[number] & {
+type LegacySession = Omit<SessionListResponse[number], 'workspaceAvailable'> & {
   profile?: string
   model?: string
   permissionOverride?: 'ask' | 'none' | 'allow_all'
+  workspaceAvailable?: boolean
   revert?: SessionResponse['revert']
 }
 
@@ -104,6 +105,7 @@ export class SubpolarClient {
       ...(session.profile ? { profile: session.profile } : {}),
       ...(session.model ? { model: session.model } : {}),
       ...(session.permissionOverride ? { permissionOverride: session.permissionOverride } : {}),
+      ...('workspaceAvailable' in session && typeof session.workspaceAvailable === 'boolean' ? { workspaceAvailable: session.workspaceAvailable } : {}),
       ...(session.revert ? { revert: session.revert } : {}),
     } as LegacySession
   }
@@ -131,7 +133,7 @@ export class SubpolarClient {
   }
 
   async getSession(sessionID: string): Promise<LegacySession> {
-    const session = await fetchWrapper<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all'; revert?: SessionResponse['revert'] }>(`${this.baseURL}/sessions/${sessionID}`, { params: this.getParams() })
+    const session = await fetchWrapper<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all'; workspaceAvailable?: boolean; revert?: SessionResponse['revert'] }>(`${this.baseURL}/sessions/${sessionID}`, { params: this.getParams() })
     return this.toLegacySession(session)
   }
 

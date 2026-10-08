@@ -1070,6 +1070,10 @@ const piSdkSessionHost: PiSdkSessionHost<BridgeClient> = {
     const transcript = await new SessionTranscriptRepository(client).get(userId, sessionId)
     return transcript ? { entries: transcript.entries, leafId: transcript.leafId } : { entries: [], leafId: null }
   },
+  isWorkspaceAvailable: (cwd) => {
+    try { return statSync(cwd).isDirectory() }
+    catch { return false }
+  },
   saveTranscript: async (client, userId, sessionId, entries, leafId) => {
     await new SessionTranscriptRepository(client).save(userId, sessionId, entries, leafId)
   },

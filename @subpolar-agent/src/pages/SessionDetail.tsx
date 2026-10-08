@@ -175,6 +175,7 @@ export function SessionDetail() {
     sessionId,
     repoDirectory,
   );
+  const workspaceMissing = (session as { workspaceAvailable?: boolean } | undefined)?.workspaceAvailable === false;
 
   const messages = useMemo(() => {
     if (!rawMessages) return undefined
@@ -677,9 +678,9 @@ export function SessionDetail() {
           </Header.Actions>
         </Header>
 
-        <div className="px-3 sm:px-4">
+        {!workspaceMissing && <div className="px-3 sm:px-4">
           <SessionTodoDisplay sessionID={sessionId} />
-        </div>
+        </div>}
       </div>
 
       <div className="relative flex-1 overflow-hidden flex flex-col">
@@ -700,7 +701,7 @@ export function SessionDetail() {
             />
           ) : null}
         </div>
-        {apiUrl && repoDirectory && !isEditingMessage && (
+        {apiUrl && repoDirectory && !isEditingMessage && !workspaceMissing && (
           <div
             ref={promptOverlayRef}
             className="absolute left-0 right-0 flex justify-center"
@@ -792,8 +793,8 @@ export function SessionDetail() {
                   </div>
                 </div>
               )}
-              {sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} projectRouteId={repoId > 0 ? String(repoId) : undefined} />}
-              {sessionId && !isGeneralChatProject && <div className="pb-2"><CreateWorktreeDialog key={sessionId} sessionId={sessionId} agent={sessionAgent.agent} /></div>}
+              {!workspaceMissing && sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} projectRouteId={repoId > 0 ? String(repoId) : undefined} />}
+              {!workspaceMissing && sessionId && !isGeneralChatProject && <div className="pb-2"><CreateWorktreeDialog key={sessionId} sessionId={sessionId} agent={sessionAgent.agent} /></div>}
               <ChatInputBar
                 ref={promptInputRef}
                 directory={repoDirectory}
@@ -807,6 +808,11 @@ export function SessionDetail() {
                 onScrollToBottom={scrollToBottom}
               />
             </div>
+          </div>
+        )}
+        {workspaceMissing && (
+          <div role="status" className="mx-auto mb-3 w-[94%] max-w-4xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+            This session&apos;s workspace is unavailable. Showing the saved transcript in read-only mode; restore the workspace to continue the conversation.
           </div>
         )}
       </div>

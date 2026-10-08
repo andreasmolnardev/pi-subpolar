@@ -83,6 +83,22 @@ describe('multi-user transient Pi sessions (dependency stubbed)', () => {
     expect(sdk.created.at(-1).options).toMatchObject({ noTools: 'builtin', tools: ['subpolar_tool'] })
   })
 
+  it('loads an existing transcript without starting Pi when its workspace is missing', async () => {
+    const { create, record, host, writes } = fixture()
+    host.isWorkspaceAvailable = () => false
+    const createdBefore = sdk.created.length
+    const session = create(record('alice'))
+    await session.readyPromise
+
+    const response = await session.send({ type: 'get_entries' }) as { data: { entries: unknown[] } }
+    expect(JSON.stringify(response.data.entries)).toContain('history:alice:same')
+    expect(session.isWorkspaceAvailable).toBe(false)
+    expect(sdk.created).toHaveLength(createdBefore)
+    await expect(session.send({ type: 'prompt', message: 'must not run' })).rejects.toThrow('transcript is read-only')
+    expect(writes).toHaveLength(0)
+    session.close()
+  })
+
   it('cannot retarget a live session through the supplied mutable record', async () => {
     const { create, record, writes } = fixture()
     const supplied = record('alice')
