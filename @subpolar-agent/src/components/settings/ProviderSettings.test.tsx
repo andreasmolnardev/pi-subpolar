@@ -56,9 +56,17 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('model/provider settings', () => {
+  it('opens on the Providers tab', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><ProviderSettings /></QueryClientProvider>)
+    expect(await screen.findByRole('tab', { name: 'Providers' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Default Models' })).toHaveAttribute('aria-selected', 'false')
+  })
+
   it('persists account-qualified conversation and routing model defaults', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={client}><ProviderSettings /></QueryClientProvider>)
+    await userEvent.click(await screen.findByRole('tab', { name: 'Default Models' }))
     const selectors = await screen.findAllByRole('combobox')
     await userEvent.click(selectors[0]!)
     await userEvent.click(screen.getByRole('option', { name: /Test reasoning model/ }))

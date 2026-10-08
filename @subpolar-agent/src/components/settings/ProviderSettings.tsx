@@ -498,7 +498,7 @@ export function ProviderSettings() {
   }
 
   return (
-    <Tabs defaultValue="defaults" className="space-y-6">
+    <Tabs defaultValue="providers" className="space-y-6">
       <TabsList className="w-full justify-start">
         <TabsTrigger value="defaults">Default Models</TabsTrigger>
         <TabsTrigger value="providers">Providers</TabsTrigger>
