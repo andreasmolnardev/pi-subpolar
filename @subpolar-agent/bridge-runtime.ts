@@ -1,10 +1,11 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 
 import { homedir } from 'node:os'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { SettingsManager } from '@earendil-works/pi-coding-agent'
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent'
+
 import { createProviderLoginRuntime, createSharedProviderCatalogRuntime } from './server/application/runtime/provider-runtime.ts'
 import { assertTenantSession, tenantSessionKey } from './server/application/runtime/tenant-runtime.ts'
 import { authenticateProxyRuntime, proxyModel } from './server/application/runtime/owner-bound-proxy.ts'
@@ -58,6 +59,7 @@ import {
   ensureProviderAccountCollections,
   type ProviderAccount,
   createProviderCatalogAsync,
+  parseProviderModelId,
   createProviderRuntime,
   composeProviderRuntimeId,
   parseProviderRuntimeId,
@@ -157,8 +159,8 @@ import {
   createStatelessSubpolarAgentRuntime,
   type StatelessSubpolarAgentRunInput,
 } from './server/application/runtime/stateless-subpolar-agent-runtime.ts'
-import { createPiRunPort } from '../packages/subpolar-core-pi/src/index.ts'
-import type { RuntimeContext, RuntimeExecution, StatelessRunRequest } from '../packages/subpolar-contracts/src/index.ts'
+import { PiDurableAgentEngine } from '../packages/subpolar-adapter-pi-durable/src/index.ts'
+import type { RuntimeContext, StatelessRunRequest, ToolDefinition as RuntimeToolDefinition } from '../packages/subpolar-contracts/src/index.ts'
 
 import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/core/project-filesystem.ts'
 import { GitPathPolicy } from './server/git/policy.ts'
@@ -190,6 +192,7 @@ type SseClient = { userId: string; enqueue: (chunk: Uint8Array) => void; close: 
 const root = resolve(import.meta.dir, '..')
 const subpolarAgentDir = import.meta.dir
 const subpolarDataDir = join(homedir(), '.subpolar')
+const piDurableDataDir = resolve(process.env.SUBPOLAR_PI_DURABLE_DIR ?? join(root, 'pocketbase', 'pb_data', 'pi-durable'))
 const projectsRoot = configuredWorkspaceRoot()
 
 const legacyStatePath = join(subpolarAgentDir, '.sessions.json')
@@ -216,6 +219,7 @@ let subagentWorktrees: WorktreeController | undefined
 let automationWorker: ReturnType<typeof createAutomationWorker> | undefined
 let automationScheduler: ReturnType<typeof setInterval> | undefined
 let automationMaintenanceInitialized = false
+const durableRunQueues = new Map<string, Promise<void>>()
 let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccountService>> | undefined
 let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
 const migratedUsers = new Set<string>()
@@ -841,6 +845,16 @@ function parseModelSelection(model: string | undefined): { providerID: string; m
   return providerID && modelID ? { providerID, modelID } : undefined
 }
 
+function parseDurableModelSelection(model: string | undefined): { providerID: string; modelID: string } | undefined {
+  if (!model) return undefined
+  const separator = model.indexOf('/')
+  if (separator <= 0 || separator === model.length - 1) return undefined
+  const suffix = /:(?:off|minimal|low|medium|high|xhigh)$/.exec(model)
+  const selection = suffix ? model.slice(0, -suffix[0].length) : model
+  const parsed = parseProviderModelId(selection)
+  return parsed ? { providerID: parsed.instanceId, modelID: parsed.modelId } : undefined
+}
+
 type ModelSelection = { providerID: string; modelID: string; value: string }
 
 class ModelUnavailableError extends Error {
@@ -1387,10 +1401,31 @@ function runtimeJson(value: unknown, seen = new WeakSet<object>()): import('../p
   return result
 }
 
+async function serializeDurableSessionRun<T>(ownerId: string, sessionId: string, operation: () => Promise<T>): Promise<T> {
+  const key = tenantSessionKey(ownerId, sessionId)
+  const previous = durableRunQueues.get(key) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolve) => { release = resolve })
+  const tail = previous.catch(() => undefined).then(() => current)
+  durableRunQueues.set(key, tail)
+  await previous.catch(() => undefined)
+  try {
+    return await operation()
+  } finally {
+    release()
+    if (durableRunQueues.get(key) === tail) durableRunQueues.delete(key)
+  }
+}
+
+function durableDatabasePath(ownerId: string, sessionId: string): string {
+  const identity = createHash('sha256').update(JSON.stringify([ownerId, sessionId])).digest('hex')
+  return join(piDurableDataDir, `${identity}.sqlite`)
+}
+
 /**
- * The canonical HTTP run path composes the shared stateless runtime. Pi remains
- * an in-memory execution resource and is reconstructed from PocketBase-backed
- * session/transcript state by rpcSession when the active fast path is absent.
+ * The canonical HTTP run path composes the owner-scoped stateless runtime and
+ * executes its prompt through Pi Durable. PiSdkSession remains for compatibility
+ * RPC, WebSocket, and history behavior only.
  */
 async function runStatelessPrompt(input: StatelessSubpolarAgentRunInput, owner: SessionRecord, project: Project): Promise<unknown> {
   const ownerId = owner.userId
@@ -1433,34 +1468,81 @@ async function runStatelessPrompt(input: StatelessSubpolarAgentRunInput, owner: 
         },
       }
     },
-    execute: async (execution: RuntimeExecution) => {
+    execute: async (execution) => {
+      try {
+        return await serializeDurableSessionRun(ownerId, input.sessionId, async () => {
       const context = await resolveToolSessionContext(client, ownerId, input.sessionId)
-      const sessionProject = context.project as Project
-      const session = rpcSession(input.sessionId, ownerId, owner, sessionProject ?? project, context.agentName, context.permission.source === 'default' ? undefined : context.permissionOverride)
-      await session.readyPromise
-      const piRunPort = createPiRunPort(async (_config, adapterRequest) => {
-        const prompt = adapterRequest?.prompt ?? execution.request.prompt
-        const emit = adapterRequest?.emit
-        const unsubscribe = session.onMessage((message) => {
-          if (emit) void emit({ type: 'message', data: runtimeJson(message) })
-        })
-        return {
-          execute: () => session.send({ type: 'prompt', message: prompt }),
-          dispose: unsubscribe,
-        }
-      }, {})
-      return piRunPort.run({
-        runId: execution.request.runId,
-        prompt: execution.request.prompt,
-        context: execution.context,
-        transcript: { entries: [] },
-        signal: execution.request.signal,
-      }, async (event) => {
-        await execution.emit(runtimeJson(event))
+      if (execution.context.principal.id !== ownerId || execution.context.sessionId !== input.sessionId) {
+        throw new Error('Durable runtime tenant or session mismatch')
+      }
+      const selection = parseDurableModelSelection(context.session?.model)
+      if (!selection) throw new Error('A configured session model is required for Pi Durable execution')
+      const providerRuntime = await userProviderRuntime(ownerId)
+      const model = providerRuntime.getModel(selection.providerID, selection.modelID)
+      if (!model) throw new ModelUnavailableError(selection)
+      const [agentRuntime, visibleTools] = await Promise.all([
+        loadAgentRuntime(client, ownerId, context.agentName, context.session?.project, {
+          skillRepository: createOwnerBoundSkillStore(client, ownerId),
+          skillAudit: createSkillContextAudit(client),
+          permissionOverride: context.session?.permissionOverride ?? context.permissionOverride,
+        }),
+        listToolsForAgent(client, ownerId, context.agentName, context.session?.project, true,
+          context.permission.source === 'default' ? undefined : context.permissionOverride),
+      ])
+      const tools: RuntimeToolDefinition[] = visibleTools.map((tool) => ({
+        id: tool.id,
+        namespace: 'subpolar-gateway',
+        description: tool.description,
+        inputSchema: tool.inputSchema as RuntimeToolDefinition['inputSchema'],
+        enabled: true,
+        risk: 'low',
+      }))
+      const engine = await PiDurableAgentEngine.initialize({
+        databasePath: durableDatabasePath(ownerId, input.sessionId),
+        models: providerRuntime,
+        tools,
       })
+      try {
+        const runContext = execution.context
+        const sessionProject = context.project as Project
+        const cwd = context.session?.directory ?? sessionProject.path ?? project.path
+        await engine.configure(ownerId, input.sessionId, {
+          model: { provider: selection.providerID, modelId: selection.modelID },
+          ...(agentRuntime.systemPrompt ? { instructions: agentRuntime.systemPrompt } : {}),
+          cwd,
+        })
+        const abort = () => { void engine.abort(ownerId, input.sessionId).catch(() => undefined) }
+        execution.request.signal?.addEventListener('abort', abort, { once: true })
+        try {
+          if (execution.request.signal?.aborted) throw new Error('Pi Durable run was aborted')
+          await engine.submit({
+            ownerId,
+            sessionId: input.sessionId,
+            requestId: runContext.requestId,
+            runId: execution.request.runId,
+            prompt: execution.request.prompt,
+            ...(execution.request.signal ? { signal: execution.request.signal } : {}),
+          }, execution)
+          const result = await engine.wait(ownerId, input.sessionId, runContext.requestId)
+          if (result.status !== 'done') throw new Error(result.reason ?? 'Pi Durable run did not complete')
+          return result.output ?? ''
+        } finally {
+          execution.request.signal?.removeEventListener('abort', abort)
+        }
+      } finally {
+        await engine.close()
+      }
+        })
+      } catch (error) {
+        console.warn(`Pi Durable execution failed: ${redactedDiagnostic(error)}`)
+        throw error
+      }
     },
     onEvent: (event) => {
-      broadcastSse({ type: 'run.event', properties: runtimeJson(event) }, ownerId)
+      broadcastSse({
+        type: 'run.event',
+        properties: { ...runtimeJson(event) as Record<string, import('../packages/subpolar-contracts/src/index.ts').JsonValue>, sessionID: event.sessionId ?? input.sessionId },
+      }, ownerId)
     },
   })
   return runtime.runPrompt(input)

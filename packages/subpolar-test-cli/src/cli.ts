@@ -28,6 +28,11 @@ export interface CliIo { stdout?: (text: string) => void; stderr?: (text: string
 export interface CliOptions { fetch?: FetchLike; io?: CliIo; token?: string; baseUrl?: string; client?: SubpolarClient }
 export class CliUsageError extends Error {}
 class UnsupportedCommandError extends Error {}
+class CliRuntimeResultError extends Error {
+  constructor(readonly code: string, message: string, readonly state?: string, readonly recoverable?: boolean) {
+    super(message)
+  }
+}
 
 function valueAfter(args: string[], index: number, option: string): string {
   const value = args[index + 1]
@@ -43,6 +48,19 @@ function required(value: string | undefined, label: string): string {
   return value
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value) }
+function runtimeResultError(value: unknown): CliRuntimeResultError | undefined {
+  if (!isRecord(value)) return undefined
+  const state = typeof value.state === 'string' ? value.state : undefined
+  if (value.ok !== false && !['interrupted', 'failed', 'unknown'].includes(state ?? '')) return undefined
+  const details = isRecord(value.error) ? value.error : undefined
+  const code = typeof details?.code === 'string'
+    ? details.code
+    : state ? `RUN_${state.toUpperCase()}` : 'RUN_FAILED'
+  const message = typeof details?.message === 'string'
+    ? details.message
+    : state ? `Run ${state}` : 'Run failed'
+  return new CliRuntimeResultError(code, message, state, typeof value.recoverable === 'boolean' ? value.recoverable : undefined)
+}
 function parseScalar(value: string): unknown {
   if (value === 'true') return true
   if (value === 'false') return false
@@ -186,6 +204,8 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
         if (follow) controller.abort()
         await eventPump?.catch((error: unknown) => { if (!controller.signal.aborted) throw error })
       }
+      const runtimeError = runtimeResultError(data)
+      if (runtimeError) throw runtimeError
     } else if (group === 'sessions' && action === 'inspect') {
       const id = required(rest[0], 'SESSION_ID')
       data = { session: await client.getSession(id), messages: await client.messages(id) }
@@ -276,8 +296,9 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
   } catch (error) {
     const usage = error instanceof CliUsageError
     const isUnsupported = error instanceof UnsupportedCommandError
+    const runtimeError = error instanceof CliRuntimeResultError ? error : undefined
     const apiError = error instanceof SubpolarApiError ? error : undefined
-    const payload = { ok: false, command, error: { code: timedOut ? 'TIMEOUT' : isUnsupported ? 'UNSUPPORTED' : usage ? 'USAGE' : apiError?.code ?? 'REQUEST_FAILED', message: timedOut ? 'Request timed out' : error instanceof Error ? error.message : 'Request failed', ...(apiError ? { status: apiError.status, requestId: apiError.requestId } : {}) } }
+    const payload = { ok: false, command, error: { code: timedOut ? 'TIMEOUT' : isUnsupported ? 'UNSUPPORTED' : usage ? 'USAGE' : runtimeError?.code ?? apiError?.code ?? 'REQUEST_FAILED', message: timedOut ? 'Request timed out' : error instanceof Error ? error.message : 'Request failed', ...(runtimeError?.state ? { state: runtimeError.state } : {}), ...(runtimeError?.recoverable === undefined ? {} : { recoverable: runtimeError.recoverable }), ...(apiError ? { status: apiError.status, requestId: apiError.requestId } : {}) } }
     if (json) stdout(`${JSON.stringify(payload)}\n`)
     else stderr(`Error [${payload.error.code}]: ${payload.error.message}\n`)
     return timedOut ? 3 : usage ? 2 : isUnsupported ? 5 : apiError?.status === 401 || apiError?.status === 403 ? 4 : 1

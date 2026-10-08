@@ -99,6 +99,33 @@ describe('@subpolar/test-cli', () => {
     expect(JSON.parse(out[1]!)).toMatchObject({ event: 'result', ok: true })
   })
 
+  test('reports failed run results as structured runtime errors without losing recoverability', async () => {
+    const results = [
+      { state: 'interrupted', recoverable: true, error: { code: 'RUN_INTERRUPTED', message: 'Run was cancelled' } },
+      { state: 'failed', recoverable: false, error: { code: 'EXECUTION_FAILED', message: 'Agent execution failed' } },
+      { state: 'unknown', recoverable: false, error: { code: 'UNSUPPORTED_RECOVERY', message: 'Run outcome is unknown' } },
+      { ok: false, state: 'approval_required', recoverable: true, error: { code: 'APPROVAL_REQUIRED', message: 'Approval is required' } },
+    ]
+    for (const result of results) {
+      const out: string[] = []
+      const code = await runCli(['sessions', 'send', 's1', 'hello', '--json'], {
+        io: { stdout: (value) => out.push(value) },
+        fetch: async (input) => response(String(input).endsWith('/messages') ? { messageID: 'm1', state: 'pending' } : result),
+      })
+      expect(code).toBe(1)
+      expect(JSON.parse(out.join(''))).toMatchObject({
+        ok: false,
+        command: 'sessions send',
+        error: {
+          code: result.error.code,
+          message: result.error.message,
+          ...(result.state ? { state: result.state } : {}),
+          recoverable: result.recoverable,
+        },
+      })
+    }
+  })
+
   test('preserves option-like prompt text after the argument delimiter', async () => {
     let messageBody: Record<string, unknown> | undefined
     const code = await runCli(['sessions', 'send', 's1', '--', 'do not interpret', '--token', 'as credentials'], {

@@ -535,18 +535,17 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
           // object remains only the transient execution/streaming fast path.
           const routedProject = await deps.ownedSessionProject(ownershipClient, ownerId, ownedRecord)
           if (!routedProject) throw new Error('Session project is unavailable')
-          const runtimeResult = typeof deps.runStatelessPrompt === 'function'
-            ? await deps.runStatelessPrompt({
-                ownerId,
-                sessionId: id,
-                runId: claimedDelivery.messageId,
-                requestId: typeof metadata.requestId === 'string' && metadata.requestId.trim() ? metadata.requestId : claimedDelivery.messageId,
-                prompt: claimedDelivery.content,
-                metadata: {
-                  ...(Array.isArray(metadata.capabilities) ? { capabilities: metadata.capabilities.filter((value: unknown): value is string => typeof value === 'string').join(',') } : {}),
-                },
-              }, ownedRecord, routedProject)
-            : await deps.sendRpc(id, { type: 'prompt', message: claimedDelivery.content }, ownedRecord)
+          if (typeof deps.runStatelessPrompt !== 'function') throw new Error('Pi Durable execution is unavailable')
+          const runtimeResult = await deps.runStatelessPrompt({
+            ownerId,
+            sessionId: id,
+            runId: claimedDelivery.messageId,
+            requestId: typeof metadata.requestId === 'string' && metadata.requestId.trim() ? metadata.requestId : claimedDelivery.messageId,
+            prompt: claimedDelivery.content,
+            metadata: {
+              ...(Array.isArray(metadata.capabilities) ? { capabilities: metadata.capabilities.filter((value: unknown): value is string => typeof value === 'string').join(',') } : {}),
+            },
+          }, ownedRecord, routedProject)
           const response = runtimeResult && typeof runtimeResult === 'object' && 'state' in runtimeResult
             ? runtimeResult.state === 'completed'
               ? runtimeResult.output

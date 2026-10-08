@@ -7,17 +7,19 @@ import {
   defineTool,
   Harness,
   type Conversation,
+  type AgentEvent,
+  watchEvents,
+  type AgentEventStream,
   type Registry,
   type Submission,
   type ToolExecutionApi,
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { Models, TSchema } from "@earendil-works/pi-ai";
-
-export type PiDurableModels = Models;
 import { Type } from "typebox";
 import { defineDoc, type Storage } from "@earendil-works/pi-durable";
 import type { SqliteOptions } from "./sqlite.ts";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type {
   JsonValue,
   RuntimeExecution,
@@ -40,9 +42,11 @@ export interface PiDurableAgentConfig {
   readonly cwd?: string;
 }
 
+export type PiDurableModels = Models | ModelRuntime;
+
 export interface PiDurableEngineOptions {
   readonly storage: Storage;
-  readonly models: Models;
+  readonly models: PiDurableModels;
   readonly tools: readonly ToolDefinition[];
   readonly registry?: Registry;
   readonly context?: Context;
@@ -50,7 +54,7 @@ export interface PiDurableEngineOptions {
 
 export interface PiDurableEngineInitOptions {
   readonly databasePath: string;
-  readonly models: Models;
+  readonly models: PiDurableModels;
   readonly tools: readonly ToolDefinition[];
   readonly registry?: Registry;
   readonly sqlite?: SqliteOptions;
@@ -143,8 +147,7 @@ function toTypeBoxSchema(value: JsonValue): TSchema {
       return Type.Object(fields, { ...options, ...(schema.additionalProperties === false ? { additionalProperties: false } : {}) }) as TSchema;
     }
     case "array":
-      if (schema.items === undefined) throw new Error("Gateway tool array inputSchema must declare items");
-      return Type.Array(toTypeBoxSchema(schema.items), options) as TSchema;
+      return Type.Array(schema.items === undefined ? Type.Any() : toTypeBoxSchema(schema.items), options) as TSchema;
     case "string": return Type.String(options) as TSchema;
     case "number": return Type.Number(options) as TSchema;
     case "integer": return Type.Integer(options) as TSchema;
@@ -155,18 +158,55 @@ function toTypeBoxSchema(value: JsonValue): TSchema {
   }
 }
 
+interface EventWatch {
+  readonly stream: AgentEventStream;
+  error?: unknown;
+  stopping?: Promise<void>;
+}
+
+function eventProjection(event: AgentEvent): JsonValue | undefined {
+  if (event.type === "snapshot") return undefined;
+  const record = event as unknown as { message?: unknown; entry?: unknown };
+  const message = record.message && typeof record.message === "object" ? record.message as { role?: unknown } : undefined;
+  const entry = record.entry && typeof record.entry === "object" ? record.entry as { kind?: unknown; model?: unknown } : undefined;
+  const containsSystemMessage = message?.role === "system"
+    || entry?.kind === "pi.system"
+    || (Array.isArray(entry?.model) && entry.model.some((item) => item && typeof item === "object" && "role" in item && item.role === "system"));
+  if (containsSystemMessage) return undefined;
+  try {
+    const serialized = JSON.stringify(event);
+    if (serialized === undefined) return undefined;
+    const parsed: unknown = JSON.parse(serialized);
+    return parsed && typeof parsed === "object" ? parsed as JsonValue : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 interface GatewayBinding {
   readonly invoker: RuntimeToolInvoker;
   readonly requestId: string;
   readonly runId: string;
 }
 
+function durableToolName(id: string): string {
+  const name = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+  if (!name || !/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error(`Subpolar tool ID cannot be represented as a Pi Durable function name: ${id}`);
+  return name;
+}
+
 function buildRegistry(tools: readonly ToolDefinition[], bindings: Map<number, GatewayBinding>, registry = createRegistry()): Registry {
   const active = tools.filter((tool) => tool.enabled);
+  const names = new Set<string>();
+  for (const tool of active) {
+    const name = durableToolName(tool.id);
+    if (names.has(name)) throw new Error(`Subpolar tool IDs collide after Pi Durable name normalization: ${name}`);
+    names.add(name);
+  }
   const extension = defineExtension({
     name: "subpolar-gateway",
     tools: active.map((tool) => defineTool({
-      name: tool.id,
+      name: durableToolName(tool.id),
       description: tool.description,
       parameters: toTypeBoxSchema(tool.inputSchema),
       replay: "unsafe",
@@ -197,6 +237,7 @@ export class PiDurableAgentEngine implements AgentEngine {
   readonly #options: PiDurableEngineOptions;
   readonly #registry: Registry;
   readonly #bindings = new Map<number, GatewayBinding>();
+  readonly #eventWatches = new Map<number, EventWatch>();
   #harness: Awaited<ReturnType<typeof Harness.open>> | undefined;
   #initialized: Promise<void> | undefined;
 
@@ -224,7 +265,10 @@ export class PiDurableAgentEngine implements AgentEngine {
     if (!this.#initialized) {
       this.#initialized = (async () => {
         this.#harness = await Harness.open(this.#options.storage, {
-          models: this.#options.models,
+          // The server runtime is built against Pi AI 1.0.x while Durable's
+          // installed Harness is built against 1.1.x. Both expose the same
+          // runtime Models contract; keep this version boundary here.
+          models: this.#options.models as Models,
           registry: this.#registry,
           settings: { extensions: [this.#registry.snapshot().extension("subpolar-gateway")!] },
         }, context);
@@ -271,12 +315,33 @@ export class PiDurableAgentEngine implements AgentEngine {
     if (current && current.requestId !== request.requestId) {
       throw new Error("A different Durable execution is already active for this owner/session conversation");
     }
+    let eventWatch: EventWatch | undefined;
     if (!current) {
       this.#bindings.set(conversation.id, {
         invoker: execution.tools,
         requestId: request.requestId,
         runId: request.runId,
       });
+      try {
+        const stream = await watchEvents(this.#harness!, conversation.id as never, context);
+        eventWatch = { stream };
+        this.#eventWatches.set(conversation.id, eventWatch);
+        stream.start(async (events) => {
+          for (const event of events) {
+            const projection = eventProjection(event);
+            if (projection === undefined) continue;
+            try {
+              await execution.emit(projection);
+            } catch (error) {
+              eventWatch!.error ??= error;
+            }
+          }
+        });
+      } catch (error) {
+        this.#bindings.delete(conversation.id);
+        if (eventWatch) await this.#stopEventWatch(conversation.id, eventWatch);
+        throw error;
+      }
     }
     try {
       const submission = await conversation.submit({
@@ -286,7 +351,10 @@ export class PiDurableAgentEngine implements AgentEngine {
       }, context);
       return submission.id;
     } catch (error) {
-      if (!current) this.#bindings.delete(conversation.id);
+      if (!current) {
+        this.#bindings.delete(conversation.id);
+        if (eventWatch) await this.#stopEventWatch(conversation.id, eventWatch);
+      }
       throw error;
     }
   }
@@ -319,6 +387,11 @@ export class PiDurableAgentEngine implements AgentEngine {
     } finally {
       const binding = this.#bindings.get(conversation.id);
       if (binding?.requestId === requestId) this.#bindings.delete(conversation.id);
+      const eventWatch = this.#eventWatches.get(conversation.id);
+      if (eventWatch && binding?.requestId === requestId) {
+        await this.#stopEventWatch(conversation.id, eventWatch);
+        if (eventWatch.error !== undefined) throw eventWatch.error;
+      }
     }
   }
 
@@ -340,7 +413,30 @@ export class PiDurableAgentEngine implements AgentEngine {
   }
 
   async close(context = this.#context()): Promise<void> {
-    if (this.#harness) await this.#harness.close(context);
+    const errors: unknown[] = [];
+    for (const [conversationId, eventWatch] of this.#eventWatches) {
+      try {
+        await this.#stopEventWatch(conversationId, eventWatch);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    this.#bindings.clear();
+    try {
+      if (this.#harness) await this.#harness.close(context);
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) throw new AggregateError(errors, "Pi Durable engine cleanup failed");
+  }
+
+  async #stopEventWatch(conversationId: number, eventWatch: EventWatch): Promise<void> {
+    if (this.#eventWatches.get(conversationId) === eventWatch) this.#eventWatches.delete(conversationId);
+    eventWatch.stopping ??= (async () => {
+      await eventWatch.stream.stop();
+      await eventWatch.stream.closed;
+    })();
+    await eventWatch.stopping;
   }
 
   #context(): Context {

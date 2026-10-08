@@ -102,6 +102,78 @@ test("initializes, configures, submits, waits, and reopens the owner/session map
   await reopened.close();
 });
 
+test("accepts valid unconstrained JSON Schema arrays in gateway tools", async () => {
+  const { faux, models } = setupModels();
+  faux.setResponses([fauxAssistantMessage("schema accepted")]);
+  const tool: ToolDefinition = {
+    id: "web.search",
+    namespace: "subpolar-gateway",
+    description: "Search the web",
+    inputSchema: {
+      type: "object",
+      properties: { domains: { type: "array", description: "Optional domain filters" } },
+      additionalProperties: false,
+    },
+    enabled: true,
+    risk: "low",
+  };
+  const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models, tools: [tool] });
+  await engine.configure("owner-a", "session-a", { model: { provider: "faux", modelId: "faux-1" } });
+  await engine.submit({
+    ownerId: "owner-a", sessionId: "session-a", requestId: "request-unconstrained-array", runId: "run-unconstrained-array", prompt: "answer without tools",
+  }, execution("request-unconstrained-array", "run-unconstrained-array"));
+  await expect(engine.wait("owner-a", "session-a", "request-unconstrained-array"))
+    .resolves.toMatchObject({ status: "done", output: "schema accepted" });
+  await engine.close();
+});
+
+test("projects committed events in order, omits attachment snapshots, and drains the watch on wait", async () => {
+  const { faux, models } = setupModels();
+  faux.setResponses([fauxAssistantMessage("projected answer")]);
+  const emitted: import("@subpolar/contracts").JsonValue[] = [];
+  const run = execution("request-events", "run-events");
+  run.emit = async (event) => { emitted.push(event); };
+  const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models, tools: [] });
+  await engine.configure("owner-a", "session-a", {
+    model: { provider: "faux", modelId: "faux-1" },
+    instructions: "private system instruction that must not be streamed",
+  });
+
+  await engine.submit({
+    ownerId: "owner-a", sessionId: "session-a", requestId: "request-events", runId: "run-events", prompt: "emit committed events",
+  }, run);
+  await expect(engine.wait("owner-a", "session-a", "request-events"))
+    .resolves.toMatchObject({ status: "done", output: "projected answer" });
+
+  const events = emitted.map((event) => event as { type?: string });
+  const types = events.map((event) => event.type);
+  expect(types).not.toContain("snapshot");
+  expect(types.indexOf("submission")).toBeGreaterThanOrEqual(0);
+  expect(types.indexOf("run_start")).toBeGreaterThan(types.indexOf("submission"));
+  expect(types.lastIndexOf("message_start")).toBeGreaterThan(types.indexOf("turn_start"));
+  expect(types.lastIndexOf("message_end")).toBeGreaterThan(types.lastIndexOf("message_start"));
+  expect(types.indexOf("turn_end")).toBeGreaterThan(types.lastIndexOf("message_end"));
+  for (const event of emitted) expect(() => JSON.stringify(event)).not.toThrow();
+  expect(JSON.stringify(emitted)).not.toContain("private system instruction that must not be streamed");
+
+  const countAfterWait = emitted.length;
+  await engine.abort("owner-a", "session-a");
+  expect(emitted).toHaveLength(countAfterWait);
+
+  faux.setResponses([fauxAssistantMessage("second projected answer")]);
+  const secondEmitted: import("@subpolar/contracts").JsonValue[] = [];
+  const secondRun = execution("request-events-2", "run-events-2");
+  secondRun.emit = async (event) => { secondEmitted.push(event); };
+  await engine.submit({
+    ownerId: "owner-a", sessionId: "session-a", requestId: "request-events-2", runId: "run-events-2", prompt: "emit a second request",
+  }, secondRun);
+  await expect(engine.wait("owner-a", "session-a", "request-events-2"))
+    .resolves.toMatchObject({ status: "done", output: "second projected answer" });
+  expect(emitted).toHaveLength(countAfterWait);
+  expect(secondEmitted.map((event) => (event as { type?: string }).type)).toContain("run_start");
+  await engine.close();
+});
+
 test("rejects mismatched gateway identity before binding or submitting work", async () => {
   const { faux, models } = setupModels();
   faux.setResponses([fauxAssistantMessage("identity check passed")]);
@@ -130,7 +202,7 @@ test("invokes one registered Durable tool with stable Subpolar identity and retu
   const toolResult = { ok: true, value: "tool-result" };
   let followUpMessages: unknown;
   faux.setResponses([
-    fauxAssistantMessage(fauxToolCall("demo.echo", { text: "hello from model" }, { id: "model-call-1" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("demo_echo", { text: "hello from model" }, { id: "model-call-1" }), { stopReason: "toolUse" }),
     (context) => {
       followUpMessages = context.messages;
       return fauxAssistantMessage("model used tool result");

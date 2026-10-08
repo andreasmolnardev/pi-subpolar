@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PiDurableAgentEngine, type PiDurableModels } from '../src/index.ts'
+import { PiDurableAgentEngine } from '../src/index.ts'
+import { fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai/providers/faux'
 import type { ProviderAccount } from '../../../@subpolar-agent/server/persistence/provider-accounts.ts'
 import {
   composeProviderRuntimeId,
@@ -46,25 +47,47 @@ afterEach(async () => {
 })
 
 describe('Subpolar provider runtime with Pi Durable', () => {
-  it('opens the Durable Harness with an owner-scoped provider runtime without loading credentials', async () => {
-    const runtime = await createProviderRuntime({
-      userId: 'owner-a',
-      accountService,
-      accounts: [account],
-    })
+  it('runs deterministic inference through an owner-scoped ProviderRuntime and the Durable boundary', async () => {
+    const runtime = await createProviderRuntime({ userId: 'owner-a', accountService, accounts: [account] })
     const accountProviderId = composeProviderRuntimeId(account.providerType, account.instanceId)
-    expect(runtime.getProvider(accountProviderId)?.id).toBe(accountProviderId)
-    expect(runtime.getModels(accountProviderId).length).toBeGreaterThan(0)
-    expect(runtime.getProviders().some((provider) => provider.id === 'openai')).toBe(false)
+    const faux = fauxProvider({ provider: 'openai' })
+    faux.setResponses([fauxAssistantMessage('provider runtime inference passed')])
+    const provider = runtime.getProvider(accountProviderId)
+    expect(provider?.id).toBe(accountProviderId)
+    expect(runtime.getProviders().some((entry) => entry.id === 'openai')).toBe(false)
     expect(runtime.getProvider('openai')).toBeUndefined()
+    if (!provider) throw new Error('Owner-scoped provider is missing')
 
-    const engine = await PiDurableAgentEngine.initialize({
-      databasePath: await databasePath(),
-      // Workspaces resolve separate Pi AI module instances with nominally branded types.
-      // This cast is limited to this runtime boundary test; the Harness is exercised below.
-      models: runtime as unknown as PiDurableModels,
-      tools: [],
+    // Keep the real owner-scoped ModelRuntime, credential store and Durable
+    // inference path; only replace network transport/catalog with Pi's faux API.
+    const fauxModel = faux.getModel()
+    provider.getModels = () => [{ ...fauxModel, provider: accountProviderId }]
+    Object.defineProperty(provider, 'auth', { value: faux.provider.auth })
+    provider.streamSimple = faux.provider.streamSimple.bind(faux.provider) as unknown as typeof provider.streamSimple
+    await runtime.refresh({ allowNetwork: false })
+    const model = runtime.getModels(accountProviderId)[0]
+    if (!model) throw new Error('Faux model was not published by the owner-scoped runtime')
+
+    const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models: runtime, tools: [] })
+    await engine.configure('owner-a', 'session-a', { model: { provider: accountProviderId, modelId: model.id } })
+    await engine.submit({
+      ownerId: 'owner-a', sessionId: 'session-a', requestId: 'compat-inference', runId: 'compat-run', prompt: 'infer deterministically',
+    }, {
+      request: {
+        runId: 'compat-run', requestId: 'compat-inference', prompt: 'infer deterministically',
+        principal: { id: 'owner-a', kind: 'user' }, sessionId: 'session-a',
+      },
+      context: {
+        requestId: 'compat-inference', runId: 'compat-run', principal: { id: 'owner-a', kind: 'user' },
+        sessionId: 'session-a', model: `${accountProviderId}/${model.id}`,
+      },
+      tools: { async call() { throw new Error('No tools should be called') } },
+      async emit() {},
     })
+    await expect(engine.wait('owner-a', 'session-a', 'compat-inference')).resolves.toMatchObject({
+      status: 'done', output: 'provider runtime inference passed',
+    })
+    expect(faux.state.callCount).toBe(1)
     await engine.close()
   })
 

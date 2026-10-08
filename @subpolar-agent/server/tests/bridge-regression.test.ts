@@ -37,13 +37,26 @@ function section(start: string, end: string, source = bridge): string {
 }
 
 describe('bridge model delivery ordering', () => {
-  it('starts first-session title generation alongside routing before the agent prompt', () => {
+  it('resolves stored model suffixes before configuring Pi Durable with the ModelRuntime', () => {
+    const selection = section('function parseDurableModelSelection(', 'type ModelSelection')
+    const execution = section('async function runStatelessPrompt(', 'function redactConfig')
+    expect(selection).toContain('parseProviderModelId(selection)')
+    expect(selection).toContain('off|minimal|low|medium|high|xhigh')
+    expect(execution).toContain('models: providerRuntime')
+    expect(execution).toContain('model: { provider: selection.providerID, modelId: selection.modelID }')
+    expect(execution).toContain('sessionID: event.sessionId ?? input.sessionId')
+    expect(execution).not.toContain('as unknown as PiDurableModels')
+  })
+
+  it('starts first-session title generation alongside routing before Durable execution', () => {
     const run = section("path.length === 4 && path[3] === 'runs' && request.method === 'POST'", "path.length === 4 && path[3] === 'state' && request.method === 'GET'")
     expect(run).toContain('generateFirstSessionTitle')
     expect(run).toContain('set_session_name')
     expect(run).toContain('Promise.all([routing, title])')
-    expect(run.indexOf('Promise.all([routing, title])')).toBeLessThan(run.indexOf("type: 'prompt'"))
-    expect(run.indexOf("type: 'set_session_name'")).toBeLessThan(run.indexOf("type: 'prompt'"))
+    expect(run).toContain('runStatelessPrompt')
+    expect(run).not.toContain("type: 'prompt'")
+    expect(run.indexOf('Promise.all([routing, title])')).toBeLessThan(run.indexOf('runStatelessPrompt'))
+    expect(run.indexOf("type: 'set_session_name'")).toBeLessThan(run.indexOf('runStatelessPrompt'))
   })
 
   it('does not persist a requested model until set_model succeeds', () => {
