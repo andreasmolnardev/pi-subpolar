@@ -16,6 +16,9 @@ RUN apt-get update \
 COPY package.json bun.lock bunfig.toml ./
 COPY @subpolar-agent/package.json ./@subpolar-agent/package.json
 COPY packages/subpolar-cli/package.json ./packages/subpolar-cli/package.json
+COPY packages/subpolar-client/package.json ./packages/subpolar-client/package.json
+COPY packages/subpolar-test-cli/package.json ./packages/subpolar-test-cli/package.json
+COPY packages/subpolar-adapter-pi-durable/package.json ./packages/subpolar-adapter-pi-durable/package.json
 COPY packages/subpolar-contracts/package.json ./packages/subpolar-contracts/package.json
 COPY packages/subpolar-core/package.json ./packages/subpolar-core/package.json
 COPY packages/subpolar-core-pi/package.json ./packages/subpolar-core-pi/package.json
