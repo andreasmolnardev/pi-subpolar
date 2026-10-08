@@ -1,218 +1,260 @@
 #!/usr/bin/env bun
-import { readFile } from 'node:fs/promises'
 import { SubpolarApiError, SubpolarClient } from '@subpolar/client'
+
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+type CliClient = SubpolarClient
 
 const DEFAULT_URL = 'http://localhost:4173'
-const USAGE = `Usage: subpolar-test-cli [--url URL] [--env NAME | --profile NAME] [--token USER_TOKEN] [--timeout MS] [--json|--jsonl] <command>
+const USAGE = `Usage: subpolar-test-cli [global options] <command>
+Global options: --url URL | --env NAME | --profile NAME, --token USER_TOKEN, --timeout MS, --json
 Commands:
   status
-  agents list
+  agents list | agents inspect <ID>
   models list
   projects list
   sessions list [--project ID] [--search TEXT]
-  sessions create [--title TEXT] [--project ID] [--directory PATH] [--agent NAME] [--model ID] [--thinking LEVEL] [--permission MODE] [--worktree ID]
-  sessions send <SESSION_ID> <MESSAGE>
-  sessions inspect <SESSION_ID>
-  sessions events <SESSION_ID> [--after ID] [--limit N]
-  sessions errors <SESSION_ID>
-  sessions abort <SESSION_ID>
-  runs inspect <RUN_ID>                    (not exposed by current server API)
-  test <scenario.yaml>`
+  sessions create [--title TEXT] [--project ID] [--repository ID] [--directory PATH] [--agent NAME] [--model ID] [--thinking LEVEL] [--permission MODE] [--worktree ID]
+  sessions send <SESSION_ID> <MESSAGE> [--model PROVIDER/MODEL] [--follow]
+  sessions inspect <SESSION_ID> | messages <SESSION_ID> | events <SESSION_ID> [--after ID] [--limit N]
+  sessions errors <SESSION_ID> | update <SESSION_ID> [--title TEXT] [--archived true|false] [--model PROVIDER/MODEL] | abort <SESSION_ID>
+  runs inspect <RUN_ID>
+  tools list [--agent ID] | tools policies set <AGENT_ID> --policy TOOL_ID=allow|deny|approval [...]
+  worktrees create <PROJECT_ID> --branch NAME --source-ref REF --expected-sha SHA
+  approvals list | approvals inspect <ID> | approvals decision <ID> --session ID --response approve|reject|once|always
+  settings inspect | settings update --key VALUE [--key VALUE ...]`
 
 export interface CliIo { stdout?: (text: string) => void; stderr?: (text: string) => void }
-export interface CliOptions { fetch?: FetchLike; io?: CliIo; token?: string; baseUrl?: string }
+export interface CliOptions { fetch?: FetchLike; io?: CliIo; token?: string; baseUrl?: string; client?: SubpolarClient }
 export class CliUsageError extends Error {}
+class UnsupportedCommandError extends Error {}
 
-function getValue(args: string[], index: number, option: string): string {
+function valueAfter(args: string[], index: number, option: string): string {
   const value = args[index + 1]
   if (!value || value.startsWith('--')) throw new CliUsageError(`${option} requires a value`)
   return value
 }
-
-function parseOptions(argv: string[]) {
-  const args: string[] = []
-  let url: string | undefined
-  let env: string | undefined
-  let profile: string | undefined
-  let token: string | undefined
-  let timeout = 30_000
-  let json = false
-  let jsonl = false
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!
-    if (arg === '--url') url = getValue(argv, i++, arg)
-    else if (arg === '--env') env = getValue(argv, i++, arg)
-    else if (arg === '--profile') profile = getValue(argv, i++, arg)
-    else if (arg === '--token') token = getValue(argv, i++, arg)
-    else if (arg === '--timeout') {
-      timeout = Number(getValue(argv, i++, arg))
-      if (!Number.isInteger(timeout) || timeout < 1) throw new CliUsageError('--timeout must be a positive integer in milliseconds')
-    } else if (arg === '--json') json = true
-    else if (arg === '--jsonl') jsonl = true
-    else if (arg.startsWith('--')) {
-      args.push(arg)
-      if (['--project', '--search', '--title', '--after', '--limit', '--agent', '--model', '--thinking', '--directory', '--worktree', '--permission'].includes(arg)) args.push(getValue(argv, i++, arg))
-    } else args.push(arg)
-  }
-  if (env && profile) throw new CliUsageError('--env and --profile cannot be combined')
-  if (json && jsonl) throw new CliUsageError('--json and --jsonl cannot be combined')
-  return { args, url, env, profile, token, timeout, json, jsonl }
+function optionValue(args: string[], option: string): string | undefined {
+  const index = args.indexOf(option)
+  return index < 0 ? undefined : valueAfter(args, index, option)
 }
-
-function yamlScalar(value: string): unknown {
-  const trimmed = value.trim()
-  if (!trimmed) return ''
-  if (trimmed === 'true') return true
-  if (trimmed === 'false') return false
-  if (trimmed === 'null' || trimmed === '~') return null
-  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed)
-  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) return trimmed.slice(1, -1)
-  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
-    try { return JSON.parse(trimmed) as unknown } catch { throw new CliUsageError(`Invalid inline YAML value: ${trimmed}`) }
-  }
-  return trimmed.replace(/\s+#.*$/, '')
+function required(value: string | undefined, label: string): string {
+  if (!value || value.startsWith('--')) throw new CliUsageError(`Missing ${label}`)
+  return value
 }
-
-/** Parse the documented scenario subset: scalar top-level fields and a `messages` string list. */
-export function parseScenario(text: string): { title?: string; project?: string | number; messages: string[] } {
-  try {
-    const value = JSON.parse(text) as Record<string, unknown>
-    return validateScenario(value)
-  } catch (error) {
-    if (error instanceof CliUsageError) throw error
-  }
-  const result: Record<string, unknown> = {}
-  const messages: string[] = []
-  let inMessages = false
-  for (const [index, raw] of text.split(/\r?\n/).entries()) {
-    const line = raw.replace(/\s+#.*$/, '')
-    if (!line.trim() || line.trim().startsWith('#')) continue
-    if (/^messages\s*:\s*$/.test(line.trim())) { inMessages = true; result.messages = messages; continue }
-    if (inMessages && /^\s+-\s+/.test(line)) {
-      const value = yamlScalar(line.replace(/^\s+-\s+/, ''))
-      if (typeof value !== 'string') throw new CliUsageError(`messages entry on line ${index + 1} must be a string`)
-      messages.push(value); continue
-    }
-    inMessages = false
-    const match = line.match(/^(title|project)\s*:\s*(.*?)\s*$/)
-    if (!match) throw new CliUsageError(`Unsupported scenario YAML on line ${index + 1}; see README.md`)
-    result[match[1]!] = yamlScalar(match[2]!)
-  }
-  return validateScenario(result)
+function isRecord(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value) }
+function parseScalar(value: string): unknown {
+  if (value === 'true') return true
+  if (value === 'false') return false
+  if (value === 'null') return null
+  if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value)
+  return value
 }
-
-function validateScenario(value: Record<string, unknown>): { title?: string; project?: string | number; messages: string[] } {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new CliUsageError('Scenario must be an object')
-  const allowed = new Set(['title', 'project', 'messages'])
-  for (const key of Object.keys(value)) if (!allowed.has(key)) throw new CliUsageError(`Unknown scenario key: ${key}`)
-  if (value.title !== undefined && typeof value.title !== 'string') throw new CliUsageError('Scenario title must be a string')
-  if (value.project !== undefined && typeof value.project !== 'string' && typeof value.project !== 'number') throw new CliUsageError('Scenario project must be a string or number')
-  if (value.messages !== undefined && (!Array.isArray(value.messages) || value.messages.some((item) => typeof item !== 'string' || !item.trim()))) throw new CliUsageError('Scenario messages must be a list of non-empty strings')
-  return { ...(typeof value.title === 'string' ? { title: value.title } : {}), ...(typeof value.project === 'string' || typeof value.project === 'number' ? { project: value.project } : {}), messages: (value.messages as string[] | undefined) ?? [] }
+function human(value: unknown): string {
+  if (value === undefined || value === null) return '(none)\n'
+  if (Array.isArray(value)) return value.length ? value.map((item) => `- ${human(item).trim()}`).join('\n') + '\n' : '(none)\n'
+  return typeof value === 'object' ? `${JSON.stringify(value, null, 2)}\n` : `${String(value)}\n`
+}
+function unsupported(message: string): never { throw new UnsupportedCommandError(message) }
+function parseModelSelection(value: string): { providerID: string; modelID: string } {
+  const slash = value.indexOf('/')
+  if (slash <= 0 || slash === value.length - 1) throw new CliUsageError('--model must use PROVIDER/MODEL format')
+  return { providerID: value.slice(0, slash), modelID: value.slice(slash + 1) }
 }
 
 export async function runCli(argv: string[], options: CliOptions = {}): Promise<number> {
   const stdout = options.io?.stdout ?? ((text: string) => process.stdout.write(text))
   const stderr = options.io?.stderr ?? ((text: string) => process.stderr.write(text))
-  let mode = 'text'
-  let command = 'unknown'
+  let json = false
   let timedOut = false
   let timer: ReturnType<typeof setTimeout> | undefined
+  let command = 'unknown'
+  let requestId = `subpolar-cli-${crypto.randomUUID()}`
   try {
-    const parsed = parseOptions(argv)
-    mode = parsed.json ? 'json' : parsed.jsonl ? 'jsonl' : 'text'
-    const [group, action, ...rest] = parsed.args
-    command = [group, action].filter(Boolean).join(' ')
-    if (!group) throw new CliUsageError(USAGE)
-    const selector = parsed.profile ? `PROFILE_${parsed.profile.toUpperCase().replace(/[^A-Z0-9]/g, '_')}` : parsed.env ? `ENV_${parsed.env.toUpperCase().replace(/[^A-Z0-9]/g, '_')}` : undefined
-    const baseUrl = options.baseUrl ?? parsed.url ?? (selector ? process.env[`SUBPOLAR_${selector}_URL`] : undefined) ?? process.env.SUBPOLAR_URL ?? DEFAULT_URL
-    const userToken = options.token ?? parsed.token ?? (selector ? process.env[`SUBPOLAR_${selector}_TOKEN`] : undefined) ?? process.env.SUBPOLAR_TOKEN
-    const requestId = `subpolar-test-${crypto.randomUUID()}`
+    const args: string[] = []
+    let url: string | undefined
+    let env: string | undefined
+    let profile: string | undefined
+    let token: string | undefined
+    let timeout = 30_000
+    for (let i = 0; i < argv.length; i++) {
+      const arg = argv[i]!
+      if (arg === '--url') url = valueAfter(argv, i++, arg)
+      else if (arg === '--env') env = valueAfter(argv, i++, arg)
+      else if (arg === '--profile') profile = valueAfter(argv, i++, arg)
+      else if (arg === '--token') token = valueAfter(argv, i++, arg)
+      else if (arg === '--timeout') {
+        timeout = Number(valueAfter(argv, i++, arg))
+        if (!Number.isSafeInteger(timeout) || timeout < 1) throw new CliUsageError('--timeout must be a positive integer in milliseconds')
+      } else if (arg === '--json') json = true
+      else args.push(arg)
+    }
+    if (env && profile) throw new CliUsageError('--env and --profile cannot be combined')
+    const selector = profile ? `PROFILE_${profile.toUpperCase().replace(/[^A-Z0-9]/g, '_')}` : env ? `ENV_${env.toUpperCase().replace(/[^A-Z0-9]/g, '_')}` : undefined
+    const baseUrl = options.baseUrl ?? url ?? (selector ? process.env[`SUBPOLAR_${selector}_URL`] : undefined) ?? process.env.SUBPOLAR_URL ?? DEFAULT_URL
+    const userToken = options.token ?? token ?? (selector ? process.env[`SUBPOLAR_${selector}_TOKEN`] : undefined) ?? process.env.SUBPOLAR_TOKEN
     const controller = new AbortController()
-    timer = setTimeout(() => { timedOut = true; controller.abort(new Error('Request timed out')) }, parsed.timeout)
+    timer = setTimeout(() => { timedOut = true; controller.abort(new Error('Request timed out')) }, timeout)
     const transport: FetchLike = async (input, init = {}) => {
       const headers = new Headers(init.headers)
       headers.set('x-request-id', requestId)
       return (options.fetch ?? fetch)(input, { ...init, headers, signal: init.signal ?? controller.signal })
     }
-    const client = new SubpolarClient({ baseUrl, token: userToken, fetch: transport })
+    const client = (options.client ?? new SubpolarClient({ baseUrl, token: userToken, fetch: transport })) as CliClient
+    const [group, action, ...rest] = args
+    command = [group, action].filter(Boolean).join(' ') || 'unknown'
+    if (!group) throw new CliUsageError(USAGE)
     let data: unknown
-    if (group === 'status' && action === undefined) {
-      data = { health: await client.health(), capabilities: await client.capabilities(), baseUrl, requestId }
-    } else if (group === 'agents' && action === 'list') data = await client.listAgents()
-    else if (group === 'models' && action === 'list') data = await client.listModels()
+    let streamed = false
+
+    if (group === 'status' && action === undefined) data = { health: await client.health(), capabilities: await client.capabilities(), baseUrl, requestId }
+    else if (group === 'agents' && action === 'list') data = await client.listAgents()
+    else if (group === 'agents' && action === 'inspect') {
+      const id = required(rest[0], 'AGENT_ID')
+      const agents = await client.listAgents()
+      data = agents.find((agent) => agent.id === id || agent.name === id)
+      if (!data) throw new CliUsageError(`Agent not found: ${id}`)
+    } else if (group === 'models' && action === 'list') data = await client.listModels()
     else if (group === 'projects' && action === 'list') data = await client.listProjects()
     else if (group === 'sessions' && action === 'list') {
       const project = optionValue(rest, '--project'); const search = optionValue(rest, '--search')
       data = await client.listSessions({ ...(project ? { project } : {}), ...(search ? { search } : {}) })
     } else if (group === 'sessions' && action === 'create') {
-      const title = optionValue(rest, '--title'); const project = optionValue(rest, '--project')
-      const directory = optionValue(rest, '--directory'); const agent = optionValue(rest, '--agent')
-      const model = optionValue(rest, '--model'); const thinking = optionValue(rest, '--thinking')
+      const title = optionValue(rest, '--title'); const project = optionValue(rest, '--project'); const repositoryId = optionValue(rest, '--repository'); const directory = optionValue(rest, '--directory')
+      const agent = optionValue(rest, '--agent'); const model = optionValue(rest, '--model'); const thinking = optionValue(rest, '--thinking')
       const permission = optionValue(rest, '--permission'); const worktreeId = optionValue(rest, '--worktree')
-      const validThinking = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(thinking ?? '') ? thinking as 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' : undefined
-      const validPermission = ['ask', 'none', 'allow_all'].includes(permission ?? '') ? permission as 'ask' | 'none' | 'allow_all' : undefined
-      if (thinking && !validThinking) throw new CliUsageError('--thinking must be off, minimal, low, medium, high, or xhigh')
-      if (permission && !validPermission) throw new CliUsageError('--permission must be ask, none, or allow_all')
-      data = await client.createSession({ ...(title ? { title } : {}), ...(project ? { project } : {}), ...(directory ? { directory } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(validThinking ? { thinking: validThinking } : {}), ...(validPermission ? { permission: validPermission } : {}), ...(worktreeId ? { worktreeId } : {}) })
+      if (thinking && !['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(thinking)) throw new CliUsageError('--thinking must be off, minimal, low, medium, high, or xhigh')
+      if (permission && !['ask', 'none', 'allow_all'].includes(permission)) throw new CliUsageError('--permission must be ask, none, or allow_all')
+      data = await client.createSession({ ...(title ? { title } : {}), ...(project ? { project } : {}), ...(repositoryId ? { repositoryId } : {}), ...(directory ? { directory } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(thinking ? { thinking: thinking as 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' } : {}), ...(permission ? { permission: permission as 'ask' | 'none' | 'allow_all' } : {}), ...(worktreeId ? { worktreeId } : {}) })
     } else if (group === 'sessions' && action === 'send') {
-      if (rest.length < 2) throw new CliUsageError('sessions send requires <SESSION_ID> <MESSAGE>')
-      const [id, ...message] = rest.filter((item) => !item.startsWith('--'))
-      if (!id || !message.length) throw new CliUsageError('sessions send requires <SESSION_ID> <MESSAGE>')
-      data = await client.run(id, message.join(' '), { messageID: requestId, metadata: { requestId } })
+      const sessionId = required(rest[0], 'SESSION_ID')
+      const follow = rest.includes('--follow')
+      const model = optionValue(rest, '--model')
+      const limit = Number(optionValue(rest, '--limit') ?? '0')
+      if (!Number.isSafeInteger(limit) || limit < 0) throw new CliUsageError('--limit must be a non-negative integer')
+      const message: string[] = []
+      for (let i = 1; i < rest.length; i++) {
+        const arg = rest[i]!
+        if (arg === '--follow') continue
+        if (['--limit', '--model'].includes(arg)) { valueAfter(rest, i++, arg); continue }
+        message.push(arg)
+      }
+      if (!message.length) throw new CliUsageError('sessions send requires <SESSION_ID> <MESSAGE>')
+      const modelSelection = model ? parseModelSelection(model) : undefined
+      const metadata = { requestId, ...(modelSelection ? { model: modelSelection } : {}) }
+      let eventPump: Promise<void> | undefined
+      if (follow) {
+        streamed = true
+        eventPump = (async () => {
+          let count = 0
+          try {
+            for await (const event of client.events({ sessionId, signal: controller.signal })) {
+              count++
+              if (json) stdout(`${JSON.stringify({ event: 'stream', type: event.event ?? 'message', id: event.id, data: event.data })}\n`)
+              else stdout(`${event.event ?? 'message'}${event.id ? ` [${event.id}]` : ''}: ${typeof event.data === 'string' ? event.data : JSON.stringify(event.data)}\n`)
+              if (limit && count >= limit) break
+            }
+          } catch (error) {
+            if (!controller.signal.aborted) throw error
+          }
+        })()
+      }
+      try {
+        data = await client.run(sessionId, message.join(' '), { messageID: requestId, metadata })
+      } finally {
+        if (follow) controller.abort()
+        await eventPump?.catch((error: unknown) => { if (!controller.signal.aborted) throw error })
+      }
     } else if (group === 'sessions' && action === 'inspect') {
       const id = required(rest[0], 'SESSION_ID')
       data = { session: await client.getSession(id), messages: await client.messages(id) }
-    } else if (group === 'sessions' && action === 'errors') {
-      const id = required(rest[0], 'SESSION_ID')
-      const messages = await client.messages(id)
-      data = (messages as unknown[]).filter((item: unknown) => item && typeof item === 'object' && ('error' in item || (item as Record<string, unknown>).type === 'error'))
-    } else if (group === 'sessions' && action === 'abort') data = await client.abortRun(required(rest[0], 'SESSION_ID'))
-    else if (group === 'sessions' && action === 'events') {
+    } else if (group === 'sessions' && action === 'messages') data = await client.messages(required(rest[0], 'SESSION_ID'))
+    else if (group === 'sessions' && action === 'errors') {
+      const messages = await client.messages(required(rest[0], 'SESSION_ID'))
+      data = messages.filter((item) => isRecord(item) && ('error' in item || item.type === 'error'))
+    } else if (group === 'sessions' && action === 'events') {
       const sessionId = required(rest[0], 'SESSION_ID'); const after = optionValue(rest, '--after'); const limit = Number(optionValue(rest, '--limit') ?? '0')
-      if (limit < 0 || !Number.isInteger(limit)) throw new CliUsageError('--limit must be a non-negative integer')
-      const events: unknown[] = []
+      if (!Number.isSafeInteger(limit) || limit < 0) throw new CliUsageError('--limit must be a non-negative integer')
+      const events: unknown[] = []; streamed = true
       for await (const event of client.events({ sessionId, ...(after ? { after } : {}), signal: controller.signal })) {
         events.push(event)
-        if (mode === 'jsonl') stdout(`${JSON.stringify({ event: 'data', ...event })}\n`)
-        if (limit && events.length >= limit) { controller.abort(); break }
+        if (json) stdout(`${JSON.stringify({ event: 'stream', type: event.event ?? 'message', id: event.id, data: event.data })}\n`)
+        else stdout(`${event.event ?? 'message'}${event.id ? ` [${event.id}]` : ''}: ${typeof event.data === 'string' ? event.data : JSON.stringify(event.data)}\n`)
+        if (limit && events.length >= limit) break
       }
-      data = events
-    } else if (group === 'runs' && action === 'inspect') throw new UnsupportedCommandError('The server currently exposes run inspection only through session events; no public per-run inspection route exists.')
-    else if (group === 'test' && action === undefined) {
-      const path = rest[0]
-      if (!path) throw new CliUsageError('test requires <scenario.yaml>')
-      const scenario = parseScenario(await readFile(path, 'utf8'))
-      const session = await client.createSession({ ...(scenario.title ? { title: scenario.title } : {}), ...(scenario.project !== undefined ? { project: scenario.project } : {}) })
-      const results = []
-      for (const message of scenario.messages) results.push(await client.run(session.id, message, { messageID: `${requestId}-${results.length + 1}`, metadata: { requestId } }))
-      data = { ok: true, scenario: path, session, results, requestId }
+      data = { received: events.length }
+    } else if (group === 'sessions' && action === 'update') {
+      const id = required(rest[0], 'SESSION_ID'); const title = optionValue(rest, '--title'); const archivedValue = optionValue(rest, '--archived'); const model = optionValue(rest, '--model')
+      if (!title && archivedValue === undefined && model === undefined) throw new CliUsageError('sessions update requires --title, --archived, or --model')
+      if (archivedValue !== undefined && archivedValue !== 'true' && archivedValue !== 'false') throw new CliUsageError('--archived must be true or false')
+      if (model !== undefined) parseModelSelection(model)
+      data = await client.updateSession(id, { ...(title ? { title } : {}), ...(archivedValue === undefined ? {} : { archived: archivedValue === 'true' }), ...(model ? { model } : {}) })
+    } else if (group === 'sessions' && action === 'abort') data = await client.abortRun(required(rest[0], 'SESSION_ID'))
+    else if (group === 'runs' && action === 'inspect') data = await client.inspectRun(required(rest[0], 'RUN_ID'))
+    else if (group === 'tools' && action === 'list') {
+      const agentId = optionValue(rest, '--agent')
+      const tools = await client.listTools()
+      data = agentId ? { tools, policies: await client.listAgentToolPolicies(agentId) } : tools
+    } else if (group === 'tools' && action === 'policies' && rest[0] === 'set') {
+      const agentId = required(rest[1], 'AGENT_ID')
+      const policies: Array<{ toolId: string; effect: 'allow' | 'deny' | 'approval' }> = []
+      for (let i = 2; i < rest.length; i++) {
+        const arg = rest[i]!
+        if (!arg.startsWith('--policy=')) throw new CliUsageError(`Unexpected argument: ${arg}`)
+        const specification = arg.slice('--policy='.length)
+        const separator = specification.lastIndexOf('=')
+        const toolId = specification.slice(0, separator)
+        const effect = specification.slice(separator + 1)
+        if (separator <= 0 || !['allow', 'deny', 'approval'].includes(effect)) throw new CliUsageError('--policy must use TOOL_ID=allow|deny|approval')
+        policies.push({ toolId, effect: effect as 'allow' | 'deny' | 'approval' })
+      }
+      if (!policies.length) throw new CliUsageError('tools policies set requires at least one --policy=TOOL_ID=allow|deny|approval')
+      data = await client.replaceAgentToolPolicies(agentId, policies)
+    } else if (group === 'worktrees' && action === 'create') {
+      const projectId = required(rest[0], 'PROJECT_ID')
+      const branch = required(optionValue(rest, '--branch'), '--branch')
+      const sourceRef = required(optionValue(rest, '--source-ref'), '--source-ref')
+      const expectedSha = required(optionValue(rest, '--expected-sha'), '--expected-sha')
+      data = await client.createWorktree(projectId, { approved: true, branch, sourceRef, expectedSha })
+    } else if (group === 'approvals' && action === 'list') data = await client.approvals(optionValue(rest, '--session'))
+    else if (group === 'approvals' && action === 'inspect') {
+      const approvalId = required(rest[0], 'APPROVAL_ID'); const sessionId = optionValue(rest, '--session')
+      const approval = await client.inspectApproval(approvalId, sessionId)
+      data = approval
+      if (!data) throw new CliUsageError(`Approval not found: ${approvalId}`)
+    } else if (group === 'approvals' && action === 'decision') {
+      const approvalId = required(rest[0], 'APPROVAL_ID'); const sessionId = required(optionValue(rest, '--session'), '--session')
+      const decision = required(optionValue(rest, '--response'), '--response')
+      if (!['approve', 'reject', 'once', 'always'].includes(decision)) throw new CliUsageError('--response must be approve, reject, once, or always')
+      data = await client.respondToApproval(sessionId, approvalId, decision as 'approve' | 'reject' | 'once' | 'always')
+    } else if (group === 'settings' && action === 'inspect') {
+      if (!client.getSettings) unsupported('Settings inspection is not available in the installed @subpolar/client')
+      data = await client.getSettings()
+    } else if (group === 'settings' && action === 'update') {
+      if (!client.updateSettings) unsupported('Settings updates are not available in the installed @subpolar/client')
+      const input: Record<string, unknown> = {}
+      for (let i = 0; i < rest.length; i++) {
+        const key = rest[i]!
+        if (!key.startsWith('--')) throw new CliUsageError(`Unexpected argument: ${key}`)
+        const field = key.slice(2)
+        if (!field) throw new CliUsageError('Settings keys cannot be empty')
+        input[field] = parseScalar(valueAfter(rest, i++, key))
+      }
+      if (!Object.keys(input).length) throw new CliUsageError('settings update requires at least one --key VALUE')
+      data = await client.updateSettings(input)
     } else throw new CliUsageError(USAGE)
-    clearTimeout(timer)
-    if (mode === 'json') stdout(`${JSON.stringify({ ok: true, command, requestId, data })}\n`)
-    else if (mode === 'jsonl' && !(group === 'sessions' && action === 'events')) stdout(`${JSON.stringify({ event: 'result', ok: true, command, requestId, data })}\n`)
-    else if (mode === 'text') stdout(format(data))
+
+    if (!streamed) stdout(json ? `${JSON.stringify({ ok: true, command, requestId, data })}\n` : human(data))
+    else if (json) stdout(`${JSON.stringify({ event: 'result', ok: true, command, requestId, data })}\n`)
     return 0
   } catch (error) {
-    if (timer) clearTimeout(timer)
     const usage = error instanceof CliUsageError
-    const unsupported = error instanceof UnsupportedCommandError
-    const apiError: SubpolarApiError | undefined = error instanceof SubpolarApiError ? error : undefined
-    const payload = { ok: false, command, error: { code: timedOut ? 'TIMEOUT' : unsupported ? 'UNSUPPORTED' : usage ? 'USAGE' : apiError?.code ?? 'REQUEST_FAILED', message: timedOut ? 'Request timed out' : error instanceof Error ? error.message : 'Request failed', ...(apiError ? { status: apiError.status, requestId: apiError.requestId } : {}) } }
-    if (mode === 'json' || mode === 'jsonl') stdout(`${JSON.stringify(mode === 'jsonl' ? { event: 'error', ...payload } : payload)}\n`)
+    const isUnsupported = error instanceof UnsupportedCommandError
+    const apiError = error instanceof SubpolarApiError ? error : undefined
+    const payload = { ok: false, command, error: { code: timedOut ? 'TIMEOUT' : isUnsupported ? 'UNSUPPORTED' : usage ? 'USAGE' : apiError?.code ?? 'REQUEST_FAILED', message: timedOut ? 'Request timed out' : error instanceof Error ? error.message : 'Request failed', ...(apiError ? { status: apiError.status, requestId: apiError.requestId } : {}) } }
+    if (json) stdout(`${JSON.stringify(payload)}\n`)
     else stderr(`Error [${payload.error.code}]: ${payload.error.message}\n`)
-    return timedOut ? 3 : usage ? 2 : unsupported ? 5 : apiError?.status === 401 || apiError?.status === 403 ? 4 : 1
-  }
-}
-
-class UnsupportedCommandError extends Error {}
-function required(value: string | undefined, name: string): string { if (!value || value.startsWith('--')) throw new CliUsageError(`Missing ${name}`); return value }
-function optionValue(args: string[], option: string): string | undefined { const i = args.indexOf(option); return i < 0 ? undefined : getValue(args, i, option) }
-function format(value: unknown): string {
-  if (Array.isArray(value)) return value.length ? value.map((item) => `- ${format(item).trim()}`).join('\n') + '\n' : '(none)\n'
-  if (value && typeof value === 'object') return JSON.stringify(value, null, 2) + '\n'
-  return `${String(value)}\n`
+    return timedOut ? 3 : usage ? 2 : isUnsupported ? 5 : apiError?.status === 401 || apiError?.status === 403 ? 4 : 1
+  } finally { if (timer) clearTimeout(timer) }
 }
 
 if (import.meta.main) process.exitCode = await runCli(process.argv.slice(2))

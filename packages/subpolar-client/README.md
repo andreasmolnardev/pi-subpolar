@@ -32,16 +32,27 @@ for await (const event of client.events({ sessionId: session.id })) {
 
 - Authentication: config, current session, email sign-up/sign-in, sign-out, password change.
 - Discovery: versioned capabilities and health (`/api/v1/*`).
-- Projects and sessions: CRUD, paginated/filterable session listing, transcripts, message delivery, run start, and abort.
-- Events: owner-scoped SSE at `/api/sse/stream`, including replay cursor and optional session filter.
-- Approvals: pending approvals and session-bound decisions.
+- Agents: owner-scoped listing (`GET /api/agents`).
+- Providers and models: provider catalog (`GET /api/providers/catalog`) and model-state read/update (`/api/providers/model-state`).
+- Settings and tools: preferences read/update, registered tools list, and agent tool-policy list/replace.
+- Projects and sessions: CRUD, paginated/filterable session listing, transcripts, session update, message delivery, run start, and abort. Owner-scoped run inspection is available through `/api/runs/:runId`.
+- Events: owner-scoped SSE at `/api/sse/stream`, including replay cursor and optional session filter. Pass `sessionId` to scope events to a session.
+- Approvals: pending approval list (optionally session-filtered), lookup within that list, and session-bound decisions.
 - Worktrees: session branch sources, explicitly approved worktree creation, task worktree lookup, and repository discovery.
 
 The `run()` helper calls the existing message-delivery endpoint and then its corresponding `/runs` endpoint. It does not poll or synthesize live run state; use `events()` to observe server events.
 
 ## Explicit limitations
 
-`unsupportedFeatures` lists server functionality that is absent or not safely available. In particular, remote Git refresh is an existing route that deliberately returns `UNSUPPORTED`; the client exposes project/session operations but does not promise parity with every legacy UI, task, tool, provider, workspace, voice, or automation route. Approval responses require both session ID and approval ID. Session event subscriptions here use the owner-scoped SSE feed; the server's authenticated per-session WebSocket is intentionally not wrapped by this HTTP client.
+`unsupportedFeatures` documents the exact gaps verified against the current WebUI modules and bridge handlers:
+
+- Agent inspection by ID is unsupported: the server has an owner-scoped collection `GET /api/agents`, but no `GET /api/agents/:id` handler.
+- Approval inspection by ID is unsupported: pending approvals can only be listed, optionally with `sessionId`; `inspectApproval()` searches that supported response and returns `undefined` when absent.
+- Session WebSocket events at `/api/sessions/:id/events` are used by the WebUI but are not wrapped here. Use the supported owner-scoped `/api/sse/stream` subscription with a `sessionId` filter.
+- Remote Git refresh is an existing route that deliberately returns `UNSUPPORTED`.
+- No project/session bulk-delete route exists.
+
+This client sends the configured user bearer credential or browser credentials; it does not use an installation/admin token. Approval decisions require both session ID and approval ID. The package does not claim parity with unrelated legacy UI operations (for example, runtime tool execution, provider credential flows, workspace mutations, voice, or automation).
 
 The API's legacy endpoints do not all return the versioned `subpolar-api.v1` envelope. `SubpolarApiError` preserves status and any structured code/request ID where present. Response models allow additional fields so additive server response changes remain usable.
 

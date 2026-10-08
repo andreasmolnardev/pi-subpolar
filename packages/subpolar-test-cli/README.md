@@ -1,48 +1,46 @@
 # @subpolar/test-cli
 
-A user-authenticated command-line client for the Subpolar HTTP API. All API transport goes through `@subpolar/client`; this package does not call HTTP routes directly and does not accept an admin token.
+An interactive development/debugging CLI for manually operating a running Subpolar instance. It is not a unit, E2E, or scenario runner. All backend operations go through `@subpolar/client`; this package does not call HTTP routes directly or accept an admin token.
 
 ## Usage
 
 ```sh
-bun run --cwd packages/subpolar-test-cli start -- status
-bun run --cwd packages/subpolar-test-cli start -- --url http://localhost:4173 projects list --json
-bun run --cwd packages/subpolar-test-cli start -- sessions create --title "CLI test"
-bun run --cwd packages/subpolar-test-cli start -- sessions send SESSION_ID "hello"
-bun run --cwd packages/subpolar-test-cli start -- sessions events SESSION_ID --limit 10 --jsonl
-bun run --cwd packages/subpolar-test-cli start -- test scenario.yaml
+bun run --cwd packages/subpolar-test-cli start -- status --json
+bun run --cwd packages/subpolar-test-cli start -- --url http://localhost:4173 projects list
+bun run --cwd packages/subpolar-test-cli start -- sessions create --title "Debug session"
+bun run --cwd packages/subpolar-test-cli start -- sessions send SESSION_ID "hello" --follow
+bun run --cwd packages/subpolar-test-cli start -- sessions inspect SESSION_ID --json
+bun run --cwd packages/subpolar-test-cli start -- approvals list --session SESSION_ID
+bun run --cwd packages/subpolar-test-cli start -- worktrees create PROJECT_ID --branch debug --source-ref main --expected-sha SHA
+bun run --cwd packages/subpolar-test-cli start -- tools policies set master --policy=shell=deny
 ```
 
-The default server URL is `http://localhost:4173`. Options may appear anywhere:
+The default server URL is `http://localhost:4173`. Global options may appear anywhere:
 
 - `--url URL` overrides the target URL.
 - `--env NAME` selects `SUBPOLAR_ENV_<NAME>_URL` and `SUBPOLAR_ENV_<NAME>_TOKEN`.
 - `--profile NAME` selects `SUBPOLAR_PROFILE_<NAME>_URL` and `SUBPOLAR_PROFILE_<NAME>_TOKEN`.
 - `--token USER_TOKEN` or `SUBPOLAR_TOKEN` supplies the signed-in user's bearer token. There is no admin-token option.
-- `--timeout MS` sets the request timeout (default 30000 ms); each invocation sends a stable `x-request-id`, and message delivery uses the same ID for idempotency metadata.
-- `--json` prints one JSON result/error envelope. `--jsonl` prints event records as JSON Lines where applicable. Session events stream until `--limit` is reached or the command is interrupted.
+- `--timeout MS` sets the request timeout (default 30000 ms). Each invocation uses one stable `x-request-id`; message delivery uses that same value for its message ID and idempotency metadata.
+- Human-readable output is the default. `--json` emits JSON result/error envelopes and JSON Lines stream records. `sessions events` and `sessions send --follow` emit distinct stream event records, then a final result record. Use `--limit N` to stop a stream after N events; otherwise it continues until interrupted.
 
-Exit codes: `0` success, `1` request/runtime failure, `2` usage/scenario error, `3` timeout, `4` authentication/authorization failure, `5` valid command unavailable through `@subpolar/client`.
+Exit codes: `0` success, `1` request/runtime failure, `2` usage error, `3` timeout, `4` authentication/authorization failure, `5` valid operation not available through the installed `@subpolar/client`.
 
-## Supported command boundary
+## Commands
 
-Supported operations use current client exports: `status` (health and capabilities), `agents list`, `models list` (the authenticated provider catalog), `projects list`, session list/create/send/inspect/errors/abort/events, and `test <scenario.yaml>`. Session `errors` filters the session message transcript for records with an `error` property or `type: error`. Session inspect combines `getSession` and `messages`. Send/test start a run using the client's `run()` method.
+- `status` — health and capability information.
+- `agents list`, `models list`, `projects list`.
+- `sessions list [--project ID] [--search TEXT]`.
+- `sessions create` with optional `--title`, `--project`, `--directory`, `--agent`, `--model`, `--thinking`, `--permission`, and `--worktree`.
+- `sessions send SESSION_ID MESSAGE [--follow]` — send a message and start its run; `--follow` then streams session events.
+- `sessions inspect SESSION_ID`, `sessions messages SESSION_ID`, `sessions events SESSION_ID [--after ID] [--limit N]`, `sessions errors SESSION_ID`, `sessions update SESSION_ID [--title TEXT] [--archived true|false] [--model PROVIDER/MODEL]`, and `sessions abort SESSION_ID`.
+- `worktrees create PROJECT_ID --branch NAME --source-ref REF --expected-sha SHA` uses the authenticated repository/worktree API; session creation can attach an owned worktree using `--repository ID --worktree ID`.
+- `tools policies set AGENT_ID --policy=TOOL_ID=allow|deny|approval [...]` replaces the selected agent's policies through the authenticated settings API.
+- `runs inspect RUN_ID` inspects a run using the owner-scoped server route.
+- `approvals list [--session ID]`, `approvals inspect ID [--session ID]`, and `approvals decision ID --session ID --response approve|reject|once|always`.
+- `tools list [--agent ID]`, `agents inspect ID`, approvals list/inspect/decision, and settings inspect/update use the installed client's actual API operations. Agent inspection is derived from the authorized agent listing. Approval inspection can only find currently pending approvals because the server has no approval-by-ID history endpoint.
 
-`runs inspect` is intentionally reported as unavailable (exit 5): the current server exposes no public per-run inspection route. This CLI does not bypass that boundary with guessed routes. It also does not implement auth sign-in, project mutations, approvals, worktrees, or per-session WebSocket events. SSE events use the client's owner-scoped stream.
-
-## Scenario schema
-
-Scenarios create one session and send each listed message in order. Supported YAML is intentionally a small subset: top-level `title` (string), `project` (string or number), and `messages` (list of non-empty strings). Comments and blank lines are accepted. JSON objects with the same schema are accepted as well. Other keys/structures fail with a usage error.
-
-```yaml
-title: smoke test
-project: 4
-messages:
-  - Say hello
-  - Summarize the previous response
-```
-
-`project` is passed to the client as the project identifier; no project is inferred when omitted. Scenario runs use unique message IDs derived from the invocation request ID.
+The current `@subpolar/client` includes session, status, project/model/agent listing, worktree creation, tool listing/policy replacement, settings inspection/update, approval list/decision, and owner-scoped SSE operations. No direct HTTP fallback is used. Authentication uses standard bearer tokens or browser-style cookies; CLI sign-in/token persistence is not implemented yet, so supply a user token with `--token`, `SUBPOLAR_TOKEN`, or a named environment/profile.
 
 ## Tests
 

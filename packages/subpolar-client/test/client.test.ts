@@ -27,10 +27,62 @@ describe('SubpolarClient', () => {
   test('lists agents and model catalog from owner-scoped API routes', async () => {
     const { client, calls } = mockClient((request) => new URL(request.url).pathname === '/api/agents'
       ? Response.json([{ id: 'a1', name: 'helper' }])
-      : Response.json({ catalog: { providers: [{ id: 'p1', models: [{ id: 'm1' }] }] } }))
+      : Response.json({ catalog: { providers: [{ id: 'p1', models: [{ id: 'm1' }] }], models: [{ id: 'm1', instanceId: 'p1', providerId: 'p1', modelId: 'm1', name: 'Model 1' }] } }))
     expect(await client.listAgents()).toEqual([{ id: 'a1', name: 'helper' }])
-    expect(await client.listModels()).toEqual([{ id: 'p1', models: [{ id: 'm1' }] }])
+    expect(await client.listModels()).toEqual([{ id: 'm1', instanceId: 'p1', providerId: 'p1', modelId: 'm1', name: 'Model 1' }])
     expect(calls.map((request) => new URL(request.url).pathname)).toEqual(['/api/agents', '/api/providers/catalog'])
+  })
+
+  test('uses current provider, model-state, settings, tool, and policy route shapes', async () => {
+    const { client, calls } = mockClient(async (request) => {
+      const path = new URL(request.url).pathname
+      if (path === '/api/providers/catalog') return Response.json({ catalog: { providers: [], accounts: [], models: [] } })
+      if (path === '/api/providers/model-state') return Response.json({ recent: [], favorite: [], variant: {} })
+      if (path === '/api/settings') return Response.json({ preferences: { theme: 'dark' }, updatedAt: 1 })
+      if (path === '/api/settings/subpolar-tools') return Response.json({ tools: [] })
+      return Response.json({ policies: [] })
+    })
+    await client.getProviderCatalog()
+    await client.getModelState()
+    await client.toggleFavoriteModel({ providerID: 'p', modelID: 'm' })
+    await client.getSettings()
+    await client.updateSettings({ theme: 'light' })
+    await client.listTools()
+    await client.listAgentToolPolicies('agent/one')
+    await client.replaceAgentToolPolicies('agent/one', [{ toolId: 'builtin/read', effect: 'allow' }])
+    expect(calls.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      'GET /api/providers/catalog', 'GET /api/providers/model-state', 'POST /api/providers/model-state',
+      'GET /api/settings', 'PATCH /api/settings', 'GET /api/settings/subpolar-tools',
+      'GET /api/settings/agents/agent%2Fone/tool-policies', 'PUT /api/settings/agents/agent%2Fone/tool-policies',
+    ])
+    expect(await calls[2]?.json()).toEqual({ favorite: { providerID: 'p', modelID: 'm' } })
+    expect(await calls[4]?.json()).toEqual({ preferences: { theme: 'light' } })
+    expect(await calls[7]?.json()).toEqual({ policies: [{ toolId: 'builtin/read', effect: 'allow' }] })
+    expect(calls.every((request) => request.headers.get('authorization') === 'Bearer test-token')).toBe(true)
+  })
+
+  test('looks up pending approvals through the supported list route and decides using session scope', async () => {
+    const { client, calls } = mockClient((request) => request.method === 'GET'
+      ? Response.json([{ id: 'approval-1', sessionId: 'session-1', toolId: 'builtin/write' }])
+      : Response.json({ ok: true }))
+    expect(await client.inspectApproval('approval-1', 'session 1')).toMatchObject({ id: 'approval-1' })
+    await client.respondToApproval('session 1', 'approval-1', 'once')
+    expect(new URL(calls[0]!.url).pathname).toBe('/api/permission')
+    expect(new URL(calls[0]!.url).searchParams.get('sessionId')).toBe('session 1')
+    expect(new URL(calls[1]!.url).pathname).toBe('/api/session/session%201/permissions/approval-1')
+    expect(await calls[1]?.json()).toEqual({ response: 'once' })
+  })
+
+  test('updates sessions and reads messages through owner-scoped session routes', async () => {
+    const { client, calls } = mockClient((request) => new URL(request.url).pathname.endsWith('/messages')
+      ? Response.json({ messages: [{ id: 'm1', role: 'user', content: 'hello' }] })
+      : Response.json({ session: { id: 's-1', title: 'new', updatedAt: 2 } }))
+    await client.updateSession('session/one', { title: 'new' })
+    expect(await client.messages('session/one')).toEqual([{ id: 'm1', role: 'user', content: 'hello' }])
+    expect(calls.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      'PATCH /api/sessions/session%2Fone', 'GET /api/sessions/session%2Fone/messages',
+    ])
+    expect(await calls[0]?.json()).toEqual({ title: 'new' })
   })
 
   test('creates projects and sessions using server request shapes', async () => {
@@ -44,6 +96,12 @@ describe('SubpolarClient', () => {
     expect(session.id).toBe('s-1')
     expect(await calls[0]?.json()).toEqual({ name: 'demo', directory: '/tmp/demo' })
     expect(await calls[1]?.json()).toEqual({ project: 1, title: 'demo' })
+  })
+
+  test('inspects a run through the user-scoped route', async () => {
+    const { client, calls } = mockClient(() => Response.json({ run: { runId: 'r1', state: 'completed' } }))
+    expect(await client.inspectRun('run/one')).toEqual({ runId: 'r1', state: 'completed' })
+    expect(new URL(calls[0]!.url).pathname).toBe('/api/runs/run%2Fone')
   })
 
   test('starts a run through message delivery and the implemented runs endpoint', async () => {
@@ -61,6 +119,13 @@ describe('SubpolarClient', () => {
     const { client } = mockClient(() => Response.json({ error: { code: 'NOPE', message: 'Denied' }, requestId: 'req-1' }, { status: 403 }))
     await expect(client.listProjects()).rejects.toMatchObject({
       name: 'SubpolarApiError', status: 403, code: 'NOPE', requestId: 'req-1', message: 'Denied',
+    })
+  })
+
+  test('preserves top-level structured legacy route error codes and details', async () => {
+    const { client } = mockClient(() => Response.json({ error: 'Model is unavailable', code: 'MODEL_UNAVAILABLE', details: { provider: 'p1' }, requestId: 'req-2' }, { status: 409 }))
+    await expect(client.getModelState()).rejects.toMatchObject({
+      name: 'SubpolarApiError', status: 409, code: 'MODEL_UNAVAILABLE', details: { provider: 'p1' }, requestId: 'req-2',
     })
   })
 

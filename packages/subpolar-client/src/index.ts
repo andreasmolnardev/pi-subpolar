@@ -11,6 +11,8 @@ export interface SubpolarClientOptions {
 
 export interface ApiErrorBody {
   error?: { code?: string; message?: string; details?: JsonRecord } | string
+  code?: string
+  details?: JsonRecord
   message?: string
   requestId?: string
 }
@@ -26,9 +28,9 @@ export class SubpolarApiError extends Error {
     super(error?.message ?? (typeof body.error === 'string' ? body.error : undefined) ?? body.message ?? fallback)
     this.name = 'SubpolarApiError'
     this.status = status
-    this.code = error?.code
+    this.code = error?.code ?? body.code
     this.requestId = body.requestId
-    this.details = error?.details
+    this.details = error?.details ?? body.details
   }
 }
 
@@ -111,6 +113,61 @@ export interface Approval {
   reason?: string
   [key: string]: unknown
 }
+export interface Agent extends JsonRecord {
+  id: string
+  name: string
+  enabled?: boolean
+  description?: string
+  systemPrompt?: string
+}
+export interface ProviderModelSelection { providerID: string; modelID: string }
+export interface ProviderModelState {
+  recent: ProviderModelSelection[]
+  favorite: ProviderModelSelection[]
+  variant: Record<string, string | undefined>
+}
+export interface ProviderCatalogModel extends JsonRecord {
+  id: string
+  instanceId: string
+  providerId: string
+  modelId: string
+  name: string
+}
+export interface ProviderCatalogProvider extends JsonRecord {
+  id: string
+  name: string
+  models: readonly ProviderCatalogModel[]
+}
+export interface ProviderCatalog {
+  providers: readonly ProviderCatalogProvider[]
+  accounts: readonly JsonRecord[]
+  models: readonly ProviderCatalogModel[]
+}
+export interface Tool extends JsonRecord {
+  tool_id: string
+  namespace: string
+  description: string
+  input_schema: JsonRecord
+  risk: string
+  requires_approval: boolean
+}
+export type ToolPolicyEffect = 'allow' | 'deny' | 'approval'
+export interface AgentToolPolicy extends JsonRecord {
+  id?: string
+  toolId: string
+  effect: ToolPolicyEffect
+}
+export interface Settings {
+  preferences: JsonRecord
+  updatedAt: number
+}
+export interface SessionMessage extends JsonRecord {
+  id?: string
+  role?: string
+  content?: string
+  createdAt?: number
+  metadata?: JsonRecord
+}
 export interface WorktreeSources { repositoryId: string; branches: unknown[]; providerRepository?: unknown; [key: string]: unknown }
 export interface Worktree {
   id: string
@@ -121,9 +178,10 @@ export interface Worktree {
 
 /** Paths without an implemented server endpoint are intentionally not emulated. */
 export const unsupportedFeatures = {
-  approvalDecisionWithoutSession: 'Approvals are answered through POST /api/session/{sessionId}/permissions/{approvalId}.',
+  agentInspection: 'The server exposes owner-scoped GET /api/agents, but no GET /api/agents/{id} route.',
+  approvalInspection: 'There is no approval-by-ID route. Lookup is available only by listing pending approvals, optionally scoped to sessionId.',
+  nativeTypedPerSessionWebSocket: 'The WebUI uses authenticated WebSocket /api/sessions/{sessionId}/events. This HTTP client exposes the current owner-scoped SSE /api/sse/stream feed instead.',
   remoteRepositoryRefresh: 'POST /api/projects/{projectId}/repository/refresh is present but returns UNSUPPORTED; policy-aware authenticated Git transport is not available.',
-  nativeTypedPerSessionWebSocket: 'Session events use the legacy authenticated WebSocket /api/sessions/{sessionId}/events; this package exposes the documented owner-scoped SSE feed instead.',
   projectSessionBulkDelete: 'No bulk-delete route exists.',
 } as const
 
@@ -194,15 +252,28 @@ export class SubpolarClient {
     return this.request('/api/auth/change-password', this.json('PUT', { currentPassword, newPassword }))
   }
 
-  async listAgents(): Promise<JsonRecord[]> {
-    const result = await this.request<{ agents: JsonRecord[] } | JsonRecord[]>('/api/agents')
+  async listAgents(): Promise<Agent[]> {
+    const result = await this.request<{ agents: Agent[] } | Agent[]>('/api/agents')
     return Array.isArray(result) ? result : result.agents
   }
-  async listModels(): Promise<JsonRecord[]> {
-    const result = await this.request<{ catalog: { providers?: JsonRecord[] }; providers?: JsonRecord[] } | JsonRecord[]>('/api/providers/catalog')
-    if (Array.isArray(result)) return result
-    return result.catalog?.providers ?? result.providers ?? []
+  async getProviderCatalog(options: { refresh?: boolean; force?: boolean } = {}): Promise<ProviderCatalog> {
+    const query = new URLSearchParams()
+    if (options.refresh !== undefined) query.set('refresh', String(options.refresh))
+    if (options.force !== undefined) query.set('force', String(options.force))
+    const suffix = query.size ? `?${query}` : ''
+    const result = await this.request<{ catalog: ProviderCatalog } | ProviderCatalog>(`/api/providers/catalog${suffix}`)
+    return 'catalog' in result ? result.catalog : result
   }
+  async listModels(): Promise<ProviderCatalogModel[]> {
+    return [...(await this.getProviderCatalog()).models]
+  }
+  getModelState(): Promise<ProviderModelState> { return this.request('/api/providers/model-state') }
+  updateModelState(input: { recent?: ProviderModelSelection; removeRecent?: ProviderModelSelection; favorite?: ProviderModelSelection }): Promise<ProviderModelState> {
+    return this.request('/api/providers/model-state', this.json('POST', input))
+  }
+  addRecentModel(model: ProviderModelSelection): Promise<ProviderModelState> { return this.updateModelState({ recent: model }) }
+  removeRecentModel(model: ProviderModelSelection): Promise<ProviderModelState> { return this.updateModelState({ removeRecent: model }) }
+  toggleFavoriteModel(model: ProviderModelSelection): Promise<ProviderModelState> { return this.updateModelState({ favorite: model }) }
 
   async listProjects(): Promise<Project[]> {
     const result = await this.request<{ projects: Project[] }>('/api/projects')
@@ -221,6 +292,10 @@ export class SubpolarClient {
   deleteProject(id: number): Promise<{ ok: boolean }> {
     return this.request(`/api/projects/${id}`, this.json('DELETE'))
   }
+  getSettings(): Promise<Settings> { return this.request('/api/settings') }
+  updateSettings(preferences: JsonRecord): Promise<Settings> {
+    return this.request('/api/settings', this.json('PATCH', { preferences }))
+  }
   async listSessions(options: { project?: string; directory?: string; search?: string; order?: 'asc' | 'desc'; limit?: number; cursor?: string } = {}): Promise<SessionList> {
     const query = new URLSearchParams()
     for (const [key, value] of Object.entries(options)) if (value !== undefined) query.set(key, String(value))
@@ -232,13 +307,13 @@ export class SubpolarClient {
     return result.session
   }
   getSession(id: string): Promise<Session> { return this.request(`/api/sessions/${encodeURIComponent(id)}`) }
-  async updateSession(id: string, input: { title?: string; archived?: boolean; tags?: string[] }): Promise<Session> {
+  async updateSession(id: string, input: { title?: string; archived?: boolean; tags?: string[]; model?: string }): Promise<Session> {
     const result = await this.request<{ session: Session }>(`/api/sessions/${encodeURIComponent(id)}`, this.json('PATCH', input))
     return result.session
   }
   deleteSession(id: string): Promise<{ ok: boolean }> { return this.request(`/api/sessions/${encodeURIComponent(id)}`, this.json('DELETE')) }
-  async messages(id: string): Promise<unknown[]> {
-    return (await this.request<{ messages: unknown[] }>(`/api/sessions/${encodeURIComponent(id)}/messages`)).messages
+  async messages(id: string): Promise<SessionMessage[]> {
+    return (await this.request<{ messages: SessionMessage[] }>(`/api/sessions/${encodeURIComponent(id)}/messages`)).messages
   }
   sendMessage(id: string, content: string, options: { messageID?: string; metadata?: JsonRecord } = {}): Promise<MessageDelivery> {
     return this.request(`/api/sessions/${encodeURIComponent(id)}/messages`, this.json('POST', { content, ...options }))
@@ -248,10 +323,26 @@ export class SubpolarClient {
       this.request(`/api/sessions/${encodeURIComponent(id)}/runs`, this.json('POST', { messageID: delivery.messageID })))
   }
   abortRun(id: string): Promise<unknown> { return this.request(`/api/sessions/${encodeURIComponent(id)}/abort`, this.json('POST')) }
+  async inspectRun(runId: string): Promise<JsonRecord> {
+    const result = await this.request<{ run: JsonRecord }>(`/api/runs/${encodeURIComponent(runId)}`)
+    return result.run
+  }
 
+  async listTools(): Promise<Tool[]> {
+    return (await this.request<{ tools: Tool[] }>('/api/settings/subpolar-tools')).tools
+  }
+  async listAgentToolPolicies(agentId: string): Promise<AgentToolPolicy[]> {
+    return (await this.request<{ policies: AgentToolPolicy[] }>(`/api/settings/agents/${encodeURIComponent(agentId)}/tool-policies`)).policies
+  }
+  async replaceAgentToolPolicies(agentId: string, policies: Array<Pick<AgentToolPolicy, 'toolId' | 'effect'>>): Promise<AgentToolPolicy[]> {
+    return (await this.request<{ policies: AgentToolPolicy[] }>(`/api/settings/agents/${encodeURIComponent(agentId)}/tool-policies`, this.json('PUT', { policies }))).policies
+  }
   async approvals(sessionId?: string): Promise<Approval[]> {
     const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''
     return this.request(`/api/permission${query}`)
+  }
+  async inspectApproval(approvalId: string, sessionId?: string): Promise<Approval | undefined> {
+    return (await this.approvals(sessionId)).find((approval) => approval.id === approvalId)
   }
   respondToApproval(sessionId: string, approvalId: string, response: 'approve' | 'reject' | 'once' | 'always'): Promise<JsonRecord> {
     return this.request(`/api/session/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(approvalId)}`, this.json('POST', { response }))
