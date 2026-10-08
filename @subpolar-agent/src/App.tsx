@@ -20,7 +20,6 @@ import { loginLoader, registerLoader, setupLoader } from './lib/auth-loaders'
 import { MobileTabBar } from '@/components/navigation/MobileTabBar'
 import { MobileSheetHost } from '@/components/navigation/MobileSheetHost'
 import { DesktopSidebar } from '@/components/navigation/DesktopSidebar'
-import { GlobalPermissionPrompt } from '@/components/session/GlobalPermissionPrompt'
 import { useTheme } from './hooks/useTheme'
 import { useSettingsDialog } from './hooks/useSettingsDialog'
 import { useRightEdgeSwipe, useSwipeBack } from './hooks/useMobile'
@@ -151,7 +150,6 @@ function AppShell() {
       </div>
       <MobileTabBar />
       <MobileSheetHost />
-      <GlobalPermissionPrompt />
       <HealthMonitor />
       <SettingsDialog />
       <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
