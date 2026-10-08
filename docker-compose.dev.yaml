@@ -28,6 +28,8 @@ services:
     env_file:
       - .env
     environment:
+      NODE_ENV: development
+      SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED: ${SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED:-false}
       POCKETBASE_URL: http://pocketbase:8090
       SUBPOLAR_AGENT_PORT: 4173
       SUBPOLAR_AGENT_HOST: 0.0.0.0
@@ -35,8 +37,8 @@ services:
       pocketbase:
         condition: service_healthy
     ports:
-      - "5173:5173"
-      - "4173:4173"
+      - "127.0.0.1:5173:5173"
+      - "127.0.0.1:4173:4173"
     volumes:
       - .:/app
       - ../../:/dev-workspace

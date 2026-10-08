@@ -20,6 +20,8 @@ import {
   authenticateRequest,
   authConfig,
   changePassword,
+  devAdminTokenEnabled,
+  createOneShotTokenIssuer,
   clearAuthCookie,
   signIn,
   signOut,
@@ -198,6 +200,14 @@ const generalChatRoot = join(projectsRoot, 'general-chat')
 const port = Number(process.env.SUBPOLAR_AGENT_PORT ?? 4173)
 const internalToken = process.env.SUBPOLAR_INTERNAL_TOKEN || randomBytes(32).toString('hex')
 process.env.SUBPOLAR_INTERNAL_TOKEN = internalToken
+const issueDevAdminApiToken = createOneShotTokenIssuer(async () => {
+  if (!devAdminTokenEnabled()) throw new Error('Development admin-token endpoint is disabled')
+  const email = process.env.ADMIN_EMAIL?.trim()
+  const password = process.env.ADMIN_PASSWORD
+  if (!email || !password) throw new Error('Development application-admin credentials are not configured')
+  const authenticated = await signIn(email, password)
+  return authenticated.token
+})
 let applicationDatabasePromise: ReturnType<typeof getPocketBaseAdmin> | undefined
 let runtimeStorePromise: Promise<PocketBaseRuntimeStore> | undefined
 let applicationCollectionsReady: Promise<void> | undefined
@@ -1722,7 +1732,8 @@ async function handleSocketMessage(socket: TranscriptSocket, raw: unknown, sessi
 const bridgeRequestDependencies = {
   applicationDatabase, runtimeStore, createCapabilitiesPayload, createHealthPayload,
   diagnosticsComponents, internalToken, requestId, authenticateGatewayCredential, GatewayAuthError, json,
-  authenticateRequest, voiceAuthorization, voiceBackends, handleVoiceRoute, authConfig, signOut, clearAuthCookie,
+  authenticateRequest, voiceAuthorization, voiceBackends, handleVoiceRoute, authConfig, devAdminTokenEnabled,
+  issueDevAdminApiToken, signOut, clearAuthCookie,
   body, signIn, signUp, changePassword, ownedSessionRecord, configuredSuggestionService, gatewayErrorResponse,
   listGatewayCredentials, publicGatewayCredential, createGatewayCredential, rotateGatewayCredential,
   revokeGatewayCredential, AutomationRepository, automationWorkerFor, ownedProjectIdForRoute, routeError,
