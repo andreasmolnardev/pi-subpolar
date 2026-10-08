@@ -335,13 +335,6 @@ export const settingsApi = {
     })
   },
 
-  discoverCalDavCalendars: async (serverUrl: string, username: string, password: string): Promise<{ calendars: Array<{ name: string; url: string; description?: string }> }> => {
-    return fetchWrapper(`${API_BASE_URL}/api/settings/discover-caldav-calendars`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ serverUrl, username, password }),
-    })
-  },
 
   getAgentsMd: async (): Promise<{ content: string }> => {
     return fetchWrapper(`${API_BASE_URL}/api/settings/agents-md`)

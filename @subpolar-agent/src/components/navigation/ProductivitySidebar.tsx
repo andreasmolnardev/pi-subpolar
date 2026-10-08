@@ -9,7 +9,6 @@ import {
   Clock3,
   Italic,
   ListTodo,
-  Mail,
   MoreVertical,
   NotebookPen,
   Plus,
@@ -36,7 +35,6 @@ const calendarColors = ['bg-sky-500', 'bg-violet-500', 'bg-emerald-500', 'bg-amb
 const tabs = [
   { id: 'calendar', label: 'Calendar', icon: CalendarDays },
   { id: 'todos', label: 'Todo', icon: CheckSquare },
-  { id: 'email', label: 'Email', icon: Mail },
   { id: 'notes', label: 'Notes', icon: NotebookPen },
 ] as const
 const emptyNotes: Note[] = []
@@ -134,7 +132,6 @@ export function ProductivitySidebar() {
               />
             )}
             {activeTab === 'todos' && <TodoPanel />}
-            {activeTab === 'email' && <EmailPanel />}
             {activeTab === 'notes' && <NotesPanel />}
           </div>
         </>
@@ -352,112 +349,6 @@ function TodoPanel() {
   )
 }
 
-function EmailPanel() {
-  const queryClient = useQueryClient()
-  const [isDialogOpen, setIsDialogOpen] = useState(false)
-  const [mailForm, setMailForm] = useState({
-    name: 'Mail',
-    imapHost: '',
-    imapPort: 993,
-    smtpHost: '',
-    smtpPort: 587,
-    username: '',
-    password: '',
-    fromAddress: '',
-  })
-  const { data, isLoading, isError, error } = useQuery({ queryKey: ['productivity-mail-accounts'], queryFn: productivityApi.getMailAccounts })
-  const accounts = data?.accounts ?? []
-  const createMailIntegration = useMutation({
-    mutationFn: () => settingsApi.createIntegration({
-      id: crypto.randomUUID(),
-      type: 'mail',
-      enabled: true,
-      name: mailForm.name.trim() || 'Mail',
-      imapHost: mailForm.imapHost.trim(),
-      imapPort: mailForm.imapPort,
-      smtpHost: mailForm.smtpHost.trim(),
-      smtpPort: mailForm.smtpPort,
-      username: mailForm.username.trim(),
-      password: mailForm.password,
-      fromAddress: mailForm.fromAddress.trim() || mailForm.username.trim(),
-    }),
-    onSuccess: () => {
-      setMailForm({
-        name: 'Mail',
-        imapHost: '',
-        imapPort: 993,
-        smtpHost: '',
-        smtpPort: 587,
-        username: '',
-        password: '',
-        fromAddress: '',
-      })
-      setIsDialogOpen(false)
-      queryClient.invalidateQueries({ queryKey: ['productivity-mail-accounts'] })
-      queryClient.invalidateQueries({ queryKey: ['settings-integrations'] })
-    },
-  })
-  const updateMailForm = (field: keyof typeof mailForm, value: string | number) => {
-    setMailForm((current) => ({ ...current, [field]: value }))
-  }
-  const submitMailForm = (event: FormEvent) => {
-    event.preventDefault()
-    if (!mailForm.imapHost.trim() || !mailForm.smtpHost.trim() || !mailForm.username.trim() || !mailForm.password) return
-    createMailIntegration.mutate()
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
-        <Input placeholder="Search mail accounts" className="h-9" />
-        <Button type="button" size="icon" onClick={() => setIsDialogOpen(true)}>
-          <Plus className="h-4 w-4" />
-        </Button>
-      </div>
-      <div className="flex flex-col gap-2">
-        {isLoading && <p className="px-1 text-sm text-muted-foreground">Loading mail accounts...</p>}
-        {isError && <p className="px-1 text-sm text-destructive">{error instanceof Error ? error.message : 'Failed to load mail accounts'}</p>}
-        {!isLoading && accounts.length === 0 && <p className="px-1 text-sm text-muted-foreground">No enabled IMAP/SMTP accounts configured.</p>}
-        {accounts.map((account) => (
-          <article key={account.id} className="rounded-lg border border-border bg-card p-3">
-            <div className="mb-3">
-              <h3 className="truncate text-sm font-medium text-foreground">{account.name}</h3>
-              <p className="truncate text-xs text-muted-foreground">{account.fromAddress || account.username}</p>
-            </div>
-            <div className="flex flex-col gap-2">
-              {account.folders.map((folder) => (
-                <button key={folder.role} type="button" className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent">
-                  <span className="truncate">{folder.name}</span>
-                  {folder.role === 'inbox' && <span className="shrink-0 text-xs text-muted-foreground">Inbox</span>}
-                </button>
-              ))}
-            </div>
-          </article>
-        ))}
-      </div>
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Email login</DialogTitle>
-          </DialogHeader>
-          <form onSubmit={submitMailForm} className="grid gap-3">
-            <Input value={mailForm.name} onChange={(event) => updateMailForm('name', event.target.value)} placeholder="Account name" />
-            <Input value={mailForm.username} onChange={(event) => updateMailForm('username', event.target.value)} placeholder="Username" />
-            <Input type="password" value={mailForm.password} onChange={(event) => updateMailForm('password', event.target.value)} placeholder="Password" />
-            <Input type="email" value={mailForm.fromAddress} onChange={(event) => updateMailForm('fromAddress', event.target.value)} placeholder="From address" />
-            <Input value={mailForm.imapHost} onChange={(event) => updateMailForm('imapHost', event.target.value)} placeholder="IMAP host" />
-            <Input type="number" min={1} max={65535} value={mailForm.imapPort} onChange={(event) => updateMailForm('imapPort', Number(event.target.value) || 993)} placeholder="IMAP port" />
-            <Input value={mailForm.smtpHost} onChange={(event) => updateMailForm('smtpHost', event.target.value)} placeholder="SMTP host" />
-            <Input type="number" min={1} max={65535} value={mailForm.smtpPort} onChange={(event) => updateMailForm('smtpPort', Number(event.target.value) || 587)} placeholder="SMTP port" />
-            <DialogFooter>
-              <Button type="submit" disabled={createMailIntegration.isPending}>Save account</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-    </div>
-  )
-}
 
 function NotesPanel() {
   const queryClient = useQueryClient()

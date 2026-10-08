@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CalendarDays, Loader2, Mail, Network, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import { Github, Loader2, Network, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -45,23 +46,6 @@ type IntegrationConfig =
       headers: Record<string, string>
     })
   | (IntegrationBase & {
-      type: 'caldav'
-      serverUrl: string
-      username: string
-      password: string
-      calendarUrl: string
-    })
-  | (IntegrationBase & {
-      type: 'mail'
-      imapHost: string
-      imapPort: number
-      smtpHost: string
-      smtpPort: number
-      username: string
-      password: string
-      fromAddress: string
-    })
-  | (IntegrationBase & {
       type: 'web-search'
       providers: Array<'exa' | 'firecrawl'>
     })
@@ -71,8 +55,6 @@ type IntegrationType = IntegrationConfig['type']
 const integrationTypes: Record<IntegrationType, { label: string; description: string }> = {
   mcp: { label: 'MCP', description: 'Model Context Protocol server access for agent tools' },
   openapi: { label: 'OpenAPI', description: 'OpenAPI JSON operations exposed as agent tools' },
-  caldav: { label: 'CalDAV', description: 'Calendar access for scheduling and availability workflows' },
-  mail: { label: 'IMAP/SMTP', description: 'Email inbox and sending configuration for mail-aware agents' },
   'web-search': { label: 'Web Search', description: 'Keyless Exa and Firecrawl MCP providers for the web.search agent tool' },
 }
 
@@ -91,37 +73,20 @@ function createIntegration(type: IntegrationType): IntegrationConfig {
     return { ...base, type, providerName: 'api', document: '{\n  "openapi": "3.0.0",\n  "info": { "title": "API", "version": "1.0.0" },\n  "servers": [{ "url": "https://api.example.com" }],\n  "paths": {}\n}', serverUrl: '', timeout: 15000, authType: 'spec', authKeyName: '', authPlacement: 'header', authValue: '', authUsername: '', authPassword: '', headers: {} }
   }
 
-  if (type === 'caldav') {
-    return { ...base, type, serverUrl: '', username: '', password: '', calendarUrl: '' }
-  }
 
-  if (type === 'web-search') {
-    return { ...base, id: 'web-search', name: 'Web Search', type, providers: ['exa', 'firecrawl'] }
-  }
-
-  return {
-    ...base,
-    type,
-    imapHost: '',
-    imapPort: 993,
-    smtpHost: '',
-    smtpPort: 587,
-    username: '',
-    password: '',
-    fromAddress: '',
-  }
+  return { ...base, id: 'web-search', name: 'Web Search', type, providers: ['exa', 'firecrawl'] }
 }
 
 function IntegrationIcon({ type }: { type: IntegrationType }) {
   if (type === 'mcp') return <Network className="h-4 w-4 text-muted-foreground" />
   if (type === 'openapi') return <Network className="h-4 w-4 text-muted-foreground" />
-  if (type === 'caldav') return <CalendarDays className="h-4 w-4 text-muted-foreground" />
   if (type === 'web-search') return <Search className="h-4 w-4 text-muted-foreground" />
-  return <Mail className="h-4 w-4 text-muted-foreground" />
+  return <Network className="h-4 w-4 text-muted-foreground" />
 }
 
 interface IntegrationDialogProps {
   open: boolean
+  initialType: 'mcp' | 'openapi'
   integration?: IntegrationConfig
   isSaving: boolean
   onOpenChange: (open: boolean) => void
@@ -165,23 +130,18 @@ function McpKeyValueFields({ label, description, values, disabled, onChange }: M
   )
 }
 
-function IntegrationDialog({ open, integration, isSaving, onOpenChange, onSave }: IntegrationDialogProps) {
+function IntegrationDialog({ open, initialType, integration, isSaving, onOpenChange, onSave }: IntegrationDialogProps) {
   const [formData, setFormData] = useState<IntegrationConfig>(createIntegration('mcp'))
   const [commandText, setCommandText] = useState('[]')
-  const [calDavCalendars, setCalDavCalendars] = useState<Array<{ name: string; url: string; description?: string }>>([])
-  const [isDiscoveringCalendars, setIsDiscoveringCalendars] = useState(false)
-  const [isTestingCalDav, setIsTestingCalDav] = useState(false)
   const [discoveredTools, setDiscoveredTools] = useState<Array<{ toolId: string; method: string; path: string; description: string }>>([])
   const [isDiscoveringOpenApi, setIsDiscoveringOpenApi] = useState(false)
 
   useEffect(() => {
     if (!open) return
-    setFormData(integration ?? createIntegration('mcp'))
+    setFormData(integration ?? createIntegration(initialType))
     setCommandText(formatMcpCommand(integration?.type === 'mcp' ? integration.command : []))
-    setCalDavCalendars([])
-    setIsTestingCalDav(false)
     setDiscoveredTools([])
-  }, [open, integration])
+  }, [open, initialType, integration])
 
   const updateField = (field: string, value: string | number | boolean | string[] | Record<string, string> | undefined) => {
     setFormData((current) => ({ ...current, [field]: value } as IntegrationConfig))
@@ -235,55 +195,6 @@ function IntegrationDialog({ open, integration, isSaving, onOpenChange, onSave }
     } finally { setIsDiscoveringOpenApi(false) }
   }
 
-  const discoverCalDavCalendars = async () => {
-    if (formData.type !== 'caldav') return
-    if (!formData.serverUrl.trim() || !formData.username.trim() || !formData.password.trim()) {
-      showToast.error('Server URL, username, and password are required')
-      return
-    }
-
-    setIsDiscoveringCalendars(true)
-    try {
-      const result = await settingsApi.discoverCalDavCalendars(formData.serverUrl, formData.username, formData.password)
-      setCalDavCalendars(result.calendars)
-      if (result.calendars.length === 0) {
-        showToast.error('No calendars found')
-        return
-      }
-      updateField('calendarUrl', result.calendars[0]?.url ?? '')
-      showToast.success(`Found ${result.calendars.length} calendar${result.calendars.length === 1 ? '' : 's'}`)
-    } catch (error) {
-      showToast.error(error instanceof Error ? error.message : 'Failed to discover calendars')
-    } finally {
-      setIsDiscoveringCalendars(false)
-    }
-  }
-
-  const testCalDavConnection = async () => {
-    if (formData.type !== 'caldav') return
-    if (!formData.serverUrl.trim() || !formData.username.trim() || !formData.password.trim()) {
-      showToast.error('Server URL, username, and password are required')
-      return
-    }
-
-    setIsTestingCalDav(true)
-    try {
-      const result = await settingsApi.discoverCalDavCalendars(formData.serverUrl, formData.username, formData.password)
-      setCalDavCalendars(result.calendars)
-      if (result.calendars.length === 0) {
-        showToast.error('Connected, but no calendars were found')
-        return
-      }
-      if (!formData.calendarUrl) {
-        updateField('calendarUrl', result.calendars[0]?.url ?? '')
-      }
-      showToast.success(`CalDAV connection works. Found ${result.calendars.length} calendar${result.calendars.length === 1 ? '' : 's'}`)
-    } catch (error) {
-      showToast.error(error instanceof Error ? error.message : 'CalDAV connection failed')
-    } finally {
-      setIsTestingCalDav(false)
-    }
-  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -306,9 +217,7 @@ function IntegrationDialog({ open, integration, isSaving, onOpenChange, onSave }
                   <SelectContent>
                     <SelectItem value="mcp">MCP</SelectItem>
                     <SelectItem value="openapi">OpenAPI</SelectItem>
-                    <SelectItem value="caldav">CalDAV</SelectItem>
-                  <SelectItem value="mail">IMAP/SMTP</SelectItem>
-                  <SelectItem value="web-search" disabled>Web Search (built-in)</SelectItem>
+                    <SelectItem value="web-search" disabled>Web Search (built-in)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -427,90 +336,6 @@ function IntegrationDialog({ open, integration, isSaving, onOpenChange, onSave }
               </>
             )}
 
-            {formData.type === 'caldav' && (
-              <>
-                <div className="space-y-2">
-                  <Label htmlFor="caldav-server-url">Server URL</Label>
-                  <Input id="caldav-server-url" placeholder="https://caldav.example.com" value={formData.serverUrl} onChange={(event) => updateField('serverUrl', event.target.value)} disabled={isSaving} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="caldav-username">Username</Label>
-                  <Input id="caldav-username" value={formData.username} onChange={(event) => updateField('username', event.target.value)} disabled={isSaving} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="caldav-password">Password</Label>
-                  <Input id="caldav-password" type="password" value={formData.password} onChange={(event) => updateField('password', event.target.value)} disabled={isSaving} />
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <Label htmlFor="caldav-calendar-url">Calendar</Label>
-                    <Button type="button" variant="outline" size="sm" onClick={discoverCalDavCalendars} disabled={isSaving || isDiscoveringCalendars}>
-                      {isDiscoveringCalendars && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                      Discover
-                    </Button>
-                  </div>
-                  {calDavCalendars.length > 0 ? (
-                    <Select value={formData.calendarUrl} onValueChange={(value) => updateField('calendarUrl', value)} disabled={isSaving}>
-                      <SelectTrigger id="caldav-calendar-url">
-                        <SelectValue placeholder="Select a calendar" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {calDavCalendars.map((calendar) => (
-                          <SelectItem key={calendar.url} value={calendar.url}>{calendar.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <Input id="caldav-calendar-url" value={formData.calendarUrl} onChange={(event) => updateField('calendarUrl', event.target.value)} disabled={isSaving} placeholder="Discover from server response" />
-                  )}
-                </div>
-                <div className="rounded-lg border border-border p-4 space-y-3">
-                  <div>
-                    <h3 className="font-medium text-foreground">Test CalDAV</h3>
-                    <p className="text-sm text-muted-foreground">Verify the server URL and credentials by discovering calendars from the CalDAV response.</p>
-                  </div>
-                  <Button type="button" variant="outline" onClick={testCalDavConnection} disabled={isSaving || isTestingCalDav}>
-                    {isTestingCalDav && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                    Test Connection
-                  </Button>
-                </div>
-              </>
-            )}
-
-            {formData.type === 'mail' && (
-              <>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="mail-imap-host">IMAP Host</Label>
-                    <Input id="mail-imap-host" placeholder="imap.example.com" value={formData.imapHost} onChange={(event) => updateField('imapHost', event.target.value)} disabled={isSaving} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="mail-imap-port">IMAP Port</Label>
-                    <Input id="mail-imap-port" type="number" min={1} max={65535} value={formData.imapPort} onChange={(event) => updateField('imapPort', Number(event.target.value) || 993)} disabled={isSaving} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="mail-smtp-host">SMTP Host</Label>
-                    <Input id="mail-smtp-host" placeholder="smtp.example.com" value={formData.smtpHost} onChange={(event) => updateField('smtpHost', event.target.value)} disabled={isSaving} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="mail-smtp-port">SMTP Port</Label>
-                    <Input id="mail-smtp-port" type="number" min={1} max={65535} value={formData.smtpPort} onChange={(event) => updateField('smtpPort', Number(event.target.value) || 587)} disabled={isSaving} />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="mail-username">Username</Label>
-                  <Input id="mail-username" value={formData.username} onChange={(event) => updateField('username', event.target.value)} disabled={isSaving} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="mail-password">Password</Label>
-                  <Input id="mail-password" type="password" value={formData.password} onChange={(event) => updateField('password', event.target.value)} disabled={isSaving} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="mail-from-address">From Address</Label>
-                  <Input id="mail-from-address" type="email" placeholder="agent@example.com" value={formData.fromAddress} onChange={(event) => updateField('fromAddress', event.target.value)} disabled={isSaving} />
-                </div>
-              </>
-            )}
           </div>
         </form>
 
@@ -530,13 +355,17 @@ export function IntegrationsSettings() {
   const queryClient = useQueryClient()
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingIntegrationId, setEditingIntegrationId] = useState<string | null>(null)
-  const [testingCalDavIntegrationId, setTestingCalDavIntegrationId] = useState<string | null>(null)
+  const [showGitSettings, setShowGitSettings] = useState(false)
+  const [newIntegrationType, setNewIntegrationType] = useState<'mcp' | 'openapi'>('mcp')
   const { data, isLoading } = useQuery<{ integrations: IntegrationConfig[] }>({
     queryKey: ['integrations'],
     queryFn: settingsApi.listIntegrations,
   })
 
-  const integrations = useMemo(() => data?.integrations ?? [], [data?.integrations])
+  const integrations = useMemo(
+    () => (data?.integrations ?? []).filter((integration) => integration.type === 'mcp' || integration.type === 'openapi' || integration.type === 'web-search'),
+    [data?.integrations]
+  )
   const refreshIntegrations = () => queryClient.invalidateQueries({ queryKey: ['integrations'] })
 
   const createMutation = useMutation<IntegrationConfig, Error, IntegrationConfig>({
@@ -561,8 +390,9 @@ export function IntegrationsSettings() {
     [editingIntegrationId, integrations]
   )
 
-  const openAddDialog = () => {
+  const openAddDialog = (type: 'mcp' | 'openapi') => {
     setEditingIntegrationId(null)
+    setNewIntegrationType(type)
     setIsDialogOpen(true)
   }
 
@@ -608,27 +438,6 @@ export function IntegrationsSettings() {
     }
   }
 
-  const testCalDavIntegration = async (integration: IntegrationConfig) => {
-    if (integration.type !== 'caldav') return
-    if (!integration.serverUrl.trim() || !integration.username.trim() || !integration.password.trim()) {
-      showToast.error('Server URL, username, and password are required')
-      return
-    }
-
-    setTestingCalDavIntegrationId(integration.id)
-    try {
-      const result = await settingsApi.discoverCalDavCalendars(integration.serverUrl, integration.username, integration.password)
-      if (result.calendars.length === 0) {
-        showToast.error('Connected, but no calendars were found')
-        return
-      }
-      showToast.success(`CalDAV connection works. Found ${result.calendars.length} calendar${result.calendars.length === 1 ? '' : 's'}`)
-    } catch (error) {
-      showToast.error(error instanceof Error ? error.message : 'CalDAV connection failed')
-    } finally {
-      setTestingCalDavIntegrationId(null)
-    }
-  }
 
   if (isLoading) {
     return (
@@ -645,23 +454,25 @@ export function IntegrationsSettings() {
           <h2 className="text-lg font-semibold text-foreground">Integrations</h2>
           <p className="text-sm text-muted-foreground">Configure external services agents can use, including Git provider accounts.</p>
         </div>
-        <Button type="button" size="sm" onClick={openAddDialog}>
-          <Plus className="h-4 w-4 mr-2" />
-          Add Integration
-        </Button>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button type="button" size="sm"><Plus className="h-4 w-4 mr-2" />Add integration</Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-48 p-1">
+            <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => setShowGitSettings(true)}><Github className="mr-2 h-4 w-4" />Git</Button>
+            <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => openAddDialog('mcp')}><Network className="mr-2 h-4 w-4" />MCP</Button>
+            <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => openAddDialog('openapi')}><Network className="mr-2 h-4 w-4" />OpenAPI</Button>
+          </PopoverContent>
+        </Popover>
       </div>
 
       <div className="mt-6">
-        <GitProviderAccountsSettings />
+        {showGitSettings && <GitProviderAccountsSettings />}
         {integrations.length === 0 ? (
           <div className="rounded-lg border  text-center">
             <Network className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
             <h3 className="font-medium text-foreground mb-1">No integrations configured</h3>
-            <p className="text-sm text-muted-foreground mb-4">Add MCP, CalDAV, or IMAP/SMTP connections for agents to use.</p>
-            <Button type="button" onClick={openAddDialog}>
-              <Plus className="h-4 w-4 mr-2" />
-              Add Integration
-            </Button>
+            <p className="text-sm text-muted-foreground mb-4">Add MCP or OpenAPI connections for agents to use.</p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -677,12 +488,6 @@ export function IntegrationsSettings() {
                   </div>
                   <p className="text-sm text-muted-foreground truncate">{integrationTypes[integration.type].description}</p>
                 </div>
-                {integration.type === 'caldav' && (
-                  <Button type="button" variant="outline" size="sm" onClick={() => testCalDavIntegration(integration)} disabled={isUpdating || testingCalDavIntegrationId === integration.id}>
-                    {testingCalDavIntegrationId === integration.id && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                    Test
-                  </Button>
-                )}
                 <Switch checked={integration.enabled} onCheckedChange={(checked) => toggleIntegration(integration.id, checked)} disabled={isUpdating} />
                 <Button type="button" variant="ghost" size="icon" onClick={() => openEditDialog(integration.id)} disabled={isUpdating}>
                   <Pencil className="h-4 w-4" />
@@ -700,6 +505,7 @@ export function IntegrationsSettings() {
 
       <IntegrationDialog
         open={isDialogOpen}
+        initialType={newIntegrationType}
         integration={editingIntegration}
         isSaving={isUpdating}
         onOpenChange={setIsDialogOpen}

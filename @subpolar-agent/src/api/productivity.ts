@@ -29,13 +29,6 @@ export interface Note {
   updated_at: number
 }
 
-export interface MailAccount {
-  id: string
-  name: string
-  username: string
-  fromAddress: string
-  folders: Array<{ name: string; role: string }>
-}
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
 
@@ -106,7 +99,4 @@ export const productivityApi = {
     })
   },
 
-  getMailAccounts: async (): Promise<{ accounts: MailAccount[] }> => {
-    return fetchWrapper(`${API_BASE_URL}/api/productivity/mail/accounts`)
-  },
 }

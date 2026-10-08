@@ -26,6 +26,51 @@ function renderSettings() {
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
+describe('IntegrationsSettings integration choices', () => {
+  it('keeps Git hidden until selected from the Add integration popover', async () => {
+    vi.spyOn(settingsApi, 'listIntegrations').mockResolvedValue({ integrations: [] })
+
+    renderSettings()
+    await screen.findByText('No integrations configured')
+    expect(screen.queryByRole('heading', { name: 'Git provider accounts' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add integration' }))
+    expect(screen.getByRole('button', { name: 'Git' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'MCP' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'OpenAPI' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Git' }))
+    expect(await screen.findByRole('heading', { name: 'Git provider accounts' })).toBeInTheDocument()
+  })
+
+  it('opens the integration dialog with the selected type', async () => {
+    vi.spyOn(settingsApi, 'listIntegrations').mockResolvedValue({ integrations: [] })
+
+    renderSettings()
+    await screen.findByText('No integrations configured')
+    fireEvent.click(screen.getByRole('button', { name: 'Add integration' }))
+    fireEvent.click(screen.getByRole('button', { name: 'OpenAPI' }))
+
+    expect(await screen.findByLabelText('Provider name')).toBeInTheDocument()
+    expect(screen.getByLabelText('OpenAPI JSON')).toBeInTheDocument()
+  })
+
+  it('does not render previously saved CalDAV or mail integrations', async () => {
+    vi.spyOn(settingsApi, 'listIntegrations').mockResolvedValue({
+      integrations: [
+        { id: 'old-calendar', type: 'caldav', name: 'Calendar', enabled: true },
+        { id: 'old-mail', type: 'mail', name: 'Mail', enabled: true },
+      ] as never,
+    })
+
+    renderSettings()
+
+    expect(await screen.findByText('No integrations configured')).toBeInTheDocument()
+    expect(screen.queryByText('Calendar')).not.toBeInTheDocument()
+    expect(screen.queryByText('Mail')).not.toBeInTheDocument()
+  })
+})
+
 describe('IntegrationsSettings MCP command editing', () => {
   it('preserves saved argv arguments containing spaces when editing and saving', async () => {
     vi.spyOn(settingsApi, 'listIntegrations').mockResolvedValue({ integrations: [integration] })
