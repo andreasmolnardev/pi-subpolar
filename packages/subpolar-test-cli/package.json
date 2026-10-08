@@ -1,0 +1,9 @@
+{
+  "name": "@subpolar/test-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "subpolar-test-cli": "./src/cli.ts" },
+  "exports": { ".": "./src/cli.ts" },
+  "scripts": { "start": "bun ./src/cli.ts", "test": "bun test test" },
+  "dependencies": { "@subpolar/client": "workspace:*" }
+}

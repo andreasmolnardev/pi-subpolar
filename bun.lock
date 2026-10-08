@@ -90,6 +90,10 @@
         "@subpolar/shared": "workspace:*",
       },
     },
+    "packages/subpolar-client": {
+      "name": "@subpolar/client",
+      "version": "0.1.0",
+    },
     "packages/subpolar-contracts": {
       "name": "@subpolar/shared",
       "version": "0.1.0",
@@ -127,6 +131,16 @@
       "version": "0.1.0",
       "dependencies": {
         "@subpolar/shared": "workspace:*",
+      },
+    },
+    "packages/subpolar-test-cli": {
+      "name": "@subpolar/test-cli",
+      "version": "0.1.0",
+      "bin": {
+        "subpolar-test-cli": "./src/cli.ts",
+      },
+      "dependencies": {
+        "@subpolar/client": "workspace:*",
       },
     },
     "packages/subpolar-tools": {
@@ -552,6 +566,8 @@
 
     "@standard-schema/utils": ["@standard-schema/utils@0.3.0", "", {}, "sha512-e7Mew686owMaPJVNNLs55PUvgz371nKgwsc4vxE49zsODpJEnxgxRo2y/OKrqueavXgZNMDVj3DdHFlaSAeU8g=="],
 
+    "@subpolar/client": ["@subpolar/client@workspace:packages/subpolar-client"],
+
     "@subpolar/db": ["@subpolar/db@workspace:packages/subpolar-persistance-pocketbase"],
 
     "@subpolar/db-local": ["@subpolar/db-local@workspace:packages/subpolar-persistance-local"],
@@ -566,9 +582,11 @@
 
     "@subpolar/shared-operations": ["@subpolar/shared-operations@workspace:packages/subpolar-operations"],
 
-    "@subpolar/tools": ["@subpolar/tools@workspace:packages/subpolar-tools"],
-
     "@subpolar/subpolar-agent": ["@subpolar/subpolar-agent@workspace:@subpolar-agent"],
+
+    "@subpolar/test-cli": ["@subpolar/test-cli@workspace:packages/subpolar-test-cli"],
+
+    "@subpolar/tools": ["@subpolar/tools@workspace:packages/subpolar-tools"],
 
     "@tailwindcss/node": ["@tailwindcss/node@4.3.3", "", { "dependencies": { "@jridgewell/remapping": "^2.3.5", "enhanced-resolve": "^5.24.1", "jiti": "^2.7.0", "lightningcss": "1.32.0", "magic-string": "^0.30.21", "source-map-js": "^1.2.1", "tailwindcss": "4.3.3" } }, "sha512-/T8IKEsf9VTU6tLjgC7+sv2mOPtQxzE2jMw7u4Tt40Tx+QSZxpzh95/H6cMKoja9XuW7iMdLJYBB0o9G1CaAgg=="],
 

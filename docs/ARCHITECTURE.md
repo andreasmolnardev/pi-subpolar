@@ -196,12 +196,17 @@ The architecture is considered implemented when:
 
 ## Current implementation status
 
-The production Subpolar Agent composition has completed the run-lifecycle cutover:
+The current repository has a durable **Subpolar run/event record layer** backed by PocketBase, but agent execution is still performed by the legacy transient `PiSdkSession` / Pi SDK pathway. This is not Pi Durable: PocketBase records do not checkpoint Pi Durable tasks, and the current executor does not provide execution-task recovery after process restart. The Pi Durable migration remains unimplemented and must be treated as a separate engine cutover.
+
+The `@subpolar/client` and `@subpolar/test-cli` packages are being introduced as user-authenticated HTTP/SSE clients. The WebUI still has existing WebSocket and direct API interactions; it has not yet been verified or converted to use only the shared client. `runs inspect` also requires a new owner-scoped public route or a documented API design.
+
+The production Subpolar Agent composition has completed the PocketBase run-record lifecycle cutover:
 
 - `POST /api/sessions/:id/runs` constructs a fresh runtime with an authenticated owner-bound PocketBase adapter.
 - `subpolar_runs` and `subpolar_run_events` are durable sources for run outcomes and replay.
-- Pi execution is wrapped by `@subpolar/runtime-pi` and uses `SessionManager.inMemory()` only.
-- The active-session map is only a streaming/cancellation fast path; terminal replay does not require it.
+- Pi execution still uses the legacy `PiSdkSession` and an in-memory session manager; it is not yet backed by Pi Durable storage/tasks.
+- PocketBase run/event records support application-level status and replay, but do not imply restart recovery of the underlying model/tool execution.
+- The active-session map remains part of the legacy Pi execution/streaming path.
 - Existing routes for projects, history, usage, tools, agents, approvals, voice, automations, subagents, and CLI compatibility remain in place.
 
 The direct core gateway cutover is complete. Subpolar Agent constructs owner-scoped core gateways for Pi and HTTP tool calls, resolves current PocketBase-backed policy before execution, persists approval/audit/idempotency state, and retains only the execution adapters and transport concerns. Legacy migration code and compatibility data projections remain where needed for existing records and clients; they are not active tool authority.

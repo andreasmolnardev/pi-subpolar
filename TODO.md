@@ -1,5 +1,23 @@
 # Subpolar Implementation TODO
 
+## Pi Durable migration branch progress (2026-10-08)
+
+Branch: `pi-durable` (created from clean `main` at `339d6e0`). This section records work for the requested modular architecture, shared API client, remote test CLI, and Pi Durable migration; the historic roadmap/checkpoint below is retained as prior project context and is not evidence that these new acceptance criteria are complete.
+
+- [x] Audited current package boundaries, `docs/ARCHITECTURE.md`, and historical `fcf4137`; found package manifest/source-name drift and a 1,768-line bridge composition module.
+- [x] Read the latest `@earendil-works/pi-durable` documentation and examples. Current documented latest is 1.1.0; the package is experimental, requires a single storage owner, and does not provide exactly-once external effects or a transcript importer.
+- [x] Added initial `@subpolar/client` for existing authenticated HTTP routes and owner-scoped SSE, with request/error types and focused tests.
+- [x] Added initial `@subpolar/test-cli` using `@subpolar/client`, defaulting to `http://localhost:4173`, with user bearer auth, JSON/JSONL output, request IDs, timeout and simple declarative scenarios.
+- [ ] Expand the client/CLI to cover the full requested contract (session configuration and parameters, recovery assertions, approvals/worktrees, reconnect semantics, run inspection) and verify every route against the running server. `runs inspect` has no current public route; CLI must report this rather than guess.
+- [ ] Add isolated real-server integration harness, deterministic model tests, restart/recovery and tool-policy scenarios; current CLI tests are mocked package tests, not live server E2E.
+- [ ] Establish target names/exports for contracts, core, adapters, operations and server, then align manifests and imports without breaking existing package names.
+- [ ] Extract bridge composition/domain responsibilities into packages and verify WebUI uses the shared HTTP/streaming client exclusively.
+- [ ] Define the internal Subpolar agent-engine contract and a Pi Durable adapter backed by single-server SQLite. Resolve provider credential/model/profile/tool/approval integration and replay classifications before connecting it to production.
+- [ ] Build and test transcript migration preserving tool calls, compaction and existing session access; retain the legacy executor until parity and recovery pass.
+- [ ] Add explicit restart recovery, session reattachment and committed event projection tests before execution cutover.
+
+Known migration constraints from the Durable documentation: SQLite storage is single-server and single-owner; no multi-process safety is claimed. Tool replay is unsafe by default and only repeats explicitly safe tools; effects may have occurred before a crash checkpoint. Durable APIs are experimental and storage/projection compatibility must be pinned and tested. Do not route around the Subpolar tool gateway or expose administrator credentials.
+
 ## Orchestration Status
 
 Current phase: Phase 0-16 implementation checkpoint
