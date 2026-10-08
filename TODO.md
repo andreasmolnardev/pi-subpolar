@@ -23,6 +23,8 @@ Branch: `pi-durable` (created from clean `main` at `339d6e0`). This section reco
 - [ ] Build and test transcript migration preserving tool calls, compaction and existing session access; retain the legacy executor until parity and recovery pass.
 - [ ] Add explicit restart recovery, session reattachment, committed event projection, and interrupted-side-effect tests before execution cutover.
 
+Validation checkpoint (2026-10-08): root typechecks passed; `test:server` passed 474 tests across 48 files; `test:core` passed 139 tests; production build passed with existing Zod annotation/chunk-size warnings; focused client, CLI, Durable-adapter, session-route, SSE-route, and WebUI repository-read tests passed. The live Compose-backed test used the legacy Pi runtime and confirmed `web.search` execution; it does **not** prove Durable production execution or restart recovery.
+
 Known migration constraints from the Durable documentation: SQLite storage is single-server and single-owner; no multi-process safety is claimed. Tool replay is unsafe by default and only repeats explicitly safe tools; effects may have occurred before a crash checkpoint. Durable APIs are experimental and storage/projection compatibility must be pinned and tested. Do not route around the Subpolar tool gateway or expose administrator credentials.
 
 ## Orchestration Status
