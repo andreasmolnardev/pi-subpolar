@@ -21,7 +21,7 @@ Prerequisites:
 
 - Bun 1.x
 - PocketBase binary on `PATH` (or `E2E_POCKETBASE_BIN`)
-- installed root/WebUI dependencies, including `@webui/node_modules`
+- installed root/Subpolar Agent dependencies, including `@subpolar-agent/node_modules`
 - a working bridge and Vite runtime in the current checkout
 
 Run from the repository root:
@@ -30,7 +30,7 @@ Run from the repository root:
 bun e2e/harness.ts
 ```
 
-The runner starts PocketBase, the Bun bridge, and Vite on dedicated test ports (`48090`, `4173`, and `48174` by default), waits for each health/readiness endpoint, and exits non-zero on startup failure. It has bounded readiness and shutdown timeouts and removes its temporary stack during cleanup. The bridge default remains `4173` because the checked-in Vite proxy targets that port. Override ports with `E2E_POCKETBASE_PORT`, `E2E_BRIDGE_PORT`, and `E2E_WEBUI_PORT`. Override complete commands with `E2E_POCKETBASE_COMMAND`, `E2E_BRIDGE_COMMAND`, and `E2E_WEBUI_COMMAND`; commands are whitespace-split and do not run through a shell.
+The runner starts PocketBase, the Bun bridge, and Vite on dedicated test ports (`48090`, `4173`, and `48174` by default), waits for each health/readiness endpoint, and exits non-zero on startup failure. It has bounded readiness and shutdown timeouts and removes its temporary stack during cleanup. The bridge default remains `4173` because the checked-in Vite proxy targets that port. Override ports with `E2E_POCKETBASE_PORT`, `E2E_BRIDGE_PORT`, and `E2E_SUBPOLAR_AGENT_PORT`. Override complete commands with `E2E_POCKETBASE_COMMAND`, `E2E_BRIDGE_COMMAND`, and `E2E_SUBPOLAR_AGENT_COMMAND`; commands are whitespace-split and do not run through a shell.
 
 All data is created below a fresh system temporary directory: PocketBase data, Pi session data, project root, and per-process logs. Credentials are deterministic test-only values. Repository `pocketbase/pb_data`, `.env`, home directories, and production credentials are not read or written. Processes are terminated and temporary data is removed on exit. Use `--keep` or `E2E_KEEP_ARTIFACTS=true` to retain the temporary directory; failed runs retain it automatically and print its exact path.
 

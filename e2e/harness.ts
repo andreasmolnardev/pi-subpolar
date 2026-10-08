@@ -54,7 +54,7 @@ export async function startHarness(options: { keep?: boolean } = {}): Promise<Ha
   // Vite's checked-in proxy target is 127.0.0.1:4173; keep that boundary
   // unchanged while isolating the disposable stack from normal PB port 8090.
   const bridgePort = port('E2E_BRIDGE_PORT', 4173)
-  const webPort = port('E2E_WEBUI_PORT', 48174)
+  const webPort = port('E2E_SUBPOLAR_AGENT_PORT', 48174)
   const directory = await mkdtemp(join(tmpdir(), e2eTempPrefix))
   const paths = {
     data: join(directory, 'pocketbase'),
@@ -91,7 +91,7 @@ export async function startHarness(options: { keep?: boolean } = {}): Promise<Ha
     }
     await waitFor(`http://127.0.0.1:${pocketBasePort}/api/health`, 'PocketBase')
 
-    spawnLogged('bridge', command(process.env.E2E_BRIDGE_COMMAND, ['bun', '@webui/bridge.ts']), {
+    spawnLogged('bridge', command(process.env.E2E_BRIDGE_COMMAND, ['bun', '@subpolar-agent/bridge.ts']), {
       POCKETBASE_URL: `http://127.0.0.1:${pocketBasePort}`,
       POCKETBASE_EMAIL: credentials.email,
       POCKETBASE_PASSWORD: credentials.password,
@@ -99,7 +99,7 @@ export async function startHarness(options: { keep?: boolean } = {}): Promise<Ha
       ADMIN_PASSWORD: credentials.password,
       AUTH_REGISTRATION_ENABLED: 'false',
       AUTH_SECURE_COOKIES: 'false',
-      WEBUI_PORT: String(bridgePort),
+      SUBPOLAR_AGENT_PORT: String(bridgePort),
       PI_CODING_AGENT_DIR: paths.sessions,
       SUBPOLAR_PROJECT_ROOT: paths.project,
       HOME: paths.home,
@@ -109,14 +109,14 @@ export async function startHarness(options: { keep?: boolean } = {}): Promise<Ha
     })
     await waitFor(`http://127.0.0.1:${bridgePort}/api/v1/health`, 'bridge')
 
-    spawnLogged('webui', command(process.env.E2E_WEBUI_COMMAND, ['npm', '--prefix', '@webui', 'run', 'dev', '--', '--host', '127.0.0.1', '--port', String(webPort)]), {
-      WEBUI_PORT: String(bridgePort),
+    spawnLogged('subpolar-agent', command(process.env.E2E_SUBPOLAR_AGENT_COMMAND, ['npm', '--prefix', '@subpolar-agent', 'run', 'dev', '--', '--host', '127.0.0.1', '--port', String(webPort)]), {
+      SUBPOLAR_AGENT_PORT: String(bridgePort),
       HOME: paths.home,
       XDG_CONFIG_HOME: join(paths.home, '.config'),
       XDG_DATA_HOME: join(paths.home, '.local', 'share'),
       XDG_CACHE_HOME: join(paths.home, '.cache'),
     })
-    await waitFor(`http://127.0.0.1:${webPort}/`, 'WebUI')
+    await waitFor(`http://127.0.0.1:${webPort}/`, 'Subpolar Agent')
     console.log(`isolated harness ready: http://127.0.0.1:${webPort}`)
     console.log(`credentials: ${credentials.email} / ${credentials.password}`)
     const cleanup = async () => {
@@ -148,7 +148,7 @@ export async function startHarness(options: { keep?: boolean } = {}): Promise<Ha
 async function main(): Promise<void> {
   if (process.argv.includes('--help')) {
     console.log('Usage: bun e2e/harness.ts [--keep]')
-    console.log('Starts isolated PocketBase, bridge, and Vite processes; requires Bun, PocketBase, and installed WebUI dependencies.')
+    console.log('Starts isolated PocketBase, bridge, and Vite processes; requires Bun, PocketBase, and installed Subpolar Agent dependencies.')
     return
   }
   let harness: Harness | undefined

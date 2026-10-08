@@ -45,7 +45,7 @@ test.skipIf(!liveEnabled)('live disposable bridge smoke', async () => {
         harness = await startHarness()
         baseUrl = harness.baseUrl
       } catch (error) {
-        skip(`PocketBase/bridge/WebUI unavailable (${error instanceof Error ? error.message : String(error)})`)
+        skip(`PocketBase/bridge/Subpolar Agent unavailable (${error instanceof Error ? error.message : String(error)})`)
         return
       }
     }

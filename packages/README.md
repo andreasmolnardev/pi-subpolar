@@ -2,7 +2,7 @@
 
 These packages are a small, local foundation for composition. Pi execution is
 available through the injected `@subpolar/adapter-pi` port; it does not import
-the Pi runtime itself. Multi-process durability, HTTP, WebUI, PocketBase, and
+the Pi runtime itself. Multi-process durability, HTTP, Subpolar Agent, PocketBase, and
 approval persistence remain outside this boundary.
 
 ## Package Boundaries
@@ -13,7 +13,7 @@ Installed workspace consumers should import `@subpolar/contracts`,
 package's `exports` map. The repository's source-only test path intentionally
 uses relative source imports as a fallback because this checkout has no
 installed workspace links or lockfile. Those imports must stay within these
-packages and must not pull in WebUI, PocketBase, HTTP, or server modules. Core
+packages and must not pull in Subpolar Agent, PocketBase, HTTP, or server modules. Core
 and contracts do not import Pi.
 
 ## Gateway Semantics

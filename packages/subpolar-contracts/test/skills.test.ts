@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createSkill, InMemorySkillRepository, listSkills, resolveEffectiveSkills, SkillConflictError, SkillNotFoundError, SkillValidationError, updateSkill } from "../src/index.ts";
+import { createSkill, DEVELOPMENT_WORKFLOW_SKILL, InMemorySkillRepository, listSkills, resolveEffectiveSkills, SkillConflictError, SkillNotFoundError, SkillValidationError, updateSkill } from "../src/index.ts";
 
 const globalSkill = createSkill({ id: "docs", name: "docs", scope: "global", mode: "always-loaded", body: "global body", metadata: { kind: "guide" } });
 
@@ -7,6 +7,25 @@ describe("skill contracts", () => {
   test("validates stable names, scope requirements, and bounds", () => {
     expect(() => createSkill({ id: "bad id", name: "Bad Name", scope: "agent", mode: "always-loaded", body: "", agentId: "a" })).toThrow(SkillValidationError);
     expect(() => createSkill({ id: "x", name: "x", scope: "project", mode: "disabled", body: "" })).toThrow("project skills require projectId");
+  });
+
+  test("stores only canonical tool IDs as non-authoritative references", async () => {
+    const repository = new InMemorySkillRepository();
+    const skill = await repository.create("alice", { id: "tool-guide", name: "tool-guide", scope: "global", mode: "discoverable", body: "guide", toolIds: ["read", "acme/search"] });
+    expect(skill.toolIds).toEqual(["read", "acme/search"]);
+    await expect(repository.create("alice", { id: "bad-tool", name: "bad-tool", scope: "global", mode: "discoverable", body: "", toolIds: [" acme/search"] })).rejects.toBeInstanceOf(SkillValidationError);
+    await expect(repository.create("alice", { id: "duplicate-tool", name: "duplicate-tool", scope: "global", mode: "discoverable", body: "", toolIds: ["read", "read"] })).rejects.toThrow("toolIds must not contain duplicates");
+    await repository.update("alice", { id: "tool-guide", version: 2, toolIds: ["write"] });
+    expect((await repository.get("alice", "tool-guide")).toolIds).toEqual(["write"]);
+  });
+
+  test("provides the default development workflow without tool grants", () => {
+    expect(DEVELOPMENT_WORKFLOW_SKILL).toMatchObject({ id: "development-workflow", scope: "global", mode: "always-loaded", toolIds: [] });
+    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("selected worktree");
+    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("user-configured project validation-command metadata");
+    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("normal tool gateway");
+    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("linked tools");
+    expect(DEVELOPMENT_WORKFLOW_SKILL.body).toContain("Do not commit or push unless explicitly requested");
   });
 
   test("requires deterministic monotonic versions", () => {

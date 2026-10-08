@@ -1,4 +1,4 @@
-import type { AgentRunPort, JsonValue, RunProgressEmitter, RunRequest } from "../../subpolar-contracts/src/index.ts";
+import type { AgentRunPort, JsonValue, RunProgressEmitter, RunRequest, RuntimeToolInvoker, StatelessExecutor } from "../../subpolar-contracts/src/index.ts";
 
 export interface PiExecutionContext {
   principal: RunRequest["context"]["principal"];
@@ -30,6 +30,7 @@ export interface PiTranscriptProjection {
 
 export interface PiRunRequest extends RunRequest {
   transcript?: PiTranscriptProjection | readonly PiTranscriptEntry[];
+  tools?: RuntimeToolInvoker;
 }
 
 export interface PiStreamEvent {
@@ -45,6 +46,7 @@ export interface PiExecutionRequest {
   transcript: PiTranscriptProjection;
   signal?: AbortSignal;
   emit: (event: PiStreamEvent | unknown) => void | Promise<void>;
+  tools?: RuntimeToolInvoker;
 }
 
 export interface PiExecutor {
@@ -236,6 +238,7 @@ export function createPiRunPort<Config>(factory: PiExecutorFactory<Config>, conf
           context: mapContext(request),
           transcript: normalizePiTranscriptProjection(request.transcript),
           signal: request.signal,
+          tools: request.tools,
           emit: async (event) => {
             const normalized = normalizePiStreamEvent(event);
             await emit?.({ type: normalized.type, data: normalized.data });
@@ -323,6 +326,26 @@ export function createInMemoryPiExecutor(
   handler?: (request: PiExecutionRequest) => unknown | Promise<unknown>,
 ): InMemoryPiExecutor {
   return new InMemoryPiExecutor(handler);
+}
+
+export { createPiSdkExecutorFactory, loadPiSdk, PI_SDK_MODULE } from "./sdk.ts";
+export type { PiSdkModule, PiSdkConfig } from "./sdk.ts";
+
+/** Share request/context, gateway tools, cancellation and events with any host. */
+export function createPiStatelessExecutor<Config>(
+  factory: PiExecutorFactory<Config>,
+  config: Config,
+  transcript?: (execution: Parameters<StatelessExecutor>[0]) => PiRunRequest["transcript"] | Promise<PiRunRequest["transcript"]>,
+): StatelessExecutor {
+  const port = createPiRunPort(factory, config);
+  return async (execution) => port.run({
+    runId: execution.request.runId,
+    prompt: execution.request.prompt,
+    context: execution.context,
+    signal: execution.request.signal,
+    tools: execution.tools,
+    transcript: await transcript?.(execution),
+  }, execution.emit);
 }
 
 export async function resolvePiExecutorFactory(moduleValue: PiExecutorModule): Promise<PiExecutorFactory> {

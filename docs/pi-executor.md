@@ -20,4 +20,4 @@ maps cancellation to its existing non-recoverable or durable recovery result.
 
 This is an in-process composition seam, not a promise that Pi is installed or
 that runs are durable. The package tests use a deterministic fake Pi port and
-do not require WebUI or PocketBase.
+do not require Subpolar Agent or PocketBase.

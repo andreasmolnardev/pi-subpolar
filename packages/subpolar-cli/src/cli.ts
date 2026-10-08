@@ -1,15 +1,15 @@
 #!/usr/bin/env bun
 import { createLocalAdapter } from "../../subpolar-persistance-local/src/index.ts";
-import { createPiRunPort, resolvePiExecutorFactory, type PiExecutorFactory, type PiExecutorModule, type PiRunRequest } from "../../subpolar-core-pi/src/index.ts";
-import type { AgentExecutor, RunContext, RunEvent, ToolDefinition, ToolExecutor } from "../../subpolar-contracts/src/index.ts";
-import { createPolicyGateway, createRunService, redactAuditValue } from "../../subpolar-core/src/index.ts";
+import { createPiStatelessExecutor, createPiSdkExecutorFactory, PiRuntimeError, resolvePiExecutorFactory, type PiExecutorFactory, type PiExecutorModule, type PiRunRequest, type PiSdkModule, type PiSdkConfig } from "../../subpolar-core-pi/src/index.ts";
+import type { StatelessExecutor, RunContext, RunEvent, ToolDefinition, ToolExecutor } from "../../subpolar-contracts/src/index.ts";
+import { createPolicyGateway, createStatelessSubpolarRuntime, redactAuditValue } from "../../subpolar-core/src/index.ts";
 
 export const LOCAL_FIXTURE_EXECUTOR = "local-fixture-echo";
 
 const fixtureTool: ToolDefinition = {
   id: "local.fixture.echo",
   namespace: "local.fixture",
-  description: "Deterministic local echo fixture used until the Pi composition seam is wired",
+  description: "Deterministic local echo fixture for explicit test mode",
   inputSchema: { type: "object", required: ["prompt"] },
   enabled: true,
   risk: "low",
@@ -29,8 +29,9 @@ export interface CliIo {
 }
 
 export interface CliOptions {
+  /** An injected tool executor explicitly selects fixture mode for tests. */
   executor?: ToolExecutor;
-  pi?: { factory?: PiExecutorFactory; module?: string | PiExecutorModule; config?: unknown };
+  pi?: { factory?: PiExecutorFactory; module?: string | PiExecutorModule; config?: unknown; sdkLoader?: () => Promise<PiSdkModule> };
   sessionFile?: string;
   now?: () => Date;
   signal?: AbortSignal;
@@ -43,9 +44,13 @@ interface ParsedRun {
   timeout?: number;
   sessionId?: string;
   sessionFile?: string;
+  fixture: boolean;
+  piModule?: string;
 }
 
 function parseRunArgs(args: string[]): ParsedRun {
+  let fixture = false;
+  let piModule: string | undefined;
   let json = false;
   let jsonl = false;
   let timeout: number | undefined;
@@ -54,7 +59,13 @@ function parseRunArgs(args: string[]): ParsedRun {
   const promptParts: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "--json") {
+    if (argument === "--fixture") {
+      fixture = true;
+    } else if (argument === "--pi-module") {
+      const value = args[++index];
+      if (!value || value.startsWith("--")) throw new CliUsageError("--pi-module requires a module specifier");
+      piModule = value;
+    } else if (argument === "--json") {
       json = true;
     } else if (argument === "--jsonl") {
       jsonl = true;
@@ -79,7 +90,8 @@ function parseRunArgs(args: string[]): ParsedRun {
   const prompt = promptParts.join(" ").trim();
   if (!prompt) throw new CliUsageError("run requires a prompt");
   if (json && jsonl) throw new CliUsageError("--json and --jsonl cannot be used together");
-  return { prompt, json, jsonl, timeout, sessionId, sessionFile };
+  if (fixture && piModule) throw new CliUsageError("--fixture and --pi-module cannot be used together");
+  return { prompt, json, jsonl, timeout, sessionId, sessionFile, fixture, piModule };
 }
 
 export class CliUsageError extends Error {
@@ -111,7 +123,7 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
   if (options.signal?.aborted) abortFromCaller();
   else options.signal?.addEventListener("abort", abortFromCaller, { once: true });
   try {
-    if (argv[0] !== "run") throw new CliUsageError("Usage: subpolar-cli run <prompt> [--json|--jsonl] [--timeout <ms>] [--session <id>] [--session-file <path>]");
+    if (argv[0] !== "run") throw new CliUsageError("Usage: subpolar-cli run <prompt> [--json|--jsonl] [--timeout <ms>] [--session <id>] [--session-file <path>] [--fixture|--pi-module <specifier>]");
     const parsed = parseRunArgs(argv.slice(1));
     if (parsed.timeout !== undefined) {
       timeoutHandle = setTimeout(() => {
@@ -119,7 +131,7 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
         controller.abort();
       }, parsed.timeout);
     }
-    const sessionId = parsed.sessionId ?? `ephemeral-${(options.now ?? (() => new Date()))().getTime()}`;
+    const sessionId = parsed.sessionId ?? `ephemeral-${crypto.randomUUID()}`;
     const adapter = createLocalAdapter({ sessionFile: parsed.sessionFile ?? options.sessionFile });
     const executor = options.executor ?? localFixtureEchoExecutor;
     const gateway = createPolicyGateway({
@@ -132,33 +144,39 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
       execute: executor,
     });
     const context: RunContext = {
-      requestId: `request-${sessionId}`,
+      requestId: `request-${crypto.randomUUID()}`,
       principal: { id: "local-cli", kind: "local", displayName: "Subpolar CLI" },
       sessionId,
+      cwd: process.cwd(),
     };
-    let agentExecutor: AgentExecutor;
+    let agentExecutor: StatelessExecutor;
     let executorName = LOCAL_FIXTURE_EXECUTOR;
-    if (options.pi?.factory || options.pi?.module) {
-      const factory = options.pi.factory ?? await resolvePiExecutorFactory(
-        typeof options.pi.module === "string" ? await import(options.pi.module) : options.pi.module!,
-      );
-      const piPort = createPiRunPort(factory, options.pi.config);
-      agentExecutor = async (request, emit) => {
-        const persisted = request.context.sessionId ? await adapter.sessions.load(request.context.sessionId) : undefined;
-        const transcript: PiRunRequest['transcript'] = persisted
-          ? { sessionId: persisted.sessionId, entries: persisted.transcript.map((entry) => ({ role: entry.role, content: entry.content, occurredAt: entry.occurredAt })) }
-          : { entries: [] };
-        return piPort.run({ ...request, transcript } as PiRunRequest, emit);
-      };
+    const fixture = parsed.fixture || Boolean(options.executor);
+    if (fixture && (options.pi || parsed.piModule)) throw new CliUsageError("Fixture mode cannot be combined with Pi configuration");
+    let transcript: PiRunRequest["transcript"] = { entries: [] };
+    if (!fixture) {
+      const module = parsed.piModule ?? options.pi?.module;
+      let factory = options.pi?.factory;
+      if (!factory && module) {
+        try {
+          factory = await resolvePiExecutorFactory(typeof module === "string" ? await import(module) : module);
+        } catch {
+          throw new PiRuntimeError("Could not load Pi executor module; check --pi-module and its factory export");
+        }
+      }
+      if (factory) {
+        agentExecutor = createPiStatelessExecutor(factory, options.pi?.config, () => transcript);
+      } else {
+        const config = options.pi?.config;
+        if (config !== undefined && (!config || typeof config !== "object" || Array.isArray(config))) throw new CliUsageError("Pi SDK config must be an object");
+        agentExecutor = createPiStatelessExecutor(createPiSdkExecutorFactory(options.pi?.sdkLoader), config as PiSdkConfig | undefined, () => transcript);
+      }
       executorName = "pi";
     } else {
-      agentExecutor = async (request) => {
-      const result = await gateway.call(
-        { callId: `call-${request.runId}`, toolId: fixtureTool.id, input: { prompt: request.prompt } },
-        { ...request.context, runId: request.runId },
-      );
-      if (!result.ok) throw result.error;
-      return result.value;
+      agentExecutor = async ({ request, tools }) => {
+        const result = await tools.call({ callId: `call-${request.runId}`, toolId: fixtureTool.id, input: { prompt: request.prompt } }) as Awaited<ReturnType<typeof gateway.call>>;
+        if (!result.ok) throw result.error;
+        return result.value;
       };
     }
     const emitEvent = parsed.jsonl ? (event: RunEvent) => {
@@ -166,34 +184,46 @@ export async function runCli(argv: string[], options: CliOptions = {}, io: CliIo
       const category = event.type === "run.started" ? "started" : event.type === "run.progress" ? "progress" : terminal ? "terminal" : undefined;
       if (category) stdout(`${JSON.stringify(redactAuditValue({ event: category, ...event }))}\n`);
     } : undefined;
-    const run = createRunService({ executor: agentExecutor, sessionStore: adapter.sessions, now: options.now, eventSink: emitEvent });
-    const result = await run.run({ runId: `run-${sessionId}`, prompt: parsed.prompt, context, signal: controller.signal });
+    const run = createStatelessSubpolarRuntime({
+      executor: agentExecutor, gateway, sessions: adapter.sessions, now: options.now, eventSink: emitEvent,
+      context: { async load() {
+        const persisted = adapter.sessions.capabilities.supports["session.persistence"] ? await adapter.sessions.load(sessionId) : undefined;
+        transcript = persisted ? { sessionId, entries: persisted.transcript.map((entry) => ({ role: entry.role, content: entry.content, occurredAt: entry.occurredAt })) } : { entries: [] };
+        return context;
+      } },
+    });
+    const result = await run.run({ runId: `run-${crypto.randomUUID()}`, requestId: context.requestId, sessionId, prompt: parsed.prompt, signal: controller.signal });
     if (result.state !== "completed") {
       const error = timedOut
         ? { code: "CLI_TIMEOUT", message: "Run timed out" }
         : explicitlyCancelled
           ? { code: "CLI_CANCELLED", message: "Run cancelled" }
           : result.error;
-      const output = envelopeError(error);
+      const output = { ...envelopeError(error), state: result.state, recoverable: result.recoverable, ...(result.state === "approval_required" ? { approvalId: result.approvalId } : {}) };
       if (!parsed.jsonl) (parsed.json ? stdout : stderr)(`${parsed.json ? JSON.stringify(output) : `Error [${output.error.code}]: ${output.error.message}`}\n`);
       return timedOut ? 3 : explicitlyCancelled ? 4 : 1;
     }
-    const value = result.output as { executor?: string; text?: string };
+    const value = result.output;
+    const record = value && typeof value === "object" ? value as { executor?: unknown; text?: unknown } : undefined;
     const output = {
       ok: true,
       command: "run",
       sessionId,
       resumed: result.resumed,
-      executor: value.executor ?? executorName,
+      state: result.state,
+      recoverable: result.recoverable,
+      executor: typeof record?.executor === "string" ? record.executor : executorName,
       result: value,
     };
     if (!parsed.jsonl) {
       const safeOutput = redactAuditValue(output) as typeof output;
-      stdout(`${parsed.json ? JSON.stringify(safeOutput) : `${safeOutput.result.text}\n(session ${sessionId}; ${safeOutput.executor})\n`}\n`);
+      const safeResult = safeOutput.result as { text?: unknown } | null;
+      const display = typeof safeResult === "string" ? safeResult : typeof safeResult?.text === "string" ? safeResult.text : JSON.stringify(safeResult) ?? "";
+      stdout(`${parsed.json ? JSON.stringify(safeOutput) : `${display}\n(session ${sessionId}; ${safeOutput.executor})`}\n`);
     }
     return 0;
   } catch (error) {
-    const typed = error instanceof CliUsageError ? error : { code: "CLI_ERROR", message: "CLI failed" };
+    const typed = error instanceof CliUsageError || error instanceof PiRuntimeError ? error : { code: "CLI_ERROR", message: "CLI failed" };
     const output = envelopeError(typed);
     if (jsonlRequested) stdout(`${JSON.stringify(redactAuditValue({ event: "terminal", ...output }))}\n`);
     else (jsonRequested ? stdout : stderr)(`${jsonRequested ? JSON.stringify(output) : `Error [${output.error.code}]: ${output.error.message}`}\n`);

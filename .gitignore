@@ -1,8 +1,8 @@
 .pi/
 node_modules/
-@webui/node_modules/
-@webui/dist/
-@webui/.sessions.json
+@subpolar-agent/node_modules/
+@subpolar-agent/dist/
+@subpolar-agent/.sessions.json
 .DS_Store
 .env
 .env.*

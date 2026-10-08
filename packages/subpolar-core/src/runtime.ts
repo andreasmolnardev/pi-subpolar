@@ -23,7 +23,7 @@ import type {
   ToolCall,
   TranscriptEvent,
 } from "../../subpolar-contracts/src/index.ts";
-import type { GatewayFailure, GatewayResult, ToolGateway } from "./index.ts";
+import { redactAuditValue, type GatewayFailure, type GatewayResult, type ToolGateway } from "./index.ts";
 
 export interface StatelessSubpolarRuntimeOptions {
   context: RuntimeContextPort;
@@ -207,8 +207,9 @@ export class StatelessSubpolarRuntime implements StatelessSubpolarRuntimePort {
 
   private resultFromOutcome(request: StatelessRunRequest, outcome: RunOutcome): RunResult {
     const common = baseResult(request, true);
-    if (outcome.state === "completed") return { ...common, state: "completed", output: outcome.output, recoverable: outcome.recoverable };
-    return { ...common, state: outcome.state, error: outcome.error ?? { code: "RUN_UNKNOWN", message: "The run outcome is unavailable" }, recoverable: outcome.recoverable };
+    const recoverable = outcome.recoverable && hasPersistence(this.options.runStore?.capabilities, "run.outcome.persistence") && hasReplay(this.options.eventReplayPort?.capabilities);
+    if (outcome.state === "completed") return { ...common, state: "completed", output: outcome.output, recoverable };
+    return { ...common, state: outcome.state, error: outcome.error ?? { code: "RUN_UNKNOWN", message: "The run outcome is unavailable" }, recoverable };
   }
 
   async callTool(call: ToolCall, request: StatelessRunRequest): Promise<GatewayResult> {
@@ -234,7 +235,7 @@ export class StatelessSubpolarRuntime implements StatelessSubpolarRuntimePort {
     this.validateRequest(request);
     const context = await this.resolveContext(request);
 
-    const prior = this.options.runStore ? await this.options.runStore.load(request.runId) : undefined;
+    const prior = hasPersistence(this.options.runStore?.capabilities, "run.outcome.persistence") ? await this.options.runStore!.load(request.runId) : undefined;
     if (prior && prior.requestId === request.requestId && prior.sessionId === request.sessionId
       && (prior.state === "completed" || prior.state === "failed" || prior.state === "interrupted" || prior.state === "unknown")) {
       return this.resultFromOutcome(request, prior);
@@ -273,13 +274,21 @@ export class StatelessSubpolarRuntime implements StatelessSubpolarRuntimePort {
       };
       output = await this.executor(execution);
     } catch (error) {
-      const runError: RunError = { code: "EXECUTION_FAILED", message: "Agent execution failed" };
-      const replayed = await this.emit(request, "failed", "run.failed", { state: "failed", error: asJson(runError) });
-      const recoverable = await this.persist(request, "failed", undefined, runError, replayed);
-      return { ...baseResult(request, resumed), state: "failed", error: runError, recoverable };
+      const interrupted = request.signal?.aborted === true;
+      const candidate = error as { code?: unknown; message?: unknown } | null;
+      const safeCode = typeof candidate?.code === "string" && /^[A-Z][A-Z0-9_.-]{0,63}$/.test(candidate.code);
+      const runError: RunError = interrupted
+        ? { code: "RUN_INTERRUPTED", message: "Run was cancelled during execution" }
+        : safeCode && typeof candidate?.message === "string"
+          ? { code: candidate.code as string, message: redactAuditValue(candidate.message) as string }
+          : { code: "EXECUTION_FAILED", message: "Agent execution failed" };
+      const state = interrupted ? "interrupted" : "failed";
+      const replayed = await this.emit(request, state, interrupted ? "run.interrupted" : "run.failed", { state, error: asJson(runError) });
+      const recoverable = await this.persist(request, state, undefined, runError, replayed);
+      return { ...baseResult(request, resumed), state, error: runError, recoverable };
     }
 
-    if (isApprovalRequired(output)) {
+    if (!request.signal?.aborted && isApprovalRequired(output)) {
       const approval: ApprovalRequiredRunResult = {
         ...baseResult(request, resumed),
         state: "approval_required",
@@ -291,10 +300,14 @@ export class StatelessSubpolarRuntime implements StatelessSubpolarRuntimePort {
     }
 
     if (request.signal?.aborted) {
-      const error = { code: "RUN_INTERRUPTED", message: "Run was cancelled during execution" };
-      const replayed = await this.emit(request, "interrupted", "run.interrupted", { state: "interrupted", error });
-      const recoverable = await this.persist(request, "interrupted", undefined, error, replayed);
-      return { ...baseResult(request, resumed), state: "interrupted", error, recoverable };
+      const durable = hasPersistence(this.options.runStore?.capabilities, "run.outcome.persistence") && hasReplay(this.options.eventReplayPort?.capabilities);
+      const state = durable ? "interrupted" : "unknown";
+      const error = durable
+        ? { code: "RUN_INTERRUPTED", message: "Run was cancelled during execution" }
+        : { code: "UNSUPPORTED_RECOVERY", message: "Executor settled after cancellation; durable recovery is unavailable" };
+      const replayed = await this.emit(request, state, durable ? "run.interrupted" : "run.unknown", { state, error });
+      const recoverable = await this.persist(request, state, undefined, error, replayed);
+      return { ...baseResult(request, resumed), state, error, recoverable };
     }
 
     if (sessionPersistent && request.sessionId) {

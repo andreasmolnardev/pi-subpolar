@@ -14,6 +14,18 @@ Persistence-neutral tool registration, authorization, and execution boundaries.
 
 The registry does not choose a database or network implementation. Those boundaries are injected by the host application.
 
+## Workspace setup
+
+From the repository root, use Bun 1.3.14 and `bun install --frozen-lockfile`.
+The hoisted workspace shares compatible dependencies, but incompatible versions
+may still require nested copies. Do not install separately in this package.
+
+Adapter availability is not a sandbox guarantee. The Subpolar Agent shared-host gateway
+disables arbitrary shell and MCP stdio, and registered CLI is disabled by default.
+Host applications must enforce their own execution boundary; live two-user
+verification remains outstanding. See
+[Bun and multi-user operations](../../docs/bun-and-multi-user.md).
+
 ## Usage
 
 ```ts

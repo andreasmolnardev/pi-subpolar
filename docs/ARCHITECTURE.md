@@ -48,16 +48,16 @@ packages/
 │   ├── execution adapters
 │   └── remote `subpolar-tools` CLI (`@subpolar/tools/cli`)
 ├── subpolar-runtime-cli (`@subpolar/runtime-cli`)
-├── subpolar-webui-server
-└── subpolar-webui (`@subpolar/webui`)
+├── subpolar-agent-server
+└── subpolar-agent (`@subpolar/subpolar-agent`)
 ```
 
-`@subpolar/shared` and `@subpolar/runtime` must not import PocketBase, Hono, React, filesystem-specific WebUI modules, or Pi implementation modules. The adapters depend on the contracts and are composed by an application boundary.
+`@subpolar/shared` and `@subpolar/runtime` must not import PocketBase, Hono, React, filesystem-specific Subpolar Agent modules, or Pi implementation modules. The adapters depend on the contracts and are composed by an application boundary.
 
 ## Runtime composition
 
 ```text
-Subpolar WebUI
+Subpolar Subpolar Agent
     |
     v
 HTTP/WebSocket bridge and authentication
@@ -76,7 +76,7 @@ Stateless Subpolar Core Runtime
                                   +--> tool execution adapters
 ```
 
-The WebUI is a transport and presentation layer. It authenticates requests, supplies trusted identity, streams events, and composes adapters. Canonical prompt runs use the shared stateless runtime, PocketBase run/event ports, and transient Pi adapter. The direct core tool gateway owns canonical definitions, validation, policy, approvals, idempotency, and audit decisions; WebUI supplies only execution implementations and transport behavior.
+The Subpolar Agent is a transport and presentation layer. It authenticates requests, supplies trusted identity, streams events, and composes adapters. Canonical prompt runs use the shared stateless runtime, PocketBase run/event ports, and transient Pi adapter. The direct core tool gateway owns canonical definitions, validation, policy, approvals, idempotency, and audit decisions; Subpolar Agent supplies only execution implementations and transport behavior.
 
 ## Runtime lifecycle
 
@@ -184,19 +184,19 @@ In-memory maps may be used as optional fast paths for cancellation or active str
 
 The architecture is considered implemented when:
 
-1. `@subpolar/runtime` can run without PocketBase, WebUI, or Pi imports.
-2. The WebUI composes the core with PocketBase and Pi adapters instead of owning duplicate policy logic.
+1. `@subpolar/runtime` can run without PocketBase, Subpolar Agent, or Pi imports.
+2. The Subpolar Agent composes the core with PocketBase and Pi adapters instead of owning duplicate policy logic.
 3. Pi creates no persistent session or transcript files.
 4. A new runtime can reconstruct a session entirely from PocketBase.
 5. A process can stop after creating an approval, restart, approve the request, and execute it exactly once.
 6. Duplicate call IDs return the durable result without re-executing the tool.
 7. Tool policy changes are enforced at the execution boundary.
 8. Session history, usage, search, archive, and replay operate on the persistence adapter rather than Pi files.
-9. Unit, contract, integration, and manual WebUI tests cover the restart and approval flows.
+9. Unit, contract, integration, and manual Subpolar Agent tests cover the restart and approval flows.
 
 ## Current implementation status
 
-The production WebUI composition has completed the run-lifecycle cutover:
+The production Subpolar Agent composition has completed the run-lifecycle cutover:
 
 - `POST /api/sessions/:id/runs` constructs a fresh runtime with an authenticated owner-bound PocketBase adapter.
 - `subpolar_runs` and `subpolar_run_events` are durable sources for run outcomes and replay.
@@ -204,4 +204,4 @@ The production WebUI composition has completed the run-lifecycle cutover:
 - The active-session map is only a streaming/cancellation fast path; terminal replay does not require it.
 - Existing routes for projects, history, usage, tools, agents, approvals, voice, automations, subagents, and CLI compatibility remain in place.
 
-The direct core gateway cutover is complete. WebUI constructs owner-scoped core gateways for Pi and HTTP tool calls, resolves current PocketBase-backed policy before execution, persists approval/audit/idempotency state, and retains only the execution adapters and transport concerns. Legacy migration code and compatibility data projections remain where needed for existing records and clients; they are not active tool authority.
+The direct core gateway cutover is complete. Subpolar Agent constructs owner-scoped core gateways for Pi and HTTP tool calls, resolves current PocketBase-backed policy before execution, persists approval/audit/idempotency state, and retains only the execution adapters and transport concerns. Legacy migration code and compatibility data projections remain where needed for existing records and clients; they are not active tool authority.

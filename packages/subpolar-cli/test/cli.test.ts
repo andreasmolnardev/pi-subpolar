@@ -4,7 +4,7 @@ import { runCli } from "../src/cli.ts";
 describe("subpolar-cli", () => {
   test("runs the local fixture with a stable JSON result envelope", async () => {
     const output: string[] = [];
-    const exitCode = await runCli(["run", "hello", "world", "--json", "--session", "smoke"], { now: () => new Date("2026-01-01T00:00:00.000Z") }, { stdout: (text) => output.push(text) });
+    const exitCode = await runCli(["run", "hello", "world", "--fixture", "--json", "--session", "smoke"], { now: () => new Date("2026-01-01T00:00:00.000Z") }, { stdout: (text) => output.push(text) });
 
     expect(exitCode).toBe(0);
     expect(JSON.parse(output.join(""))).toMatchObject({ ok: true, command: "run", sessionId: "smoke", executor: "local-fixture-echo", result: { text: "Local fixture echo: hello world" } });

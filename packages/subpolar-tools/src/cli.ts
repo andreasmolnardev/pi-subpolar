@@ -269,7 +269,7 @@ function remoteError(response: Response, payload: unknown, token: string): Remot
   return new RemoteError(code(error.code), String(redact(message, token)), response.status, details)
 }
 
-async function withRequest<T>(base: string, token: string, timeout: number, fetcher: Fetcher, path: string, init: RequestInit, consume: (response: Response) => Promise<T>, signal?: AbortSignal): Promise<T> {
+async function withRequest<T>(base: string, _token: string, timeout: number, fetcher: Fetcher, path: string, init: RequestInit, consume: (response: Response) => Promise<T>, signal?: AbortSignal): Promise<T> {
   const controller = new AbortController()
   let timedOut = false
   const abortFromCaller = (): void => controller.abort()
@@ -310,7 +310,7 @@ async function requestJson(base: string, token: string, timeout: number, fetcher
       try { payload = JSON.parse(text) } catch { payload = { message: text } }
     }
     if (!response.ok) throw remoteError(response, payload, token)
-    if (object(payload).ok === false && object(payload).approvalRequired !== true && object(payload).error !== undefined) throw remoteError(response, payload, token)
+    if (object(payload).ok === false && object(payload).approvalRequired !== true && object(payload).status !== 'approval_required' && object(payload).error !== undefined) throw remoteError(response, payload, token)
     return payload
   }, signal)
 }
@@ -319,6 +319,7 @@ function contextBody(parsed: ParsedOptions): JsonObject {
   return {
     ...(parsed.userId === undefined ? {} : { userId: parsed.userId }),
     ...(parsed.agentName === undefined ? {} : { agentName: parsed.agentName }),
+    ...(parsed.sessionId === undefined ? {} : { sessionId: parsed.sessionId }),
   }
 }
 
@@ -477,7 +478,7 @@ function printResult(io: CliIo, json: boolean, command: string, payload: unknown
 
 function approvalPending(payload: unknown): boolean {
   const result = object(payload)
-  return result.ok === false && result.approvalRequired === true
+  return result.ok === false && (result.approvalRequired === true || result.status === 'approval_required')
 }
 
 async function eventsCommand(parsed: ParsedOptions, base: string, token: string, fetcher: Fetcher, io: CliIo, signal?: AbortSignal): Promise<number> {

@@ -4,7 +4,7 @@ Subpolar is a self-hosted agent platform and control plane built around the Pi S
 
 Pi is the current execution runtime. Subpolar is the product.
 
-The roadmap prioritizes a reusable Subpolar core separated from persistence adapters, a dependable PocketBase-backed WebUI, a standalone stateless-by-default `subpolar-cli`, a focused tools CLI for external harnesses, controlled agent capabilities, coding workflows, subagents, browser tools, and local-first voice.
+The roadmap prioritizes a reusable Subpolar core separated from persistence adapters, a dependable PocketBase-backed Subpolar Agent, a standalone stateless-by-default `subpolar-cli`, a focused tools CLI for external harnesses, controlled agent capabilities, coding workflows, subagents, browser tools, and local-first voice.
 
 Last reviewed: 2026-09-19
 
@@ -43,19 +43,19 @@ Subpolar owns:
 - audit records;
 - task/run state;
 - subagent permissions;
-- WebUI and external-client contracts.
+- Subpolar Agent and external-client contracts.
 
 Pi must not bypass these systems.
 
 ### 2. One core runtime, replaceable persistence
 
-Subpolar's core execution services must not import PocketBase, WebUI routes, browser sessions, or CLI command modules. The core accepts explicit execution context and storage, identity, and event ports. A PocketBase adapter implements durable multi-user WebUI persistence; a local/ephemeral adapter powers standalone `subpolar-cli` without PocketBase or a running WebUI server.
+Subpolar's core execution services must not import PocketBase, Subpolar Agent routes, browser sessions, or CLI command modules. The core accepts explicit execution context and storage, identity, and event ports. A PocketBase adapter implements durable multi-user Subpolar Agent persistence; a local/ephemeral adapter powers standalone `subpolar-cli` without PocketBase or a running Subpolar Agent server.
 
 "Stateless core" means core services have no hidden process-global durable state. Pi can still hold transient in-process execution state for an active run; resumable state lives in the selected adapter. `subpolar-cli` may keep only deliberately opted-in/minimal authentication configuration and project/session references by default, and loads conversation data from an explicit local session store when continuity is requested. No fake guarantees of restart recovery when using a strictly in-memory adapter.
 
 ### 3. Consistent state within a deployment
 
-The WebUI, tools CLI, automations, and any remote clients of **one running WebUI deployment** must observe the same:
+The Subpolar Agent, tools CLI, automations, and any remote clients of **one running Subpolar Agent deployment** must observe the same:
 
 - session state;
 - active run;
@@ -68,7 +68,7 @@ The WebUI, tools CLI, automations, and any remote clients of **one running WebUI
 - memory configuration;
 - events.
 
-Clients connected to the same deployment are projections of the same authoritative state. A separately started standalone `subpolar-cli` uses the **same core logic** but its own selected store; it does not automatically share live WebUI sessions. Connecting or importing/exporting between deployments must be explicit.
+Clients connected to the same deployment are projections of the same authoritative state. A separately started standalone `subpolar-cli` uses the **same core logic** but its own selected store; it does not automatically share live Subpolar Agent sessions. Connecting or importing/exporting between deployments must be explicit.
 
 ### 4. Capabilities are explicit
 
@@ -165,22 +165,22 @@ Theme support, responsive UX, keyboard navigation, accessibility, good diffs, co
                       explicit adapter contracts
              +-------------------+-------------------+
              |                                       |
-   WebUI deployment adapter                 Standalone CLI adapter
+   Subpolar Agent deployment adapter                 Standalone CLI adapter
    PocketBase persistence                  local/ephemeral storage
    server auth / multi-user                local auth/config store
    durable sessions/events                 session/project references
              |                                       |
       Subpolar API / SSE                        subpolar-cli
              |
-       WebUI / PWA / tools-cli / other remote clients
+       Subpolar Agent / PWA / tools-cli / other remote clients
 
           tools-cli → authenticated tool gateway ONLY
-          subpolar-cli → same core IN PROCESS, no WebUI needed
+          subpolar-cli → same core IN PROCESS, no Subpolar Agent needed
 ```
 
-The WebUI server and standalone CLI are **two compositions of the same Subpolar core**, not two implementations of an agent. Both run Pi through the same core orchestration, capability authorization, approval resolution, and tool gateway. Their adapters determine how state is stored, which identities are valid, and how events are delivered.
+The Subpolar Agent server and standalone CLI are **two compositions of the same Subpolar core**, not two implementations of an agent. Both run Pi through the same core orchestration, capability authorization, approval resolution, and tool gateway. Their adapters determine how state is stored, which identities are valid, and how events are delivered.
 
-The WebUI hosts PocketBase-backed sessions that remote clients—including the tools CLI—can access through documented authenticated endpoints. Standalone `subpolar-cli` uses local state and does not require PocketBase or an HTTP server. The tools CLI cannot independently start an agent run or act as a standalone Subpolar runtime.
+The Subpolar Agent hosts PocketBase-backed sessions that remote clients—including the tools CLI—can access through documented authenticated endpoints. Standalone `subpolar-cli` uses local state and does not require PocketBase or an HTTP server. The tools CLI cannot independently start an agent run or act as a standalone Subpolar runtime.
 
 No ACP or multi-harness runtime adapter is planned. **Database/storage adapters are not agent runtime adapters.** Pi remains the sole execution engine on this roadmap.
 
@@ -269,7 +269,7 @@ cancelled
 
 # Phase 0A — Core Extraction and Persistence Adapter Architecture (P0, prerequisite)
 
-Refactor the existing embedded Pi bridge into a reusable core before building the standalone CLI. Do not fork the bridge into CLI and WebUI implementations.
+Refactor the existing embedded Pi bridge into a reusable core before building the standalone CLI. Do not fork the bridge into CLI and Subpolar Agent implementations.
 
 ## Core Boundaries
 
@@ -284,14 +284,14 @@ packages/
   subpolar-cli/              # terminal UX, local runtime composition
   subpolar-tools/            # tool registry, execution contracts, and remote CLI
 apps/
-  webui/                     # HTTP/WS/SSE adapters, routes, PocketBase composition
+  subpolar-agent/            # HTTP/WS/SSE adapters, routes, PocketBase composition
 ```
 
-- [ ] Extract session/run/task orchestration, Pi integration, tool registry/resolver, policy decisions, approvals, context assembly, and events from WebUI-specific modules.
-- [ ] Make core callable in-process by both WebUI and `subpolar-cli` without loopback HTTP calls or importing WebUI routes.
+- [ ] Extract session/run/task orchestration, Pi integration, tool registry/resolver, policy decisions, approvals, context assembly, and events from Subpolar Agent-specific modules.
+- [ ] Make core callable in-process by both Subpolar Agent and `subpolar-cli` without loopback HTTP calls or importing Subpolar Agent routes.
 - [ ] Define dependency direction: apps/CLI → core contracts → ports; adapters implement ports. Core does not depend on concrete adapters.
 - [ ] Separate domain services from authentication transport, database queries, browser UI, and terminal I/O.
-- [ ] Keep core services stateless between calls except explicit in-flight run handles; inject execution/session context and services rather than relying on singleton WebUI state.
+- [ ] Keep core services stateless between calls except explicit in-flight run handles; inject execution/session context and services rather than relying on singleton Subpolar Agent state.
 - [ ] Reuse one implementation of tool lookup, input validation, policy, approvals, execution, and auditing in both modes.
 - [ ] Keep event envelopes/IDs and approval decisions consistent across adapters while documenting which guarantees require durable storage.
 
@@ -310,17 +310,17 @@ Specify minimal, capability-oriented interfaces instead of exposing raw database
 
 Do not imply that an in-memory adapter can provide transactional multi-process persistence or replay after process exit. Fail explicitly when a requested feature requires an unsupported adapter guarantee.
 
-## PocketBase Adapter (WebUI)
+## PocketBase Adapter (Subpolar Agent)
 
 - [ ] Move PocketBase collections, queries, migrations, authenticated ownership, and durable replay into a concrete adapter layer.
-- [ ] Preserve existing WebUI data and migration compatibility during extraction.
+- [ ] Preserve existing Subpolar Agent data and migration compatibility during extraction.
 - [ ] Keep server-side multi-user authorization and cross-project isolation.
 - [ ] Provide transactional/idempotent operations or equivalent safe serialization for messages, approvals, and mutating tools.
-- [ ] The WebUI remains one shared long-lived core runtime with PocketBase as its backend.
+- [ ] The Subpolar Agent remains one shared long-lived core runtime with PocketBase as its backend.
 
 ## Local Adapter (`subpolar-cli`)
 
-- [ ] Default to ephemeral execution with minimal persistent local auth/config and project/session references; do not require PocketBase, Docker, a WebUI process, or a background server.
+- [ ] Default to ephemeral execution with minimal persistent local auth/config and project/session references; do not require PocketBase, Docker, a Subpolar Agent process, or a background server.
 - [ ] Define optional explicit local session persistence so users can resume chat history across CLI invocations; do not claim persistence if not configured.
 - [ ] Define local profile/project lookup and agent template defaults without depending on PocketBase collections.
 - [ ] Keep credentials in OS-protected storage or an appropriately permissioned local file; do not store provider secrets in session records.
@@ -330,20 +330,20 @@ Do not imply that an in-memory adapter can provide transactional multi-process p
 
 ## Migration and Verification
 
-- [ ] Map old WebUI bridge modules to core services versus adapter responsibilities.
+- [ ] Map old Subpolar Agent bridge modules to core services versus adapter responsibilities.
 - [ ] Refactor incrementally with characterization tests before removing old code paths.
 - [ ] Run identical fixture scenarios through PocketBase and local adapters for tool discovery, execution, policy, approvals, messages, agent context, and subagents.
-- [ ] Test local CLI startup with PocketBase/network/WebUI unavailable.
-- [ ] Test WebUI behavior against existing PocketBase data after migration.
+- [ ] Test local CLI startup with PocketBase/network/Subpolar Agent unavailable.
+- [ ] Test Subpolar Agent behavior against existing PocketBase data after migration.
 - [ ] Document single-process versus durable server guarantees and adapter contract versioning.
 
-**Exit criteria:** The same core Pi-backed run and tool gateway passes tests with either the PocketBase WebUI adapter or the standalone local adapter; no domain service imports PocketBase and no CLI agent logic duplicates the WebUI bridge.
+**Exit criteria:** The same core Pi-backed run and tool gateway passes tests with either the PocketBase Subpolar Agent adapter or the standalone local adapter; no domain service imports PocketBase and no CLI agent logic duplicates the Subpolar Agent bridge.
 
 ---
 
 # Phase 0 — Contract, Runtime, Security, and Recovery (P0)
 
-Make the shared core and its WebUI API a stable foundation for the WebUI, standalone CLI, automations, subagents, browser tools, and external clients. Contract requirements below apply to the WebUI HTTP boundary where relevant; `subpolar-cli` consumes the same domain contracts in-process.
+Make the shared core and its Subpolar Agent API a stable foundation for the Subpolar Agent, standalone CLI, automations, subagents, browser tools, and external clients. Contract requirements below apply to the Subpolar Agent HTTP boundary where relevant; `subpolar-cli` consumes the same domain contracts in-process.
 
 ## Versioned Contracts
 
@@ -392,7 +392,7 @@ Make the shared core and its WebUI API a stable foundation for the WebUI, standa
 - [ ] Require idempotency keys for mutating public operations.
 - [ ] Add event replay using cursors or `Last-Event-ID`.
 - [ ] Define cross-client consistency rules.
-- [ ] Finish gateway convergence so Pi extensions, standalone `subpolar-cli`, and WebUI HTTP callers use the same capability gateway and context construction.
+- [ ] Finish gateway convergence so Pi extensions, standalone `subpolar-cli`, and Subpolar Agent HTTP callers use the same capability gateway and context construction.
 - [ ] Keep internal loopback credentials out of public contracts.
 - [ ] Add crash recovery for:
   - active generations;
@@ -417,11 +417,11 @@ Make the shared core and its WebUI API a stable foundation for the WebUI, standa
 - [ ] Add multi-user and cross-project isolation tests.
 - [ ] Prevent a parent agent from delegating capabilities to a subagent that the parent/session is not permitted to grant.
 
-**Exit criteria:** both core compositions share behavior; WebUI browser/remote clients additionally observe identical ownership, policy, approval, tool, queue, and event behavior within the same deployment.
+**Exit criteria:** both core compositions share behavior; Subpolar Agent browser/remote clients additionally observe identical ownership, policy, approval, tool, queue, and event behavior within the same deployment.
 
 ---
 
-# Phase 1 — WebUI Daily-Use Experience (P0)
+# Phase 1 — Subpolar Agent Daily-Use Experience (P0)
 
 Turn existing feature coverage into a reliable interface that can be used as the primary Subpolar client.
 
@@ -558,7 +558,7 @@ The chat input `+` menu should support:
 
 ---
 
-# Phase 2 — WebUI Quality of Life and Personalization (P1)
+# Phase 2 — Subpolar Agent Quality of Life and Personalization (P1)
 
 Subpolar should feel like a polished daily-use product, not just an administration panel.
 
@@ -755,7 +755,7 @@ Parent project workspace
   - worktree;
   - review state.
 - [ ] Allow multiple tasks/subagents to execute concurrently within configured limits.
-- [ ] Expose progress/status in the WebUI.
+- [ ] Expose progress/status in the Subpolar Agent.
 - [ ] Keep task state independent from a single chat message.
 - [ ] Allow completed coding tasks to transition to `review_required`.
 
@@ -1087,7 +1087,7 @@ local TTS backend
    ↓
 streamed/generated audio
    ↓
-WebUI player / conversational playback
+Subpolar Agent player / conversational playback
 ```
 
 - [ ] Local TTS backend support.
@@ -1285,7 +1285,7 @@ Keep **tool access for external harnesses** separate from **running the full Sub
 
 ## `subpolar-cli` — Standalone Headless Agent (P0 after Phase 0A)
 
-`subpolar-cli` composes the same `subpolar-core` and Pi SDK used by the WebUI **in-process** with the local adapter. It is not an HTTP wrapper around the WebUI and does not need PocketBase or a running server.
+`subpolar-cli` composes the same `subpolar-core` and Pi SDK used by the Subpolar Agent **in-process** with the local adapter. It is not an HTTP wrapper around the Subpolar Agent and does not need PocketBase or a running server.
 
 ### Default State Model
 
@@ -1295,7 +1295,7 @@ Keep **tool access for external harnesses** separate from **running the full Sub
 - [ ] Define what a session/project "reference" means when the underlying session is ephemeral; do not present a stale reference as resumable context.
 - [ ] Support `--project`, `--agent`, `--model`, and `--session` as validated selectors; avoid claiming server ownership from raw paths or flags.
 - [ ] Local auth store is **not** PocketBase user authentication. Use provider credentials for model access and explicit remote credentials only if a future remote-connect mode is added.
-- [ ] Share policies, context assembly, tool gateway, approvals, audit semantics, skills, browser tools, memory opt-in, and subagent behavior with WebUI core; capabilities requiring durable state must report if unavailable.
+- [ ] Share policies, context assembly, tool gateway, approvals, audit semantics, skills, browser tools, memory opt-in, and subagent behavior with Subpolar Agent core; capabilities requiring durable state must report if unavailable.
 - [ ] Use CLI prompts/stdin or explicit noninteractive approval policy; do not silently grant tools in scripts.
 
 ### Initial Command Surface
@@ -1316,7 +1316,7 @@ Keep **tool access for external harnesses** separate from **running the full Sub
 - [ ] Stream assistant output, tool calls/results, approvals, subagents, and errors using shared domain events.
 - [ ] Support Pi slash commands where meaningful in interactive terminal mode.
 - [ ] Avoid duplicating provider/model configuration, agent selection, or tool execution business logic in CLI commands.
-- [ ] Provide startup/packaging documentation for local and CI usage without launching WebUI.
+- [ ] Provide startup/packaging documentation for local and CI usage without launching Subpolar Agent.
 
 ## Tools CLI — Remote Tool Gateway Utility (P0 after Phase 0)
 
@@ -1404,13 +1404,13 @@ Make truncation and timeout behavior explicit.
 
 # Phase 16 — End-to-End Product Verification (P0/P1)
 
-Build repeatable tests proving that PocketBase-backed WebUI and standalone `subpolar-cli` share one Subpolar core, while the tools CLI talks only to the remote tool gateway.
+Build repeatable tests proving that PocketBase-backed Subpolar Agent and standalone `subpolar-cli` share one Subpolar core, while the tools CLI talks only to the remote tool gateway.
 
 ## Core Lifecycle
 
 - [ ] Execute identical core fixture suites with local and PocketBase adapters.
 - [ ] Start isolated PocketBase.
-- [ ] Start Subpolar bridge/WebUI on test ports.
+- [ ] Start Subpolar bridge/Subpolar Agent on test ports.
 - [ ] Wait for readiness.
 - [ ] Create test user/project/agent/session.
 - [ ] Register deterministic fixture tools.
@@ -1489,19 +1489,19 @@ Build repeatable tests proving that PocketBase-backed WebUI and standalone `subp
 
 ## CLI and Adapter Separation
 
-- [ ] Run `subpolar-cli` with WebUI, HTTP server, and PocketBase unavailable.
+- [ ] Run `subpolar-cli` with Subpolar Agent, HTTP server, and PocketBase unavailable.
 - [ ] Verify `subpolar-cli` does not persist transcripts in the default ephemeral configuration.
 - [ ] Verify explicitly enabled local session storage supports resume after process restart.
 - [ ] Verify no stale ephemeral session reference is presented as resumable.
 - [ ] Confirm both adapters give consistent policy, approval and tool execution decisions.
 - [ ] Confirm `subpolar-tools` cannot send prompts, start Pi or bypass tool policy.
-- [ ] Confirm tools CLI cannot access WebUI data outside its authorized context.
-- [ ] Verify WebUI backward compatibility and PocketBase migration from the existing schema.
+- [ ] Confirm tools CLI cannot access Subpolar Agent data outside its authorized context.
+- [ ] Verify Subpolar Agent backward compatibility and PocketBase migration from the existing schema.
 - [ ] Exercise explicit unsupported-capability errors for in-memory adapter durability/replay requirements.
 
 ## CI Gates
 
-- [ ] WebUI unit/component tests.
+- [ ] Subpolar Agent unit/component tests.
 - [ ] Bridge/server typechecks.
 - [ ] Contract tests.
 - [ ] Standalone `subpolar-cli` tests (without PocketBase).
@@ -1541,8 +1541,8 @@ This section describes where major product capabilities live.
 | Worktree lifecycle | Subpolar |
 | Automations | Subpolar |
 | TTS/STT UX and backend abstraction | Subpolar |
-| Data persistence | WebUI: PocketBase adapter; standalone CLI: local/ephemeral adapter |
-| Core orchestration and tool policy | Shared Subpolar core (WebUI and `subpolar-cli`) |
+| Data persistence | Subpolar Agent: PocketBase adapter; standalone CLI: local/ephemeral adapter |
+| Core orchestration and tool policy | Shared Subpolar core (Subpolar Agent and `subpolar-cli`) |
 | Remote tool gateway client | `subpolar-tools` (no agent runtime) |
 | Model execution loop | Pi SDK |
 | Steering/follow-up semantics | Pi SDK exposed through Subpolar |
@@ -1557,7 +1557,7 @@ This section describes where major product capabilities live.
 - The tools CLI is not an agent harness; it only operates authorized tools.
 - `subpolar-cli` must not reimplement the shared Subpolar core or require PocketBase.
 - Stateless-by-default does not imply fake persistent sessions or cross-deployment state sharing.
-- Remote clients do not receive direct PocketBase access; the WebUI PocketBase adapter is internal.
+- Remote clients do not receive direct PocketBase access; the Subpolar Agent PocketBase adapter is internal.
 - Tool registration never disables authorization, approval, or audit.
 - Subagents never bypass the normal tool gateway.
 - Parallel coding work does not mutate one shared workspace concurrently; use isolated worktrees.
@@ -1580,8 +1580,8 @@ The roadmap phases describe product areas, but implementation should proceed in 
 1. Phase 0A shared core extraction and adapter contracts.
 2. Phase 0 contracts/recovery/security.
 3. Standalone `subpolar-cli` minimal headless composition and local adapter.
-4. PocketBase WebUI regression and adapter parity tests.
-5. Phase 1 WebUI reliability.
+4. PocketBase Subpolar Agent regression and adapter parity tests.
+5. Phase 1 Subpolar Agent reliability.
 6. Shared event model and E2E coverage.
 7. QoL/theme foundation.
 
@@ -1628,9 +1628,9 @@ A tagged Subpolar release should have:
 
 - documented startup and migration commands;
 - a stable API/event contract for the features it exposes;
-- core/adapter parity for WebUI and standalone CLI;
+- core/adapter parity for Subpolar Agent and standalone CLI;
 - documented ephemeral versus durable local session semantics;
-- passing WebUI and contract tests;
+- passing Subpolar Agent and contract tests;
 - no credential leakage in normal logs;
 - explicit tool, skill, memory, subagent, and browser permissions;
 - recoverable session/task state;

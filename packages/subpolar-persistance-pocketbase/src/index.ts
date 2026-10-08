@@ -428,6 +428,7 @@ function mapSkill(record: PocketBaseStoredRecord, trustedOwner?: string): Skill 
     metadata: asJson(record, "metadata", {}) as Record<string, string>,
     body: asString(record, "body"),
     reference: asOptionalString(record, "reference"),
+    ...(Array.isArray(record.toolIds) ? { toolIds: record.toolIds } : {}),
     ...(record.agentId === undefined ? {} : { agentId: asString(record, "agentId") }),
     ...(record.projectId === undefined ? {} : { projectId: asString(record, "projectId") }),
   } as Skill;
@@ -445,6 +446,7 @@ function skillData(skill: Skill, ownerId: string): Record<string, unknown> {
     metadata: clone(skill.metadata),
     body: skill.body,
     ...(skill.reference === undefined ? {} : { reference: skill.reference }),
+    ...(skill.toolIds === undefined ? {} : { toolIds: [...skill.toolIds] }),
     ...(skill.agentId === undefined ? {} : { agentId: skill.agentId }),
     ...(skill.projectId === undefined ? {} : { projectId: skill.projectId }),
   };
@@ -946,13 +948,15 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
       const matches = heads.filter((record) => record.skillId === id &&
         (input.scope === undefined || record.scope === input.scope) && (input.agentId === undefined || record.agentId === input.agentId) && (input.projectId === undefined || record.projectId === input.projectId));
       const scoped = input.scope === undefined && input.agentId === undefined && input.projectId === undefined ? matches.filter((record) => record.scope === "global") : matches;
-      if (input.version === undefined) {
-        if (!scoped[0]) throw new SkillNotFoundError(`skill ${id} was not found for owner ${scopedOwner}`);
-        return mapSkill(scoped[0], scopedOwner);
-      }
+      if (scoped.length > 1) throw new SkillConflictError("skill selector is ambiguous; supply scope and agentId/projectId");
+      const head = scoped[0];
+      if (!head) throw new SkillNotFoundError(`skill ${id} was not found for owner ${scopedOwner}`);
+      if (input.version === undefined) return mapSkill(head, scopedOwner);
       const versions = await ownedRecords(requireCollection(skillVersionCollection, "skill.persistence"), scopedOwner);
-      const version = versions.find((record) => record.skillId === id && record.version === input.version &&
-        (input.scope === undefined || record.scope === input.scope) && (input.agentId === undefined || record.agentId === input.agentId) && (input.projectId === undefined || record.projectId === input.projectId));
+      const history = versions.filter((record) => record.skillHeadId === head.id && record.skillId === id && record.version === input.version &&
+        record.scope === head.scope && (record.agentId ?? null) === (head.agentId ?? null) && (record.projectId ?? null) === (head.projectId ?? null));
+      if (history.length > 1) throw new SkillConflictError("skill history is ambiguous");
+      const version = history[0];
       if (!version) throw new SkillNotFoundError(`skill ${id} version ${input.version} was not found for owner ${scopedOwner}`);
       return mapSkill(version, scopedOwner);
     },
@@ -976,7 +980,9 @@ export function createPocketBaseAdapter(options: PocketBaseAdapterOptions): Pock
       const heads = await skills.list();
       const candidates = heads.filter((record) => record.ownerId === scopedOwner && record.skillId === input.id &&
         (input.scope === undefined || record.scope === input.scope) && (input.agentId === undefined || record.agentId === input.agentId) && (input.projectId === undefined || record.projectId === input.projectId));
-      const currentRecord = candidates.at(-1) ?? heads.filter((record) => record.ownerId === scopedOwner && record.skillId === input.id).at(-1);
+      const scoped = input.scope === undefined && input.agentId === undefined && input.projectId === undefined ? candidates.filter((record) => record.scope === "global") : candidates;
+      if (scoped.length > 1) throw new SkillConflictError("skill selector is ambiguous; supply scope and agentId/projectId");
+      const currentRecord = scoped[0];
       if (!currentRecord) throw new SkillNotFoundError(`skill ${input.id} was not found for owner ${scopedOwner}`);
       const current = mapSkill(currentRecord, scopedOwner);
       if (input.version !== current.version + 1) throw new SkillConflictError("version must be exactly the next version");

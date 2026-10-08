@@ -21,7 +21,7 @@ services:
       retries: 12
       start_period: 5s
 
-  webui:
+  subpolar-agent:
     build:
       context: .
       dockerfile: Dockerfile
@@ -29,7 +29,8 @@ services:
       - .env
     environment:
       POCKETBASE_URL: http://pocketbase:8090
-      WEBUI_PORT: 4173
+      SUBPOLAR_AGENT_PORT: 4173
+      SUBPOLAR_AGENT_HOST: 0.0.0.0
     depends_on:
       pocketbase:
         condition: service_healthy
@@ -38,7 +39,8 @@ services:
       - "4173:4173"
     volumes:
       - .:/app
-      - webui_node_modules:/app/@webui/node_modules
+      - ../../:/dev-workspace
+      - workspace_node_modules:/app/node_modules
 
 volumes:
-  webui_node_modules:
+  workspace_node_modules:

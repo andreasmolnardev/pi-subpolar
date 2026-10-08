@@ -52,7 +52,7 @@ ports: implement the port methods explicitly and preserve `runId`, `requestId`,
 and `sessionId` on every outcome and event.
 
 The fixture is a smoke seam, not full Pi execution. The packages intentionally
-do not import Pi, WebUI, PocketBase, Hono, or HTTP modules.
+do not import Pi, Subpolar Agent, PocketBase, Hono, or HTTP modules.
 
 Run the package tests with:
 
