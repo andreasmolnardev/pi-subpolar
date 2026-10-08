@@ -30,6 +30,7 @@ services:
     environment:
       POCKETBASE_URL: http://pocketbase:8090
       SUBPOLAR_AGENT_PORT: 4173
+      SUBPOLAR_AGENT_HOST: 0.0.0.0
     depends_on:
       pocketbase:
         condition: service_healthy
@@ -38,6 +39,7 @@ services:
       - "4173:4173"
     volumes:
       - .:/app
+      - ../../:/dev-workspace
       - workspace_node_modules:/app/node_modules
 
 volumes:

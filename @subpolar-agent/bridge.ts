@@ -74,7 +74,7 @@ await bridgeRuntime.startupReady
 
 const _server = Bun.serve<SocketData>({
   port,
-  hostname: '127.0.0.1',
+  hostname: process.env.SUBPOLAR_AGENT_HOST ?? '127.0.0.1',
   // Agent turns and transcript WebSockets can legitimately remain quiet for
   // longer than Bun's 10-second default while a model or tool is working.
   idleTimeout: 120,
