@@ -11,12 +11,12 @@ Commands:
   status
   agents list | agents inspect <ID>
   models list
-  projects list
+  projects list | create <NAME> [--directory PATH] [--agents NAME,...] | update <ID> [--name NAME] [--directory PATH] [--agents NAME,...] | delete <ID>
   sessions list [--project ID] [--search TEXT]
   sessions create [--title TEXT] [--project ID] [--repository ID] [--directory PATH] [--agent NAME] [--model ID] [--thinking LEVEL] [--permission MODE] [--worktree ID]
   sessions send <SESSION_ID> <MESSAGE> [--model PROVIDER/MODEL] [--follow]
   sessions inspect <SESSION_ID> | messages <SESSION_ID> | events <SESSION_ID> [--after ID] [--limit N]
-  sessions errors <SESSION_ID> | update <SESSION_ID> [--title TEXT] [--archived true|false] [--model PROVIDER/MODEL] | abort <SESSION_ID>
+  sessions errors <SESSION_ID> | update <SESSION_ID> [--title TEXT] [--archived true|false] [--model PROVIDER/MODEL] | delete <SESSION_ID> | abort <SESSION_ID>
   runs inspect <RUN_ID>
   tools list [--agent ID] | tools policies set <AGENT_ID> --policy TOOL_ID=allow|deny|approval [...]
   worktrees create <PROJECT_ID> --branch NAME --source-ref REF --expected-sha SHA
@@ -121,7 +121,21 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
       if (!data) throw new CliUsageError(`Agent not found: ${id}`)
     } else if (group === 'models' && action === 'list') data = await client.listModels()
     else if (group === 'projects' && action === 'list') data = await client.listProjects()
-    else if (group === 'sessions' && action === 'list') {
+    else if (group === 'projects' && action === 'create') {
+      const name = required(rest[0], 'PROJECT_NAME')
+      const directory = optionValue(rest, '--directory'); const agents = optionValue(rest, '--agents')
+      data = await client.createProject({ name, ...(directory ? { directory } : {}), ...(agents ? { agentNames: agents.split(',').map((value) => value.trim()).filter(Boolean) } : {}) })
+    } else if (group === 'projects' && action === 'update') {
+      const id = Number(required(rest[0], 'PROJECT_ID'))
+      if (!Number.isSafeInteger(id) || id < 0) throw new CliUsageError('PROJECT_ID must be a non-negative integer')
+      const name = optionValue(rest, '--name'); const directory = optionValue(rest, '--directory'); const agents = optionValue(rest, '--agents')
+      if (!name && !directory && agents === undefined) throw new CliUsageError('projects update requires --name, --directory, or --agents')
+      data = await client.updateProject(id, { ...(name ? { name } : {}), ...(directory ? { directory } : {}), ...(agents === undefined ? {} : { agentNames: agents.split(',').map((value) => value.trim()).filter(Boolean) }) })
+    } else if (group === 'projects' && action === 'delete') {
+      const id = Number(required(rest[0], 'PROJECT_ID'))
+      if (!Number.isSafeInteger(id) || id < 0) throw new CliUsageError('PROJECT_ID must be a non-negative integer')
+      data = await client.deleteProject(id)
+    } else if (group === 'sessions' && action === 'list') {
       const project = optionValue(rest, '--project'); const search = optionValue(rest, '--search')
       data = await client.listSessions({ ...(project ? { project } : {}), ...(search ? { search } : {}) })
     } else if (group === 'sessions' && action === 'create') {
@@ -195,7 +209,8 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
       if (archivedValue !== undefined && archivedValue !== 'true' && archivedValue !== 'false') throw new CliUsageError('--archived must be true or false')
       if (model !== undefined) parseModelSelection(model)
       data = await client.updateSession(id, { ...(title ? { title } : {}), ...(archivedValue === undefined ? {} : { archived: archivedValue === 'true' }), ...(model ? { model } : {}) })
-    } else if (group === 'sessions' && action === 'abort') data = await client.abortRun(required(rest[0], 'SESSION_ID'))
+    } else if (group === 'sessions' && action === 'delete') data = await client.deleteSession(required(rest[0], 'SESSION_ID'))
+    else if (group === 'sessions' && action === 'abort') data = await client.abortRun(required(rest[0], 'SESSION_ID'))
     else if (group === 'runs' && action === 'inspect') data = await client.inspectRun(required(rest[0], 'RUN_ID'))
     else if (group === 'tools' && action === 'list') {
       const agentId = optionValue(rest, '--agent')

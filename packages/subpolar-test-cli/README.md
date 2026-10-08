@@ -29,8 +29,8 @@ Exit codes: `0` success, `1` request/runtime failure, `2` usage error, `3` timeo
 ## Commands
 
 - `status` — health and capability information.
-- `agents list`, `models list`, `projects list`.
-- `sessions list [--project ID] [--search TEXT]`.
+- `agents list`, `models list`, `projects list`, plus owner-scoped `projects create NAME`, `projects update ID`, and `projects delete ID`.
+- `sessions list [--project ID] [--search TEXT]` and `sessions delete SESSION_ID`.
 - `sessions create` with optional `--title`, `--project`, `--directory`, `--agent`, `--model`, `--thinking`, `--permission`, and `--worktree`.
 - `sessions send SESSION_ID MESSAGE [--follow]` — send a message and start its run; `--follow` then streams session events.
 - `sessions inspect SESSION_ID`, `sessions messages SESSION_ID`, `sessions events SESSION_ID [--after ID] [--limit N]`, `sessions errors SESSION_ID`, `sessions update SESSION_ID [--title TEXT] [--archived true|false] [--model PROVIDER/MODEL]`, and `sessions abort SESSION_ID`.

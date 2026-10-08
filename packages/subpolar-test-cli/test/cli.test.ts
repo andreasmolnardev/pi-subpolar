@@ -37,6 +37,30 @@ describe('@subpolar/test-cli', () => {
     }
   })
 
+  test('creates, updates, and deletes projects through owner-scoped client routes', async () => {
+    const requests: Request[] = []
+    const responses = [
+      response({ id: 1, name: 'demo' }, 201),
+      response({ id: 1, name: 'renamed' }),
+      response({ ok: true }),
+    ]
+    for (const args of [
+      ['projects', 'create', 'demo', '--directory', '/workspace', '--agents', 'master,helper'],
+      ['projects', 'update', '1', '--name', 'renamed', '--agents', 'master'],
+      ['projects', 'delete', '1'],
+    ]) {
+      const result = await runCli([...args, '--json'], {
+        io: { stdout: () => undefined }, fetch: async (input, init) => { requests.push(new Request(input, init)); return responses.shift()! },
+      })
+      expect(result).toBe(0)
+    }
+    expect(requests.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      'POST /api/projects', 'PATCH /api/projects/1', 'DELETE /api/projects/1',
+    ])
+    expect(await requests[0]!.json()).toEqual({ name: 'demo', directory: '/workspace', agentNames: ['master', 'helper'] })
+    expect(await requests[1]!.json()).toEqual({ name: 'renamed', agentNames: ['master'] })
+  })
+
   test('creates a session with the requested interactive configuration', async () => {
     let body: Record<string, unknown> | undefined
     const code = await runCli(['sessions', 'create', '--title', 'debug', '--project', 'p1', '--directory', '/workspace', '--agent', 'helper', '--model', 'openai/gpt', '--thinking', 'medium', '--permission', 'ask', '--worktree', 'wt1'], {
