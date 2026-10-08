@@ -49,12 +49,13 @@ describe('bridge model delivery ordering', () => {
   it('does not persist a requested model until set_model succeeds', () => {
     const messagePost = section("path.length === 4 && path[3] === 'messages' && request.method === 'POST'", "path.length === 4 && path[3] === 'runs' && request.method === 'POST'")
     const run = section("path.length === 4 && path[3] === 'runs' && request.method === 'POST'", "path.length === 4 && path[3] === 'state' && request.method === 'GET'")
+    const sessionPatch = section("if (path.length === 3 && request.method === 'PATCH')", "if (path.length === 3 && request.method === 'DELETE')")
 
     expect(messagePost).not.toContain('model: record.model')
     expect(messagePost).toContain('profile: context.agentName')
-    expect(run.indexOf("await sendRpc(id, { type: 'set_model'"))
-      .toBeLessThan(run.indexOf('await persistSessionModel('))
+    expect(run.indexOf("await sendRpc(id, { type: 'set_model'")).toBeLessThan(run.indexOf('await persistSessionModel('))
     expect(run).toContain('await store.interruptMessageDelivery(claimedDelivery)')
+    expect(sessionPatch.indexOf("await sendRpc(id, { type: 'set_model'")).toBeLessThan(sessionPatch.indexOf('updateSession(ownerId, id'))
   })
 
   it('fails closed when subagent parent capabilities are omitted or empty', () => {

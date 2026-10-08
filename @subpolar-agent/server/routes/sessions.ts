@@ -274,18 +274,31 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
           }
         }
         const title = typeof input.title === 'string' ? input.title.trim() : ''
+        let selectedModel
+        if (input.model !== undefined) {
+          try {
+            selectedModel = deps.modelSelection(input.model)
+            await deps.validateModelSelection(ownerId, selectedModel)
+          } catch (error) {
+            if (error instanceof Error && (error as { code?: unknown }).code === 'MODEL_UNAVAILABLE') return deps.json({ error: error.message, code: 'MODEL_UNAVAILABLE' }, 409)
+            return deps.json({ error: 'Invalid model selection', code: 'INVALID_MODEL' }, 400)
+          }
+        }
         const client = ownershipClient
         const record = ownedRecord
+        if (selectedModel) await deps.sendRpc(id, { type: 'set_model', provider: selectedModel.providerID, modelId: selectedModel.modelID }, ownedRecord)
         const updated = await deps.createProjectSessionRepository(client).updateSession(ownerId, id, {
           ...(title ? { title } : {}),
           ...(typeof input.archived === 'boolean' ? { archived: input.archived } : {}),
           ...(tags !== undefined ? { tags } : {}),
+          ...(selectedModel ? { model: selectedModel.value } : {}),
         })
         if (updated) {
           record.updatedAt = updated.updatedAt
           record.title = updated.title
           record.archived = updated.archived
           record.tags = updated.tags
+          record.model = updated.model
         }
         if (title) await deps.sendRpc(id, { type: 'set_session_name', name: title }, ownedRecord)
         await deps.saveState(record)
