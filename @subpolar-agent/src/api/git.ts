@@ -1,11 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchWrapper, FetchError } from './fetchWrapper'
 import { API_BASE_URL } from '@/config'
+import { fetchProjectRepository } from './projects'
 import type { GitStatusResponse, FileDiffResponse, GitCommit, CommitDetails } from '@/types/git'
 import type { RepositoryRead, RepositoryStatusRead, RepositoryBranchRead, RepositoryDiffRead, RepositoryWorktreeRead } from '@/types/git'
 
 export async function fetchRepository(projectId: string): Promise<{ repository: RepositoryRead; requestId: string }> {
-  return fetchWrapper(`${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/repository`)
+  return await fetchProjectRepository(projectId) as unknown as { repository: RepositoryRead; requestId: string }
 }
 
 export async function fetchRepositoryStatus(projectId: string): Promise<{ repository: RepositoryRead; status: RepositoryStatusRead; requestId: string }> {

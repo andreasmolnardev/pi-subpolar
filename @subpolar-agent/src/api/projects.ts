@@ -1,4 +1,5 @@
 import { fetchWrapper, fetchWrapperVoid, fetchForSubpolarClient } from './fetchWrapper'
+import { assertAuthGeneration, getAuthGeneration } from '@/stores/authIdentityStore'
 import { SubpolarClient } from '@subpolar/client'
 import { API_BASE_URL } from '@/config'
 import type { GeneralChatStatus, GeneralChatInitRequest } from '@subpolar/shared/types'
@@ -31,6 +32,13 @@ const sharedApiClient = new SubpolarClient({
 
 export async function listProjects(): Promise<Project[]> {
   return await sharedApiClient.listProjects() as unknown as Project[]
+}
+
+export async function fetchProjectRepository(projectId: string): Promise<Record<string, unknown>> {
+  const generation = getAuthGeneration()
+  const repository = await sharedApiClient.repository(projectId)
+  assertAuthGeneration(generation)
+  return repository
 }
 
 export async function getProject(id: number): Promise<Project> {
