@@ -9,15 +9,15 @@ import { VoiceSettings } from '@/components/settings/VoiceSettings'
 import { NotificationSettings } from '@/components/settings/NotificationSettings'
 import { IntegrationsSettings } from '@/components/settings/IntegrationsSettings'
 import { ExtensionsSettings } from '@/components/settings/ExtensionsSettings'
-import { UsageSettings } from '@/components/settings/UsageSettings'
+
 import { TeachToolsSettings } from '@/components/settings/TeachToolsSettings'
-import { ProxySettings } from '@/components/settings/ProxySettings'
+
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { Settings2, Keyboard, ChevronLeft, Key, User, Volume2, Bell, X, MessageSquare, Palette, Plug, BarChart3, Network, Wrench } from 'lucide-react'
+import { Settings2, Keyboard, ChevronLeft, Key, User, Volume2, Bell, X, MessageSquare, Palette, Plug, Wrench } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSettingsDialog } from '@/hooks/useSettingsDialog'
 
-type SettingsView = 'menu' | 'general' | 'chat' | 'appearance' | 'shortcuts' | 'providers' | 'integrations' | 'extensions' | 'account' | 'voice' | 'notifications' | 'usage' | 'proxy' | 'teach-tools'
+type SettingsView = 'menu' | 'general' | 'chat' | 'appearance' | 'shortcuts' | 'providers' | 'integrations' | 'extensions' | 'account' | 'voice' | 'notifications' | 'teach-tools'
 
 export function SettingsDialog() {
   const { isOpen, close, activeTab, setActiveTab } = useSettingsDialog()
@@ -81,11 +81,10 @@ export function SettingsDialog() {
     { id: 'notifications', icon: Bell, label: 'Notifications', description: 'Push notification preferences' },
     { id: 'voice', icon: Volume2, label: 'Voice', description: 'Text-to-speech and speech-to-text settings' },
     { id: 'shortcuts', icon: Keyboard, label: 'Keyboard Shortcuts', description: 'Customize keyboard shortcuts' },
-    { id: 'integrations', icon: Plug, label: 'Integrations', description: 'Configure MCP, calendars, and mail' },
+    { id: 'integrations', icon: Plug, label: 'Integrations & Tools', description: 'Configure MCP, calendars, and mail' },
     { id: 'providers', icon: Key, label: 'Providers', description: 'Configure AI providers and default models' },
     { id: 'extensions', icon: Plug, label: 'Extensions', description: 'View installed Pi extensions' },
-    { id: 'usage', icon: BarChart3, label: 'Usage', description: 'Daily input, output, and cache-read tokens' },
-    { id: 'proxy', icon: Network, label: 'Proxy', description: 'OpenAI-compatible message-only proxy' },
+
     { id: 'teach-tools', icon: Wrench, label: 'Teach Tools', description: 'Generate and review tool drafts from CLI, MCP, or OpenAPI sources' },
   ]
 
@@ -146,6 +145,7 @@ export function SettingsDialog() {
               </nav>
               {/* Content area */}
               <div className="flex-1 overflow-y-auto p-6">
+                <div key={teachToolsActive ? 'teach-tools' : activeTab} className="animate-in fade-in-0 slide-in-from-right-2 duration-200">
                 {teachToolsActive ? <TeachToolsSettings /> : <>
                   {activeTab === 'account' && <AccountSettings />}
                   {activeTab === 'general' && <GeneralSettings />}
@@ -157,9 +157,8 @@ export function SettingsDialog() {
                   {activeTab === 'providers' && <ProviderSettings />}
                   {activeTab === 'integrations' && <IntegrationsSettings />}
                   {activeTab === 'extensions' && <ExtensionsSettings />}
-                  {activeTab === 'usage' && <UsageSettings />}
-                  {activeTab === 'proxy' && <ProxySettings />}
                 </>}
+                </div>
               </div>
             </div>
           </div>
@@ -191,7 +190,7 @@ export function SettingsDialog() {
              </Button>
            </div>
 
-           <div className="flex-1 min-h-0 overflow-y-auto p-4 pb-32">
+           <div key={mobileView} className="flex-1 min-h-0 overflow-y-auto p-4 pb-32 animate-in fade-in-0 slide-in-from-right-2 duration-200">
              {mobileView === 'menu' && (
                <div className="space-y-3">
                  {menuItems.map((item) => (
@@ -224,8 +223,6 @@ export function SettingsDialog() {
                {mobileView === 'providers' && <div key="providers"><ProviderSettings /></div>}
                {mobileView === 'integrations' && <div key="integrations"><IntegrationsSettings /></div>}
                {mobileView === 'extensions' && <div key="extensions"><ExtensionsSettings /></div>}
-               {mobileView === 'usage' && <div key="usage"><UsageSettings /></div>}
-               {mobileView === 'proxy' && <div key="proxy"><ProxySettings /></div>}
                {mobileView === 'teach-tools' && <div key="teach-tools"><TeachToolsSettings /></div>}
            </div>
         </div>

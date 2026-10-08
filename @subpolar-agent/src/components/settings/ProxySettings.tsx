@@ -24,8 +24,8 @@ export function ProxySettings() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-semibold">Proxy</h2>
-        <p className="mt-1 text-sm text-muted-foreground">Use the selected Pi model through a local OpenAI-compatible endpoint.</p>
+        <h2 className="text-xl font-semibold">OpenAI-compatible proxy API</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Use the selected Pi model through an OpenAI-compatible endpoint.</p>
       </div>
 
       <Card>

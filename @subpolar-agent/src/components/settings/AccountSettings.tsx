@@ -9,6 +9,7 @@ import { Loader2, User, Lock, LogOut, AlertCircle, CheckCircle, Edit2 } from 'lu
 import { useMutation } from '@tanstack/react-query'
 import { changePassword } from '@/lib/auth-client'
 import { UsageSettings } from '@/components/settings/UsageSettings'
+import { ProxySettings } from '@/components/settings/ProxySettings'
 
 export function AccountSettings() {
   const { user, logout } = useAuth()
@@ -183,6 +184,7 @@ export function AccountSettings() {
       </div>
 
       <UsageSettings />
+      <ProxySettings />
 
       <Card className="border-0 shadow-none">
         <CardHeader className="pb-2 sm:pb-4">
