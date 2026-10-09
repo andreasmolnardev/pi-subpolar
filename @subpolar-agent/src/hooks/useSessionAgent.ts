@@ -1,5 +1,5 @@
 import { useMemo, useRef, useEffect } from 'react'
-import { useMessages, useConfig, useAgents, useSession } from '@/hooks/usePiHarness'
+import { useMessages, useConfig, useAgents, useSession } from '@/hooks/usePiDurableHarness'
 import { useSessionAgentStore } from '@/stores/sessionAgentStore'
 import type { components } from '@/api/opencode-types'
 

@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { getHiddenAgents } from '@/lib/agentVisibility'
-import { useAgents } from '@/hooks/usePiHarness'
+import { useAgents } from '@/hooks/usePiDurableHarness'
 import { SUBPOLAR_API_BASE_URL } from '@/config'
 
 type AgentOption = { name: string }

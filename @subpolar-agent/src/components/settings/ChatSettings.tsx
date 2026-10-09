@@ -16,7 +16,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { getProviders } from '@/api/providers'
 import { SUBPOLAR_API_BASE_URL } from '@/config'
-import { useConfig } from '@/hooks/usePiHarness'
+import { useConfig } from '@/hooks/usePiDurableHarness'
 
 export function ChatSettings() {
   const { preferences, isLoading, updateSettings, isUpdating } = useSettings()

@@ -15,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useAgents, useAbortSession, useConfig, useCreateSession, useSendPrompt, useSteer, useEnqueueFollowUp } from "@/hooks/usePiHarness";
+import { useAgents, useAbortSession, useConfig, useCreateSession, useSendPrompt, useSteer, useEnqueueFollowUp } from "@/hooks/usePiDurableHarness";
 import { getProviders } from "@/api/providers";
 import { getHiddenAgents } from "@/lib/agentVisibility";
 import { getProject, listProjectMentions, listProjects, loadMentionContext, type MentionContextItem, type Project } from "@/api/projects";

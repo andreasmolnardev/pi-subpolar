@@ -3,7 +3,7 @@ import { ProjectSkillsList } from './ProjectSkillsList'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { useQuery } from '@tanstack/react-query'
 import { settingsApi } from '@/api/settings'
-import { useLoadSkill } from '@/hooks/usePiHarness'
+import { useLoadSkill } from '@/hooks/usePiDurableHarness'
 import type { SkillFileInfo } from '@subpolar/shared'
 import { useMemo, useState, useEffect } from 'react'
 

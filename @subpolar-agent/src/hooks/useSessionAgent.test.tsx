@@ -1,7 +1,7 @@
 import { renderHook, waitFor } from '@testing-library/react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useSessionAgent, resolveDefaultSessionAgent } from './useSessionAgent'
-import type { useMessages, useConfig, useAgents, useSession } from '@/hooks/usePiHarness'
+import type { useMessages, useConfig, useAgents, useSession } from '@/hooks/usePiDurableHarness'
 import { useSessionAgentStore } from '@/stores/sessionAgentStore'
 
 const harnessMocks = vi.hoisted(() => ({
@@ -33,7 +33,7 @@ const sessionAgentStoreMock = vi.hoisted(() => {
   return { state, store }
 })
 
-vi.mock('@/hooks/usePiHarness', () => harnessMocks)
+vi.mock('@/hooks/usePiDurableHarness', () => harnessMocks)
 
 vi.mock('@/stores/sessionAgentStore', () => ({
   useSessionAgentStore: sessionAgentStoreMock.store,

@@ -12,7 +12,7 @@ import type { WorktreeProviderRepository } from '@/api/worktrees'
 import { Button } from '@/components/ui/button'
 import { useAuthGeneration, useAuthOwner } from '@/stores/authIdentityStore'
 import { SUBPOLAR_API_BASE_URL } from '@/config'
-import { useCreateSession } from '@/hooks/usePiHarness'
+import { useCreateSession } from '@/hooks/usePiDurableHarness'
 import { savePendingSessionPrompt } from '@/lib/pending-session-prompt'
 import { addProviderContext, formatProviderContext } from './provider-context'
 

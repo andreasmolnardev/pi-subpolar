@@ -23,7 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ContextUsageIndicator } from "@/components/session/ContextUsageIndicator";
-import { useSession, useAbortSession, useSendPrompt, useSessionQueue, useRemoveQueueEntry, useRetryQueueEntry, useReorderQueueEntry, useClearQueue } from "@/hooks/usePiHarness";
+import { useSession, useAbortSession, useSendPrompt, useSessionQueue, useRemoveQueueEntry, useRetryQueueEntry, useReorderQueueEntry, useClearQueue } from "@/hooks/usePiDurableHarness";
 import { useProjectActivity } from "@/hooks/useProjectActivity";
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { useSSE } from "@/hooks/useSSE";

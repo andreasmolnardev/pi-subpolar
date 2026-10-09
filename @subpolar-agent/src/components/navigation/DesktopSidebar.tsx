@@ -8,7 +8,7 @@ import { createProject, getProject, hasProjectId, listProjects } from "@/api/pro
 import { listStoredSessions, updateStoredSession, type StoredSession } from "@/api/sessions";
 import { settingsApi, type AgentToolPolicyEffect } from "@/api/settings";
 import { getHiddenAgents } from "@/lib/agentVisibility";
-import { useAgents, useDeleteSession } from "@/hooks/usePiHarness";
+import { useAgents, useDeleteSession } from "@/hooks/usePiDurableHarness";
 import { useSettings } from "@/hooks/useSettings";
 import { useSettingsDialog } from "@/hooks/useSettingsDialog";
 import { SUBPOLAR_API_BASE_URL } from "@/config";

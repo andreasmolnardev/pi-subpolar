@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
   transcriptMessages: [] as Array<{ info: { id: string; role: string }; parts: Array<{ text?: string }> }>,
 }))
 
-vi.mock('@/hooks/usePiHarness', () => ({
+vi.mock('@/hooks/usePiDurableHarness', () => ({
   useSession: vi.fn(() => ({
     data: { title: 'Untitled session', workspaceAvailable: mocks.workspaceAvailable },
     isLoading: false,

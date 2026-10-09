@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement } from 'react'
-import { useSendPrompt } from './usePiHarness'
+import { useSendPrompt } from './usePiDurableHarness'
 import { FetchError } from '../api/fetchWrapper'
 
 const mockSendPrompt = vi.fn()

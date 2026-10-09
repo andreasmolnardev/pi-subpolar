@@ -3,9 +3,9 @@ import { renderHook, waitFor } from '@testing-library/react'
 import { useLSPStatus } from './useLSPStatus'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { LspStatus } from '@/api/subpolar'
-import { useSubpolarClient } from './usePiHarness'
+import { useSubpolarClient } from './usePiDurableHarness'
 
-vi.mock('./usePiHarness')
+vi.mock('./usePiDurableHarness')
 
 const mockGetLSPStatus = vi.fn()
 let mockClient: any
