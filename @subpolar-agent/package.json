@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun run --bun vite",
+    "dev": "node ../node_modules/vite/bin/vite.js",
     "bridge": "bun bridge.ts",
     "build": "bun run --bun tsc -b && bun run --bun vite build",
     "typecheck": "bun run --bun tsc --noEmit -p tsconfig.app.json",
