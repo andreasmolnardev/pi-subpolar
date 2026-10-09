@@ -1,7 +1,7 @@
 import { createMcpAdapter, McpAdapterError, type McpCallResult } from './mcp-adapter.ts'
 import { fetchWithNetworkPolicy, networkPolicyFromMetadata, readBoundedResponse, type NetworkPolicyOptions } from '../../core/network-policy.ts'
 
-export type WebSearchProvider = 'exa' | 'firecrawl' | 'parallel'
+export type WebSearchProvider = 'exa' | 'duckduckgo' | 'firecrawl' | 'parallel'
 
 export type WebSearchInput = {
   query: string
@@ -34,7 +34,7 @@ export class WebSearchError extends Error {
   }
 }
 
-export const WEB_SEARCH_PROVIDERS: Readonly<Record<WebSearchProvider, { endpoint: string; toolName: string; keyEnv: string }>> = {
+export const WEB_SEARCH_PROVIDERS: Readonly<Record<Exclude<WebSearchProvider, 'duckduckgo'>, { endpoint: string; toolName: string; keyEnv: string }>> = {
   exa: { endpoint: 'https://mcp.exa.ai/mcp', toolName: 'web_search_exa', keyEnv: 'EXA_API_KEY' },
   firecrawl: { endpoint: 'https://mcp.firecrawl.dev/v2/mcp', toolName: 'firecrawl_search', keyEnv: 'FIRECRAWL_API_KEY' },
   parallel: { endpoint: 'https://search.parallel.ai/mcp', toolName: 'web_search', keyEnv: 'PARALLEL_API_KEY' },
@@ -47,7 +47,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function providerValue(value: unknown): WebSearchProvider | undefined {
-  return value === 'exa' || value === 'firecrawl' || value === 'parallel' ? value : undefined
+  return value === 'exa' || value === 'duckduckgo' || value === 'firecrawl' || value === 'parallel' ? value : undefined
 }
 
 function boundedString(value: unknown, name: string, max: number, required = false): string | undefined {
@@ -68,6 +68,84 @@ function inputArgs(input: WebSearchInput, provider: WebSearchProvider): Record<s
   if (provider === 'exa') return { query, type: 'auto', numResults, livecrawl: 'fallback' }
   if (provider === 'firecrawl') return { query, limit: numResults }
   return { objective: query, search_queries: [query] }
+}
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&#(\d+);/g, (_, decimal: string) => String.fromCodePoint(Number(decimal)))
+    .replace(/&#x([\da-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+}
+
+function stripHtml(value: string): string {
+  return decodeHtml(value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')).trim()
+}
+
+function duckDuckGoResults(html: string, maxResults: number, contextSize: number): WebSearchResult[] {
+  if (/anomaly\.js|captcha|challenge-form|bots use DuckDuckGo/i.test(html)) {
+    throw new WebSearchError('PROVIDER_UNAVAILABLE', 'DuckDuckGo search returned a bot challenge')
+  }
+  const results: WebSearchResult[] = []
+  const seen = new Set<string>()
+  let remainingContext = contextSize
+  const anchors = /<a\b(?=[^>]*\bclass=["'][^"']*\bresult__a\b[^"']*["'])[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a\s*>/gi
+  for (const match of html.matchAll(anchors)) {
+    if (results.length >= maxResults) break
+    const anchorIndex = match.index ?? 0
+    const afterAnchorIndex = anchorIndex + match[0].length
+    const nextAnchorIndex = html.slice(afterAnchorIndex).search(/<a\b(?=[^>]*\bclass=["'][^"']*\bresult__a\b[^"']*["'])/i)
+    const following = html.slice(afterAnchorIndex, nextAnchorIndex < 0 ? undefined : afterAnchorIndex + nextAnchorIndex)
+    const snippetMatch = following.match(/class=["'][^"']*\bresult__snippet\b[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div|td|span)\s*>/i)
+    const title = stripHtml(match[2]).slice(0, 500)
+    const snippet = snippetMatch ? stripHtml(snippetMatch[1]) : ''
+    let resultUrl = decodeHtml(match[1])
+    try {
+      const parsed = new URL(resultUrl, 'https://html.duckduckgo.com')
+      const isDuckDuckGoHost = parsed.hostname === 'duckduckgo.com' || parsed.hostname.endsWith('.duckduckgo.com')
+      if (isDuckDuckGoHost && parsed.pathname.startsWith('/l/')) {
+        resultUrl = parsed.searchParams.get('uddg') ?? ''
+      } else if (isDuckDuckGoHost) {
+        continue
+      } else {
+        resultUrl = parsed.href
+      }
+      const target = new URL(resultUrl)
+      if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password || seen.has(target.href)) continue
+      seen.add(target.href)
+      const boundedSnippet = snippet.slice(0, remainingContext)
+      remainingContext -= boundedSnippet.length
+      results.push({ title, url: target.href, snippet: boundedSnippet })
+    } catch {
+      continue
+    }
+  }
+  return results
+}
+
+async function searchDuckDuckGo(input: WebSearchInput, options: WebSearchOptions, resultCount: number, contextSize: number): Promise<WebSearchResult[]> {
+  const query = boundedString(input.query, 'query', WEB_SEARCH_LIMITS.maxQueryLength, true)!
+  const url = new URL('https://html.duckduckgo.com/html/')
+  url.searchParams.set('q', query)
+  url.searchParams.set('kp', '-1')
+  const inheritedPolicy = options.networkPolicy ?? {}
+  const policy: NetworkPolicyOptions = {
+    ...inheritedPolicy,
+    allowedHosts: [...new Set([...(inheritedPolicy.allowedHosts ?? []), 'html.duckduckgo.com'])],
+    timeoutMs: Math.min(inheritedPolicy.timeoutMs ?? 10_000, 10_000),
+    maxResponseBytes: Math.min(inheritedPolicy.maxResponseBytes ?? 1_000_000, 1_000_000),
+  }
+  const response = await fetchWithNetworkPolicy(url, {
+    headers: { accept: 'text/html,application/xhtml+xml', 'user-agent': 'Mozilla/5.0' },
+  }, policy, options.fetch)
+  if (!response.ok) throw new WebSearchError('PROVIDER_UNAVAILABLE', `DuckDuckGo returned HTTP ${response.status}`)
+  if (!/html|xhtml/i.test(response.headers.get('content-type') ?? '')) throw new WebSearchError('PROTOCOL_ERROR', 'DuckDuckGo returned an unsupported response')
+  const html = await readBoundedResponse(response, 1_000_000)
+  return duckDuckGoResults(html, resultCount, contextSize)
 }
 
 function textValues(value: unknown): string[] {
@@ -130,6 +208,20 @@ export async function webSearch(input: WebSearchInput, options: WebSearchOptions
   let hadSuccessfulProvider = false
   const resultCount = boundedInteger(input.resultCount, 'resultCount', 1, WEB_SEARCH_LIMITS.maxResults, 5)
   for (const configured of providers) {
+    if (configured === 'duckduckgo') {
+      try {
+        const results = await searchDuckDuckGo(input, options, resultCount, contextSize)
+        hadSuccessfulProvider = true
+        if (results.length > 0) return { results }
+      } catch (error) {
+        if (error instanceof WebSearchError) lastError = error
+        else {
+          const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : undefined
+          lastError = new WebSearchError(code === 'TIMEOUT' ? 'NETWORK_ERROR' : 'PROVIDER_UNAVAILABLE', 'DuckDuckGo search provider is unavailable')
+        }
+      }
+      continue
+    }
     const provider = WEB_SEARCH_PROVIDERS[configured]
     const apiKey = options.apiKeys?.[configured] ?? process.env[provider.keyEnv]
     const adapter = createMcpAdapter({

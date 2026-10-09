@@ -47,7 +47,7 @@ type IntegrationConfig =
     })
   | (IntegrationBase & {
       type: 'web-search'
-      providers: Array<'exa' | 'firecrawl'>
+      providers: Array<'exa' | 'duckduckgo' | 'firecrawl'>
     })
 
 type IntegrationType = IntegrationConfig['type']
@@ -55,7 +55,7 @@ type IntegrationType = IntegrationConfig['type']
 const integrationTypes: Record<IntegrationType, { label: string; description: string }> = {
   mcp: { label: 'MCP', description: 'Model Context Protocol server access for agent tools' },
   openapi: { label: 'OpenAPI', description: 'OpenAPI JSON operations exposed as agent tools' },
-  'web-search': { label: 'Web Search', description: 'Keyless Exa and Firecrawl MCP providers for the web.search agent tool' },
+  'web-search': { label: 'Web Search', description: 'Exa, DuckDuckGo, and Firecrawl providers for the web.search agent tool' },
 }
 
 function createIntegration(type: IntegrationType): IntegrationConfig {
@@ -234,15 +234,15 @@ function IntegrationDialog({ open, initialType, integration, isSaving, onOpenCha
 
             {formData.type === 'web-search' && (
               <div className="space-y-3 rounded-lg border border-border p-3">
-                <p className="text-sm text-muted-foreground">Keyless hosted MCP servers. Agents call providers in order and fall back when one is unavailable.</p>
-                {(['exa', 'firecrawl'] as const).map((provider) => {
+                <p className="text-sm text-muted-foreground">Agents call enabled providers in order and fall back when one is unavailable. DuckDuckGo scrapes public search results and may be blocked or change without notice.</p>
+                {(['exa', 'duckduckgo', 'firecrawl'] as const).map((provider) => {
                   const enabled = formData.providers.includes(provider)
-                  const name = provider === 'exa' ? 'Exa' : 'Firecrawl'
+                  const name = provider === 'exa' ? 'Exa' : provider === 'duckduckgo' ? 'DuckDuckGo' : 'Firecrawl'
                   return (
                     <div key={provider} className="flex items-center justify-between gap-3">
                       <div>
-                        <Label htmlFor={`web-search-${provider}`}>{name} MCP</Label>
-                        <p className="text-xs text-muted-foreground">Free, rate-limited access</p>
+                        <Label htmlFor={`web-search-${provider}`}>{name}{provider === 'duckduckgo' ? '' : ' MCP'}</Label>
+                        <p className="text-xs text-muted-foreground">{provider === 'duckduckgo' ? 'Keyless HTML scraping; experimental' : 'Free, rate-limited access'}</p>
                       </div>
                       <Switch
                         id={`web-search-${provider}`}
