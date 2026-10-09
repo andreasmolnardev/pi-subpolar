@@ -108,6 +108,20 @@ describe('SubpolarClient', () => {
     expect(await calls[0]?.json()).toEqual({ title: 'new' })
   })
 
+  test('reads projected UI message entries through the authenticated owner-scoped route', async () => {
+    const projected = {
+      info: { id: 'm1', sessionID: 's/1', role: 'assistant' },
+      parts: [{ id: 'p1', sessionID: 's/1', messageID: 'm1', type: 'text', text: 'hello' }],
+    }
+    const { client, calls } = mockClient(() => Response.json({ messages: [projected] }))
+
+    await expect(client.messages('s/1')).resolves.toEqual([projected])
+
+    expect(new URL(calls[0]!.url).pathname).toBe('/api/sessions/s%2F1/messages')
+    expect(new URL(calls[0]!.url).search).toBe('')
+    expect(calls[0]!.headers.get('authorization')).toBe('Bearer test-token')
+  })
+
   test('inspects an owner-scoped tool call through the session route', async () => {
     const { client, calls } = mockClient(() => Response.json({ callID: 'call/1', tool: 'web.search', error: null, output: 'results' }))
     expect(await client.inspectToolCall('session/one', 'call/1')).toMatchObject({ callID: 'call/1', tool: 'web.search', output: 'results' })

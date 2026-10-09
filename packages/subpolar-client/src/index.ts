@@ -167,6 +167,8 @@ export interface SessionMessage extends JsonRecord {
   content?: string
   createdAt?: number
   metadata?: JsonRecord
+  info?: JsonRecord
+  parts?: JsonRecord[]
 }
 export interface RepositoryRead {
   root: string

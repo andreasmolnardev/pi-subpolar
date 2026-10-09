@@ -459,5 +459,25 @@ describe('SubpolarClient', () => {
     expect(result[0].parts[2]).toMatchObject({ type: 'reasoning', text: 'Second thought' })
     expect(result[0].parts[3]).toMatchObject({ type: 'text', text: 'Final answer' })
     expect(result[0].parts[4]).toMatchObject({ type: 'step-finish' })
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/sessions/ses_1/messages',
+      expect.objectContaining({ credentials: 'include', cache: 'no-store' }),
+    )
+  })
+
+  it('preserves server-projected UI messages returned by the shared client', async () => {
+    const projected = {
+      info: { id: 'msg_projected', sessionID: 'ses_1', role: 'assistant' },
+      parts: [{ id: 'part_1', sessionID: 'ses_1', messageID: 'msg_projected', type: 'text', text: 'Projected reply' }],
+    }
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ messages: [projected] }), { status: 200 }))
+
+    const result = await new SubpolarClient('/api', '/ignored-directory').listMessages('ses_1')
+
+    expect(result).toEqual([projected])
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/sessions/ses_1/messages',
+      expect.objectContaining({ credentials: 'include', cache: 'no-store' }),
+    )
   })
 })

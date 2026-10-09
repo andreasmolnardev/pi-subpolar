@@ -202,12 +202,12 @@ export class SubpolarClient {
     })
   }
 
-  async listMessages(sessionID: string) {
-    const response = await fetchWrapper<{ messages: Array<{ id?: string; role?: string; content?: string; createdAt?: number; metadata?: Record<string, unknown>; info?: MessageListResponse[number]['info']; parts?: MessageListResponse[number]['parts'] }> }>(`${this.baseURL}/sessions/${sessionID}/messages`, { params: this.getParams() })
-    if (response.messages.every((message) => message.info && Array.isArray(message.parts))) {
-      return response.messages.map((message) => ({ info: message.info!, parts: message.parts! })) as MessageListResponse
+  async listMessages(sessionID: string): Promise<MessageListResponse> {
+    const messages = await sharedApiClient.messages(sessionID)
+    if (messages.every((message) => message.info && Array.isArray(message.parts))) {
+      return messages.map((message) => ({ info: message.info!, parts: message.parts! })) as MessageListResponse
     }
-    return response.messages.map(message => {
+    return messages.map(message => {
       const userMetadata = message.role === 'user' ? getUserMessageMetadata(message.metadata) : {}
       const reasoning = typeof message.metadata?.reasoning === 'string' ? message.metadata.reasoning : ''
       const completedAt = typeof message.metadata?.completedAt === 'number' ? message.metadata.completedAt : undefined
