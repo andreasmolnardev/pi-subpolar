@@ -49,6 +49,7 @@ export interface UserPreferences {
   expandToolCalls: boolean
   showReasoning: boolean
   simpleChatMode: boolean
+  generateSessionEmoji?: boolean
   hiddenAgents?: string[]
   /** Legacy per-surface values retained for migration to hiddenAgents. */
   hiddenSidebarAgents?: string[]

@@ -113,6 +113,20 @@ export function ChatSettings() {
           </Select>
         </div>
 
+        <div className="flex flex-row items-center justify-between gap-4 rounded-lg border border-border p-4">
+          <div className="space-y-0.5">
+            <Label htmlFor="generateSessionEmoji" className="text-base">Add an emoji to session titles</Label>
+            <p className="text-sm text-muted-foreground">
+              Ask the session naming model to choose a relevant emoji along with each new session title.
+            </p>
+          </div>
+          <Switch
+            id="generateSessionEmoji"
+            checked={preferences?.generateSessionEmoji ?? false}
+            onCheckedChange={(checked) => updateSettings({ generateSessionEmoji: checked })}
+          />
+        </div>
+
         <div className="flex flex-row items-center justify-between rounded-lg border border-border p-4">
           <div className="space-y-0.5">
             <Label htmlFor="simpleChatMode" className="text-base">Simple chat mode</Label>

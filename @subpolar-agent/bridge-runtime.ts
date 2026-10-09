@@ -510,6 +510,7 @@ const modelRuntimePromise = createSharedProviderCatalogRuntime()
 const DEFAULT_SETTINGS = {
   theme: 'dark', mode: 'build', autoScroll: true, expandDiffs: true,
   expandToolCalls: false, showReasoning: false, simpleChatMode: false,
+  generateSessionEmoji: false,
   defaultModels: {}, hiddenSidebarAgents: ['auto', 'compaction', 'summary', 'title'],
   hiddenChatInputAgents: ['compaction', 'summary', 'title'], leaderKey: 'Cmd+O',
   directShortcuts: ['submit', 'abort'], keyboardShortcuts: {
@@ -977,7 +978,7 @@ async function generateFirstSessionTitle(
   const runtime = await userProviderRuntime(userId)
   const model = runtime.getModel(selection.providerID, selection.modelID)
   if (!model) throw new ModelUnavailableError({ providerID: selection.providerID, modelID: selection.modelID })
-  return generateSessionTitle({ runtime, model, request })
+  return generateSessionTitle({ runtime, model, request, includeEmoji: preferences?.preferences?.generateSessionEmoji === true })
 }
 
 async function persistSessionModel(
