@@ -65,22 +65,28 @@ export async function createProject(data: {
   piConfigName?: string
   agentNames?: string[]
 }): Promise<Project> {
-  return fetchWrapper(`${API_BASE_URL}/api/projects`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
+  if (data.piConfigName !== undefined) {
+    return fetchWrapper(`${API_BASE_URL}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  }
+  return await sharedApiClient.createProject(data) as unknown as Project
 }
 
 export async function updateProject(
   id: number,
   data: { name?: string; directory?: string; piConfigName?: string; agentNames?: string[] },
 ): Promise<Project> {
-  return fetchWrapper(`${API_BASE_URL}/api/projects/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
+  if (data.piConfigName !== undefined) {
+    return fetchWrapper(`${API_BASE_URL}/api/projects/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  }
+  return await sharedApiClient.updateProject(id, data) as unknown as Project
 }
 
 export async function getDefaultProjectDirectory(projectName: string, userId?: string): Promise<string> {
@@ -117,9 +123,7 @@ export async function loadMentionContext(directory: string, mentions: MentionCon
 }
 
 export async function deleteProject(id: number): Promise<void> {
-  return fetchWrapperVoid(`${API_BASE_URL}/api/projects/${id}`, {
-    method: 'DELETE',
-  })
+  await sharedApiClient.deleteProject(id)
 }
 
 export async function touchProjectActivity(id: number): Promise<void> {

@@ -110,6 +110,26 @@ describe('SubpolarClient', () => {
     expect(await calls[1]?.json()).toEqual({ project: 1, title: 'demo' })
   })
 
+  test('lists, reads, updates, and deletes projects using server route shapes', async () => {
+    const project = { id: 2, name: 'demo', directory: '/workspace/demo' }
+    const { client, calls } = mockClient((request) => {
+      const path = new URL(request.url).pathname
+      if (request.method === 'GET' && path === '/api/projects') return Response.json({ projects: [project] })
+      if (request.method === 'GET') return Response.json({ project })
+      if (request.method === 'DELETE') return Response.json({ ok: true })
+      return Response.json(project)
+    })
+
+    expect(await client.listProjects()).toEqual([project])
+    expect(await client.getProject(2)).toEqual(project)
+    expect(await client.updateProject(2, { name: 'renamed', directory: '/workspace/renamed', agentNames: ['helper'] })).toEqual(project)
+    expect(await client.deleteProject(2)).toEqual({ ok: true })
+    expect(calls.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      'GET /api/projects', 'GET /api/projects/2', 'PATCH /api/projects/2', 'DELETE /api/projects/2',
+    ])
+    expect(await calls[2]?.json()).toEqual({ name: 'renamed', directory: '/workspace/renamed', agentNames: ['helper'] })
+  })
+
   test('inspects a run through the user-scoped route', async () => {
     const { client, calls } = mockClient(() => Response.json({ run: { runId: 'r1', state: 'completed' } }))
     expect(await client.inspectRun('run/one')).toEqual({ runId: 'r1', state: 'completed' })
