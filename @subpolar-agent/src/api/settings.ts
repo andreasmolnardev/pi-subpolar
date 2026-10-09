@@ -16,9 +16,14 @@ import type {
   IntegrationSettings,
 } from './types/settings'
 import { API_BASE_URL } from '@/config'
-import { fetchWrapper, FetchError } from './fetchWrapper'
+import { SubpolarClient } from '@subpolar/client'
+import { fetchForSubpolarClient, fetchWrapper, FetchError } from './fetchWrapper'
 
 const DEFAULT_USER_ID = 'default'
+const sharedApiClient = new SubpolarClient({
+  baseUrl: API_BASE_URL || globalThis.location?.origin || 'http://localhost',
+  fetch: fetchForSubpolarClient,
+})
 const DEFAULT_WEB_SEARCH_INTEGRATION: IntegrationConfig = {
   id: 'web-search',
   name: 'Web Search',
@@ -352,9 +357,9 @@ export const settingsApi = {
     })
   },
 
-  listSubpolarTools: async (): Promise<{ tools: SubpolarTool[] }> => {
-    return fetchWrapper(`${API_BASE_URL}/api/settings/subpolar-tools`)
-  },
+  listSubpolarTools: async (): Promise<{ tools: SubpolarTool[] }> => ({
+    tools: await sharedApiClient.listTools() as unknown as SubpolarTool[],
+  }),
 
   listAgentDebugTools: async (agentName: string, sessionId: string): Promise<{ tools: AgentDebugTool[] }> => fetchWrapper(`${API_BASE_URL}/api/subpolar-cli/tools/list`, {
     method: 'POST',
@@ -372,17 +377,13 @@ export const settingsApi = {
     return fetchWrapper(`${API_BASE_URL}/api/settings/openapi/discover`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(integration) })
   },
 
-  listAgentToolPolicies: async (agentId: string): Promise<{ policies: AgentToolPolicy[] }> => {
-    return fetchWrapper(`${API_BASE_URL}/api/settings/agents/${encodeURIComponent(agentId)}/tool-policies`)
-  },
+  listAgentToolPolicies: async (agentId: string): Promise<{ policies: AgentToolPolicy[] }> => ({
+    policies: await sharedApiClient.listAgentToolPolicies(agentId) as unknown as AgentToolPolicy[],
+  }),
 
-  replaceAgentToolPolicies: async (agentId: string, policies: Array<{ toolId: string; effect: AgentToolPolicyEffect }>): Promise<{ policies: AgentToolPolicy[] }> => {
-    return fetchWrapper(`${API_BASE_URL}/api/settings/agents/${encodeURIComponent(agentId)}/tool-policies`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ policies }),
-    })
-  },
+  replaceAgentToolPolicies: async (agentId: string, policies: Array<{ toolId: string; effect: AgentToolPolicyEffect }>): Promise<{ policies: AgentToolPolicy[] }> => ({
+    policies: await sharedApiClient.replaceAgentToolPolicies(agentId, policies) as unknown as AgentToolPolicy[],
+  }),
 
   getVersionInfo: async (): Promise<VersionInfo> => {
     return fetchWrapper(`${API_BASE_URL}/api/health/version`)
