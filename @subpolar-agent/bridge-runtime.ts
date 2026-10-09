@@ -115,7 +115,7 @@ import {
 } from './server/index.ts'
 import { SkillConflictError, SkillNotFoundError, SkillValidationError } from '../packages/subpolar-contracts/src/index.ts'
 import { createSkillContextAudit, effectiveAgentConfiguration } from './server/application/tools/tools.ts'
-import { hasPendingApprovalWaiter, notifyApprovalResolution } from './server/application/tools/approval-execution.ts'
+import { hasPendingApprovalWaiter, notifyApprovalResolution, waitForApprovalResolution } from './server/application/tools/approval-execution.ts'
 import {
   NewSessionRouteError,
   resolveNewSessionRoute,
@@ -1563,6 +1563,10 @@ async function executeStatelessPrompt(input: StatelessSubpolarAgentRunInput, own
             runId: execution.request.runId,
             prompt: execution.request.prompt,
             ...(execution.request.signal ? { signal: execution.request.signal } : {}),
+            approval: {
+              wait: (approvalId) => waitForApprovalResolution(approvalId, Date.now() + 300_000),
+              cancel: (approvalId) => { notifyApprovalResolution(approvalId, 'expired') },
+            },
           }, execution)
           const result = await engine.wait(ownerId, input.sessionId, runContext.requestId)
           if (result.status !== 'done') throw new Error(result.reason ?? 'Pi Durable run did not complete')

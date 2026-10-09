@@ -116,6 +116,18 @@ describe('gateway parity progress: route boundary', () => {
     expect(result.deps.notifyApprovalResolution).not.toHaveBeenCalled()
   })
 
+  it('notifies the in-flight gateway waiter from the authenticated approval decision route', async () => {
+    const approvalId = 'approval-pi-durable:conversation:request:tool-call'
+    const f = fixture(`/api/session/session/permissions/${approvalId}`, { response: 'approve' })
+    f.deps.hasPendingApprovalWaiter = vi.fn(() => true)
+    f.deps.respondToCoreApproval.mockResolvedValueOnce({ id: approvalId, status: 'approved', input: { token: 'approval-secret' } })
+    const response = (await handleToolsRoute(f.context))!
+    expect(response.status).toBe(200)
+    expect(f.deps.respondToCoreApproval).toHaveBeenCalledWith({}, 'owner', approvalId, 'approve', 'session')
+    expect(f.deps.notifyApprovalResolution).toHaveBeenCalledWith(approvalId, 'approved')
+    expect(f.deps.continueCoreApprovedTool).not.toHaveBeenCalled()
+  })
+
   it('does not turn an already rejected approval into an approved waiter notification on retry', async () => {
     const f = fixture('/api/session/session/permissions/approval', { response: 'approve' })
     f.deps.respondToCoreApproval.mockResolvedValueOnce({ id: 'approval', status: 'rejected', input: { token: 'approval-secret' } })

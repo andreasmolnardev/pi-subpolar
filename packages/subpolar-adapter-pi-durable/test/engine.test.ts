@@ -6,6 +6,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { RuntimeExecution, ToolDefinition, ToolCall } from "@subpolar/contracts";
 import { PiDurableAgentEngine } from "../src/index.ts";
+
 import { openBunSqliteDatabase } from "../src/sqlite.ts";
 
 const directories: string[] = [];
@@ -39,6 +40,30 @@ function execution(requestId: string, runId = `run-${requestId}`): RuntimeExecut
     tools: { async call() { throw new Error("No tools should be called in this test"); } },
     async emit() {},
   };
+}
+
+function createApprovalCoordinator() {
+  const pending = new Map<string, (resolution: "approved" | "rejected" | "expired") => void>();
+  return {
+    pending,
+    wait(approvalId: string) {
+      return new Promise<"approved" | "rejected" | "expired">((resolve) => pending.set(approvalId, resolve));
+    },
+    cancel(approvalId: string) { pending.delete(approvalId); },
+    notify(approvalId: string, resolution: "approved" | "rejected" | "expired") {
+      const resolve = pending.get(approvalId);
+      if (!resolve) return false;
+      pending.delete(approvalId);
+      resolve(resolution);
+      return true;
+    },
+  };
+}
+
+async function viWaitForApprovalWaiter(approvalId: string, pending: Map<string, unknown>): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!pending.has(approvalId) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(pending.has(approvalId)).toBe(true);
 }
 
 async function databasePath(): Promise<string> {
@@ -250,12 +275,157 @@ test("invokes one registered Durable tool with stable Subpolar identity and retu
     input: { text: "hello from model" },
     runId: "stable-run-tool",
     requestId: "stable-request-tool",
-    idempotencyKey: `pi-durable:${conversationId}:stable-request-tool:model-call-1`,
+    idempotencyKey: `tool-call:pi-durable:${conversationId}:stable-request-tool:model-call-1`,
     callId: `pi-durable:${conversationId}:stable-request-tool:model-call-1`,
   });
   expect(JSON.stringify(followUpMessages)).toContain('"role":"toolResult"');
   expect(JSON.stringify(followUpMessages)).toContain("tool-result");
   expect(faux.state.callCount).toBe(2);
+  await engine.close();
+});
+
+test("pauses an approved Durable tool call and retries the exact gateway call through the invoker", async () => {
+  const { faux, models } = setupModels();
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("demo_echo", { text: "approved input" }, { id: "approval-model-call" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("approved tool result returned"),
+  ]);
+  const tool: ToolDefinition = {
+    id: "demo.echo", namespace: "demo", description: "Echo", inputSchema: { type: "object", properties: { text: { type: "string" } } }, enabled: true, risk: "low",
+  };
+  const calls: ToolCall[] = [];
+  const effects: string[] = [];
+  const approval = createApprovalCoordinator();
+  let approvalId = "";
+  const run = execution("approval-request", "approval-run");
+  run.tools = {
+    async call(call) {
+      calls.push(call);
+      if (calls.length === 1) {
+        approvalId = `approval-${call.callId}`;
+        expect(approval.pending.has(approvalId)).toBe(true);
+        return { ok: false, status: "approval_required", approvalId, error: { code: "APPROVAL_REQUIRED", message: "waiting" } };
+      }
+      effects.push("gateway side effect");
+      return { ok: true, status: "executed", value: "done" };
+    },
+  };
+  const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models, tools: [tool] });
+  const conversationId = await engine.configure("owner-a", "session-a", { model: { provider: "faux", modelId: "faux-1" } });
+  approvalId = `approval-pi-durable:${conversationId}:approval-request:approval-model-call`;
+  await engine.submit({ ownerId: "owner-a", sessionId: "session-a", requestId: "approval-request", runId: "approval-run", prompt: "call approved tool", approval }, run);
+  await viWaitForApprovalWaiter(approvalId, approval.pending);
+  expect(calls).toHaveLength(1);
+  expect(approval.notify(approvalId, "approved")).toBe(true);
+  await expect(engine.wait("owner-a", "session-a", "approval-request"))
+    .resolves.toMatchObject({ status: "done", output: "approved tool result returned" });
+
+  expect(calls).toHaveLength(2);
+  expect(calls[1]).toBe(calls[0]);
+  expect(calls[0]).toMatchObject({
+    callId: `pi-durable:${conversationId}:approval-request:approval-model-call`,
+    toolId: "demo.echo",
+    input: { text: "approved input" },
+    runId: "approval-run",
+    requestId: "approval-request",
+    idempotencyKey: `tool-call:pi-durable:${conversationId}:approval-request:approval-model-call`,
+  });
+  expect(effects).toEqual(["gateway side effect"]);
+  expect(approval.pending.has(approvalId)).toBe(false);
+  await engine.close();
+});
+
+test("handles a decision notified during the initial gateway call without missing it", async () => {
+  const { faux, models } = setupModels();
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("demo_echo", { text: "race input" }, { id: "race-call" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("race resumed"),
+  ]);
+  const tool: ToolDefinition = { id: "demo.echo", namespace: "demo", description: "Echo", inputSchema: { type: "object", properties: {} }, enabled: true, risk: "low" };
+  const calls: ToolCall[] = [];
+  const approval = createApprovalCoordinator();
+  const run = execution("race-request", "race-run");
+  run.tools = { async call(call) {
+    calls.push(call);
+    const approvalId = `approval-${call.callId}`;
+    if (calls.length === 1) {
+      expect(approval.pending.has(approvalId)).toBe(true);
+      expect(approval.notify(approvalId, "approved")).toBe(true);
+      return { ok: false, status: "approval_required", approvalId, error: { code: "APPROVAL_REQUIRED", message: "waiting" } };
+    }
+    return { ok: true, status: "executed", value: "done" };
+  } };
+  const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models, tools: [tool] });
+  await engine.configure("owner-a", "session-a", { model: { provider: "faux", modelId: "faux-1" } });
+  await engine.submit({ ownerId: "owner-a", sessionId: "session-a", requestId: "race-request", runId: "race-run", prompt: "exercise notification race", approval }, run);
+  await expect(engine.wait("owner-a", "session-a", "race-request"))
+    .resolves.toMatchObject({ status: "done", output: "race resumed" });
+  expect(calls).toHaveLength(2);
+  expect(calls[0]).toBe(calls[1]);
+  await engine.close();
+});
+
+test.each([
+  ["rejected", "APPROVAL_REJECTED"],
+  ["expired", "APPROVAL_EXPIRED"],
+] as const)("returns a safe tool error for %s approval without invoking a side effect", async (resolution, expectedCode) => {
+  const { faux, models } = setupModels();
+  let followUp: unknown;
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("demo_echo", { text: "not executed" }, { id: `denied-${resolution}` }), { stopReason: "toolUse" }),
+    (context) => { followUp = context.messages; return fauxAssistantMessage("handled safe error"); },
+  ]);
+  const tool: ToolDefinition = { id: "demo.echo", namespace: "demo", description: "Echo", inputSchema: { type: "object", properties: {} }, enabled: true, risk: "low" };
+  const calls: ToolCall[] = [];
+  const effects: string[] = [];
+  const approval = createApprovalCoordinator();
+  const run = execution(`denied-${resolution}-request`, `denied-${resolution}-run`);
+  run.tools = { async call(call) {
+    calls.push(call);
+    if (calls.length === 1) return { ok: false, status: "approval_required", approvalId: `approval-${call.callId}`, error: { code: "APPROVAL_REQUIRED", message: "waiting" } };
+    effects.push("must not happen");
+    return { ok: true };
+  } };
+  const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models, tools: [tool] });
+  const conversationId = await engine.configure("owner-a", "session-a", { model: { provider: "faux", modelId: "faux-1" } });
+  const approvalId = `approval-pi-durable:${conversationId}:${run.context.requestId}:denied-${resolution}`;
+  await engine.submit({ ownerId: "owner-a", sessionId: "session-a", requestId: run.context.requestId, runId: run.context.runId!, prompt: "wait for decision", approval }, run);
+  await viWaitForApprovalWaiter(approvalId, approval.pending);
+  expect(approval.notify(approvalId, resolution)).toBe(true);
+  await expect(engine.wait("owner-a", "session-a", run.context.requestId)).resolves.toMatchObject({ status: "done" });
+  expect(calls).toHaveLength(1);
+  expect(effects).toEqual([]);
+  expect(JSON.stringify(followUp)).toContain(expectedCode);
+  expect(approval.pending.has(approvalId)).toBe(false);
+  await engine.close();
+});
+
+test("does not retry an approval-required call after the request aborts", async () => {
+  const { faux, models } = setupModels();
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("demo_echo", { text: "aborted" }, { id: "abort-approval-call" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("approval wait safely interrupted"),
+  ]);
+  const tool: ToolDefinition = { id: "demo.echo", namespace: "demo", description: "Echo", inputSchema: { type: "object", properties: {} }, enabled: true, risk: "low" };
+  const controller = new AbortController();
+  const calls: ToolCall[] = [];
+  const approval = createApprovalCoordinator();
+  const run = execution("abort-approval-request", "abort-approval-run");
+  run.request = { ...run.request, signal: controller.signal };
+  run.tools = { async call(call) {
+    calls.push(call);
+    return { ok: false, status: "approval_required", approvalId: `approval-${call.callId}`, error: { code: "APPROVAL_REQUIRED", message: "waiting" } };
+  } };
+  const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models, tools: [tool] });
+  const conversationId = await engine.configure("owner-a", "session-a", { model: { provider: "faux", modelId: "faux-1" } });
+  const approvalId = `approval-pi-durable:${conversationId}:abort-approval-request:abort-approval-call`;
+  await engine.submit({ ownerId: "owner-a", sessionId: "session-a", requestId: "abort-approval-request", runId: "abort-approval-run", prompt: "wait until abort", signal: controller.signal, approval }, run);
+  await viWaitForApprovalWaiter(approvalId, approval.pending);
+  controller.abort();
+  await expect(engine.wait("owner-a", "session-a", "abort-approval-request"))
+    .resolves.toMatchObject({ status: "done", output: "approval wait safely interrupted" });
+  expect(calls).toHaveLength(1);
+  expect(approval.pending.has(approvalId)).toBe(false);
   await engine.close();
 });
 

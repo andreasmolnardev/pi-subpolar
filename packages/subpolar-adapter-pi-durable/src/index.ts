@@ -30,6 +30,7 @@ import type {
   RuntimeToolInvoker,
 } from "@subpolar/contracts";
 
+
 const ConversationMap = defineDoc<{ conversations: Record<string, number> }>({
   kind: "subpolar.pi-durable.conversations",
   version: 1,
@@ -70,6 +71,10 @@ export interface PiDurableRequest {
   readonly runId: string;
   readonly prompt: string;
   readonly signal?: AbortSignal;
+  readonly approval?: {
+    wait: (approvalId: string) => Promise<"approved" | "rejected" | "expired">;
+    cancel: (approvalId: string) => void;
+  };
 }
 
 export interface PiDurableWaitResult {
@@ -196,6 +201,25 @@ interface GatewayBinding {
   readonly invoker: RuntimeToolInvoker;
   readonly requestId: string;
   readonly runId: string;
+  readonly signal?: AbortSignal;
+  readonly approval?: PiDurableRequest["approval"];
+}
+
+type ApprovalResolution = "approved" | "rejected" | "expired";
+
+async function waitForApprovalOrAbort(waiter: Promise<ApprovalResolution>, signal?: AbortSignal): Promise<ApprovalResolution | "aborted"> {
+  if (!signal) return waiter;
+  if (signal.aborted) return "aborted";
+  let onAbort!: () => void;
+  const aborted = new Promise<"aborted">((resolve) => {
+    onAbort = () => resolve("aborted");
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([waiter, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 function durableToolName(id: string): string {
@@ -229,9 +253,31 @@ function buildRegistry(tools: readonly ToolDefinition[], bindings: Map<number, G
           input: args,
           runId: binding.runId,
           requestId: binding.requestId,
-          idempotencyKey: callId,
+          idempotencyKey: `tool-call:${callId}`,
         };
-        const result = await binding.invoker.call(gatewayCall);
+        const approvalId = `approval-${callId}`;
+        const signal = binding.signal;
+        const waiter = binding.approval?.wait(approvalId);
+        let result: unknown;
+        try {
+          result = await binding.invoker.call(gatewayCall);
+          if (result && typeof result === "object" && (result as { status?: unknown }).status === "approval_required") {
+            if (!waiter) {
+              result = { ok: false, error: { code: "APPROVAL_COORDINATOR_UNAVAILABLE", message: "Tool approval cannot be resumed by this runtime" } };
+            } else {
+              const resolution = await waitForApprovalOrAbort(waiter, signal);
+              if (resolution === "approved" && !signal?.aborted) {
+                result = await binding.invoker.call(gatewayCall);
+              } else {
+                const code = resolution === "expired" ? "APPROVAL_EXPIRED" : resolution === "rejected" ? "APPROVAL_REJECTED" : "APPROVAL_INTERRUPTED";
+                const message = resolution === "expired" ? "Tool approval expired" : resolution === "rejected" ? "Tool approval was rejected" : "Tool approval wait was interrupted";
+                result = { ok: false, error: { code, message } };
+              }
+            }
+          }
+        } finally {
+          binding.approval?.cancel(approvalId);
+        }
         const failed = Boolean(result && typeof result === "object" && (result as { ok?: unknown }).ok === false);
         return { content: [{ type: "text", text: jsonResult(result) }], ...(failed ? { isError: true } : {}) };
       },
@@ -331,6 +377,8 @@ export class PiDurableAgentEngine implements AgentEngine {
         invoker: execution.tools,
         requestId: request.requestId,
         runId: request.runId,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        ...(request.approval === undefined ? {} : { approval: request.approval }),
       });
       try {
         const stream = await watchEvents(this.#harness!, conversation.id as never, context);
