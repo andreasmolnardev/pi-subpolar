@@ -5,7 +5,7 @@ import { useUserBash } from '@/stores/userBashStore'
 import { useSessionStatusForSession } from '@/stores/sessionStatusStore'
 import { usePermissions, useQuestions } from '@/contexts/EventContext'
 import { detectFileReferences } from '@/lib/fileReferences'
-import { Brain, ChevronDown, Code2, ExternalLink, FileText, Globe2, Loader2, Pencil, Search, Terminal, Wrench, Check, X, Database, Mail, Calendar, MapPin, Image, Link, type LucideIcon } from 'lucide-react'
+import { Brain, ChevronDown, Code2, ExternalLink, FileText, Globe2, Loader2, Pencil, Search, Terminal, Wrench, X, Database, Mail, Calendar, MapPin, Image, Link, type LucideIcon } from 'lucide-react'
 import { Marker, MarkerContent, MarkerIcon } from '@/components/ui/marker'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -198,7 +198,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
   const getStatusIcon = () => {
     switch (part.state.status) {
       case 'completed':
-        return <span>✓</span>
+        return null
       case 'error':
         return <span>✗</span>
       case 'running':
@@ -287,7 +287,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
     const toolName = friendlyToolName(part.tool, part.metadata, part.state.status === 'pending' ? undefined : part.state.metadata)
     if (part.state.status === 'running') return `Running ${toolName}`
     if (part.state.status === 'completed') return `Ran ${toolName}`
-    if (part.state.status === 'error') return `Failed ${toolName}`
+    if (part.state.status === 'error') return `Failed running ${toolName}`
     return `Preparing ${toolName}`
   }
 
@@ -301,13 +301,12 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
     const isCompleted = status === 'completed' || (status === 'running' && !!sessionId && taskSessionStatus.type === 'idle')
     const isError = status === 'error'
 
-    const taskLabel = isRunning ? 'Running sub-agent task' : isCompleted ? 'Ran sub-agent task' : isError ? 'Failed sub-agent task' : 'Preparing sub-agent task'
+    const taskLabel = isRunning ? 'Running sub-agent task' : isCompleted ? 'Ran sub-agent task' : isError ? 'Failed running sub-agent task' : 'Preparing sub-agent task'
     const content = (
       <div className="flex min-w-0 items-center gap-2">
         <Brain className="h-4 w-4 shrink-0 text-muted-foreground" />
         {isPending && <span className="inline-block h-2 w-2 rounded-full bg-current text-muted-foreground animate-pulse" />}
         {isRunning && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-yellow-600 dark:text-yellow-400" />}
-        {isCompleted && <span className="text-green-600 text-sm font-medium">✓</span>}
         {isError && <span className="text-red-600 text-sm font-medium">✗</span>}
         <span className={isPending || isRunning ? 'reasoning-text-trail font-medium truncate' : 'font-medium text-muted-foreground truncate'}>{taskLabel}</span>
         <span className="min-w-0 truncate text-xs text-muted-foreground">{description}</span>
@@ -357,7 +356,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
       : part.state.status === 'completed'
         ? isSkillDiscoverTool ? 'Discovered Skills' : `Loaded skill${skillName ? ` ${skillName}` : ''}`
         : part.state.status === 'error'
-          ? isSkillDiscoverTool ? 'Skill discovery failed' : `Skill load failed${skillName ? ` ${skillName}` : ''}`
+          ? isSkillDiscoverTool ? 'Failed running skill discovery' : `Failed running skill load${skillName ? ` ${skillName}` : ''}`
           : isSkillDiscoverTool ? 'Preparing skill discovery' : 'Preparing skill load'
 
     return (
@@ -387,9 +386,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
   if (['bash', 'read', 'write', 'edit', 'glob', 'grep', 'list', 'apply_patch'].includes(part.tool)) {
     const statusIcon = part.state.status === 'running'
       ? <Loader2 className="h-3.5 w-3.5 animate-spin text-yellow-600 dark:text-yellow-400" />
-      : part.state.status === 'completed'
-        ? <Check className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
-        : part.state.status === 'error'
+      : part.state.status === 'error'
           ? <X className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
           : <span className="inline-block h-2 w-2 rounded-full bg-current text-muted-foreground animate-pulse" />
     return (
@@ -397,7 +394,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
         <summary className="list-none cursor-pointer [&::-webkit-details-marker]:hidden">
           <Marker className="min-w-0">
             <MarkerIcon>{getToolIcon()}</MarkerIcon>
-            <span className="flex h-4 w-4 shrink-0 items-center justify-center">{statusIcon}</span>
+            {part.state.status !== 'completed' && <span className="flex h-4 w-4 shrink-0 items-center justify-center">{statusIcon}</span>}
             <MarkerContent className={isActiveToolStep ? 'reasoning-text-trail font-medium' : 'font-medium'}>{getCompactToolLabel()}</MarkerContent>
             {previewText && <MarkerContent className="ml-auto max-w-[45%] text-xs text-muted-foreground">{previewText}</MarkerContent>}
             <ChevronDown className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180" />
@@ -462,7 +459,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
         className="flex w-full min-w-0 items-center gap-2 rounded-md py-1 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
       >
         {getToolIcon()}
-        <span className={`flex h-4 w-4 shrink-0 items-center justify-center ${getStatusColor()}`}>{getStatusIcon()}</span>
+        {part.state.status !== 'completed' && <span className={`flex h-4 w-4 shrink-0 items-center justify-center ${getStatusColor()}`}>{getStatusIcon()}</span>}
         <span className={`${isActiveToolStep ? 'reasoning-text-trail' : 'text-muted-foreground'} min-w-0 truncate font-medium`}>{getCompactToolLabel()}</span>
 
         {previewText && isFileTool && !isCompactTool ? (
