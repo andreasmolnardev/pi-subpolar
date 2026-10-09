@@ -194,10 +194,7 @@ export class SubpolarClient {
   }
 
   async abortSession(sessionID: string) {
-    return fetchWrapper(`${this.baseURL}/runs/${sessionID}/cancel`, {
-      method: 'POST',
-      params: this.getParams(),
-    })
+    return sharedApiClient.abortRun(sessionID)
   }
 
   async listMessages(sessionID: string): Promise<MessageListResponse> {

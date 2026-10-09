@@ -56,6 +56,17 @@ describe('SubpolarClient', () => {
     })
   })
 
+  it('aborts sessions through the authenticated shared API route', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+
+    await expect(new SubpolarClient('/api', '/repo').abortSession('ses/a')).resolves.toEqual({ success: true })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/sessions/ses%2Fa/abort',
+      expect.objectContaining({ method: 'POST', credentials: 'include', cache: 'no-store' }),
+    )
+  })
+
   it('treats empty successful session deletes as success', async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
 
