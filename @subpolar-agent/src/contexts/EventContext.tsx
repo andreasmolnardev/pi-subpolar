@@ -475,10 +475,37 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
       if (generation !== getAuthGeneration()) return
       if (!data || typeof data !== 'object' || !('type' in data)) return
       
-      const rawEvent = data as { type: string; properties?: Record<string, unknown> }
+      const rawEvent = data as {
+        type: string
+        sessionID?: unknown
+        name?: unknown
+        properties?: Record<string, unknown>
+      }
       if (rawEvent.type === 'session_info_changed') {
         // Pi SDK emits this directly when automatic title generation finishes.
-        // Refresh both the legacy sidebar cache and directory-scoped session lists.
+        // Update the active detail cache immediately and refresh session lists.
+        const sessionID = typeof rawEvent.sessionID === 'string'
+          ? rawEvent.sessionID
+          : rawEvent.properties?.sessionID
+        const title = typeof rawEvent.name === 'string'
+          ? rawEvent.name.trim()
+          : typeof rawEvent.properties?.name === 'string'
+            ? rawEvent.properties.name.trim()
+            : ''
+        if (typeof sessionID === 'string' && title) {
+          const sessionQueries = queryClient.getQueryCache().findAll({
+            predicate: (query) => query.queryKey[0] === 'subpolar'
+              && query.queryKey[1] === 'session'
+              && query.queryKey[3] === sessionID,
+          })
+          for (const query of sessionQueries) {
+            queryClient.setQueryData(query.queryKey, (current: unknown) => (
+              current && typeof current === 'object'
+                ? { ...current, title }
+                : current
+            ))
+          }
+        }
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
         queryClient.invalidateQueries({
           predicate: (query) => query.queryKey[0] === 'subpolar' && query.queryKey[1] === 'sessions',
