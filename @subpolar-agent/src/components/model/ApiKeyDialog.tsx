@@ -28,6 +28,7 @@ interface ApiKeyDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   provider: ProviderLoginTarget | null;
+  providerChoices?: readonly ProviderLoginTarget[];
   onSuccess: () => void;
   mode?: "add" | "edit";
 }
@@ -56,9 +57,12 @@ export function ApiKeyDialog({
   open,
   onOpenChange,
   provider,
+  providerChoices,
   onSuccess,
   mode = "add",
 }: ApiKeyDialogProps) {
+  const [selectedProviderId, setSelectedProviderId] = useState("");
+  const [setupStep, setSetupStep] = useState<"provider" | "details">("details");
   const [selectedKind, setSelectedKind] = useState<ProviderAuthMethodKind>("api_key");
   const [displayName, setDisplayName] = useState("");
   const [flow, setFlow] = useState<ProviderLoginFlowStatus | null>(null);
@@ -69,10 +73,13 @@ export function ApiKeyDialog({
   const [isCancelling, setIsCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const handledFlow = useRef<string | null>(null);
+  const activeProvider = providerChoices?.length
+    ? providerChoices.find((choice) => choice.providerId === selectedProviderId) ?? null
+    : provider;
 
   const methods = useMemo(
-    () => (provider?.methods ?? []).filter((method) => method.available),
-    [provider?.methods],
+    () => (activeProvider?.methods ?? []).filter((method) => method.available),
+    [activeProvider?.methods],
   );
   const selectedMethod = methods.find((method) => method.kind === selectedKind) ?? methods[0];
   const currentPrompt = flow?.currentPrompt;
@@ -81,15 +88,20 @@ export function ApiKeyDialog({
 
   useEffect(() => {
     if (!open) return;
-    const firstMethod = methods[0];
-    setSelectedKind(firstMethod?.kind ?? "api_key");
+    setSelectedProviderId(provider?.providerId ?? "");
+    setSetupStep(providerChoices?.length ? "provider" : "details");
     setDisplayName("");
     setFlow(null);
     setEvents([]);
     setPromptValue("");
     setError(null);
     handledFlow.current = null;
-  }, [open, provider?.instanceId, methods]);
+  }, [open, provider?.instanceId, provider?.providerId, providerChoices?.length]);
+
+  useEffect(() => {
+    if (!activeProvider) return;
+    setSelectedKind(methods[0]?.kind ?? "api_key");
+  }, [activeProvider?.instanceId, methods]);
 
   useEffect(() => {
     if (!currentPrompt) {
@@ -144,12 +156,12 @@ export function ApiKeyDialog({
   }, [flow, onSuccess]);
 
   const handleStart = useCallback(async () => {
-    if (!provider || !selectedMethod) return;
+    if (!activeProvider || !selectedMethod) return;
     setIsStarting(true);
     setError(null);
     try {
       const started = await providerLoginFlowApi.start({
-        providerInstanceId: provider.instanceId,
+        providerInstanceId: activeProvider.instanceId,
         type: loginType(selectedMethod.kind),
         ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
       });
@@ -159,7 +171,7 @@ export function ApiKeyDialog({
     } finally {
       setIsStarting(false);
     }
-  }, [displayName, provider, selectedMethod]);
+  }, [activeProvider, displayName, selectedMethod]);
 
   const handleRespond = useCallback(async () => {
     if (!flow || !currentPrompt || !promptValue.trim()) return;
@@ -203,10 +215,12 @@ export function ApiKeyDialog({
     await navigator.clipboard?.writeText(value);
   }, []);
 
-  if (!provider) return null;
+  if (!provider && !providerChoices?.length) return null;
 
-  const envVarName = provider.env?.[0] || `${provider.providerId.toUpperCase()}_API_KEY`;
-  const title = mode === "edit" ? `Reconnect ${provider.name}` : `Login to ${provider.name}`;
+  const envVarName = activeProvider?.env?.[0] || `${activeProvider?.providerId.toUpperCase() ?? "PROVIDER"}_API_KEY`;
+  const title = providerChoices?.length && setupStep === "provider"
+    ? "Add provider"
+    : mode === "edit" ? `Reconnect ${activeProvider?.name}` : `Connect ${activeProvider?.name}`;
   const canRespond = Boolean(currentPrompt && promptValue.trim() && !isResponding);
 
   return (
@@ -218,12 +232,52 @@ export function ApiKeyDialog({
             {title}
           </DialogTitle>
           <DialogDescription>
-            Credentials are handled by Pi on the server and are never shown here.
+            {providerChoices?.length && setupStep === "provider"
+              ? "Choose the provider account you want to connect."
+              : "Credentials are handled by Pi on the server and are never shown here."}
           </DialogDescription>
         </DialogHeader>
 
-        {!flow && (
+        {!flow && setupStep === "provider" && providerChoices?.length ? (
           <div className="space-y-4 py-2">
+            <div className="grid max-h-[50vh] gap-2 overflow-y-auto sm:grid-cols-2">
+              {providerChoices.map((choice) => (
+                <Button
+                  key={choice.providerId}
+                  type="button"
+                  variant={selectedProviderId === choice.providerId ? "default" : "outline"}
+                  className="h-auto min-h-16 justify-start whitespace-normal px-3 py-3 text-left"
+                  onClick={() => setSelectedProviderId(choice.providerId)}
+                >
+                  <Shield className="mr-2 h-4 w-4 shrink-0" />
+                  <span className="min-w-0">
+                    <span className="block truncate">{choice.name}</span>
+                    <span className="mt-1 block truncate text-xs opacity-75">
+                      {choice.methods.filter((method) => method.available).map((method) => method.label).join(" · ")}
+                    </span>
+                  </span>
+                </Button>
+              ))}
+            </div>
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => void handleClose()}>Cancel</Button>
+              <Button onClick={() => setSetupStep("details")} disabled={!activeProvider}>Next</Button>
+            </DialogFooter>
+          </div>
+        ) : null}
+
+        {!flow && setupStep === "details" && activeProvider && (
+          <div className="space-y-4 py-2">
+            {providerChoices?.length ? (
+              <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-xs text-muted-foreground">Provider</p>
+                  <p className="truncate text-sm font-medium">{activeProvider.name}</p>
+                </div>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setSetupStep("provider")}>Change</Button>
+              </div>
+            ) : null}
             {methods.length > 1 && (
               <div className="space-y-2">
                 <Label>Login method</Label>
@@ -258,16 +312,16 @@ export function ApiKeyDialog({
             {selectedMethod?.kind === "api_key" && (
               <p className="text-xs text-muted-foreground">
                 Pi will securely ask for the API key. It is sent directly to the server login flow and is never rendered as text.
-                {provider.env?.length ? <> Expected environment name: <code>{envVarName}</code>.</> : null}
+                {activeProvider.env?.length ? <> Expected environment name: <code>{envVarName}</code>.</> : null}
               </p>
             )}
-            {provider.providerId === "openai" && selectedMethod?.kind !== "api_key" && (
+            {activeProvider.providerId === "openai" && selectedMethod?.kind !== "api_key" && (
               <p className="text-sm text-muted-foreground">
                 Pi opens Sign in with ChatGPT for the OpenAI Responses API. The callback listener runs on the server at port 1455.
                 For a remote server, paste the full final redirect URL including code, state, and client_id. This flow does not offer device code login.
               </p>
             )}
-            {provider.providerId === "openai-codex" && selectedMethod?.kind !== "api_key" && (
+            {activeProvider.providerId === "openai-codex" && selectedMethod?.kind !== "api_key" && (
               <p className="text-sm text-muted-foreground">
                 Pi will offer browser or device code login. For a remote server or container, choose Device code login (headless).
                 Browser login uses a callback on the server; if it cannot reach that callback, paste the full redirect URL into the manual prompt.
@@ -275,7 +329,9 @@ export function ApiKeyDialog({
             )}
             {error && <p className="text-sm text-destructive">{error}</p>}
             <DialogFooter>
-              <Button variant="outline" onClick={() => void handleClose()}>Cancel</Button>
+              <Button variant="outline" onClick={() => providerChoices?.length ? setSetupStep("provider") : void handleClose()}>
+                {providerChoices?.length ? "Back" : "Cancel"}
+              </Button>
               <Button onClick={() => void handleStart()} disabled={!selectedMethod || isStarting}>
                 {isStarting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                 {isStarting ? "Starting…" : "Continue"}
