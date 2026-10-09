@@ -124,6 +124,7 @@ export function Agents() {
         tool_context_modes: agent.tool_context_modes || {},
         skill_context_modes: agent.skill_context_modes || {},
         project_overrides: agent.project_overrides || {},
+        preferences: agent.preferences || {},
         sort_order: agent.sort_order || 0,
       }
       const savedAgent = id ? await settingsApi.updateAgent(id, request) : await settingsApi.createAgent(request)
@@ -202,7 +203,7 @@ export function Agents() {
           </div>
         ) : (
           <Tabs value={activeAgent} onValueChange={setActiveAgent} className="flex flex-col min-h-0 flex-1">
-            <TabsList className="w-full justify-start gap-1 overflow-x-auto flex-shrink-0">
+            <TabsList className="max-w-full flex-shrink-0 justify-start gap-1 overflow-x-auto">
               {agentNames.map((name) => {
                 const agent = agents?.[name]
                 const label = agent?.icon ? `${agent.icon} ${name}` : name

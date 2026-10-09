@@ -3,7 +3,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useModelSelection } from './useModelSelection'
 import { useModelStore, type ModelSelection } from '@/stores/modelStore'
-import * as usePiHarnessExports from './usePiHarness'
+import * as usePiDurableHarnessExports from './usePiDurableHarness'
 import * as providersApi from '@/api/providers'
 
 const createTestQueryClient = () => new QueryClient({
@@ -14,8 +14,8 @@ const createTestQueryClient = () => new QueryClient({
   },
 })
 
-vi.mock('./usePiHarness', async () => {
-  const actual = await vi.importActual('./usePiHarness')
+vi.mock('./usePiDurableHarness', async () => {
+  const actual = await vi.importActual('./usePiDurableHarness')
   return {
     ...actual,
     useConfig: vi.fn(),
@@ -43,8 +43,8 @@ vi.mock('zustand/middleware', async () => {
   }
 })
 
-const mockUseConfig = vi.mocked(usePiHarnessExports.useConfig)
-const mockUseSubpolarClient = vi.mocked(usePiHarnessExports.useSubpolarClient)
+const mockUseConfig = vi.mocked(usePiDurableHarnessExports.useConfig)
+const mockUseSubpolarClient = vi.mocked(usePiDurableHarnessExports.useSubpolarClient)
 const mockGetProviders = vi.mocked(providersApi.getProviders)
 const mockGetPiModelState = vi.mocked(providersApi.getPiModelState)
 const mockAddPiRecentModel = vi.mocked(providersApi.addPiRecentModel)

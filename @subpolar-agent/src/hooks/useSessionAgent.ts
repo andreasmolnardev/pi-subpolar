@@ -1,5 +1,5 @@
 import { useMemo, useRef, useEffect } from 'react'
-import { useMessages, useConfig, useAgents, useSession } from '@/hooks/usePiHarness'
+import { useMessages, useConfig, useAgents, useSession } from '@/hooks/usePiDurableHarness'
 import { useSessionAgentStore } from '@/stores/sessionAgentStore'
 import type { components } from '@/api/opencode-types'
 
@@ -173,13 +173,16 @@ export function useSessionAgent(
     return { agent: storedAgentName ?? defaultAgent, model: undefined, permission: undefined, variant: undefined, fromMessage: false, fromSession: false }
   }, [messages, messagesLoading, messagesFetching, storedAgent, session?.profile, session?.model, session?.permissionOverride, defaultAgent, agents, agentsLoaded])
 
+  const matchedAgent = agents?.find((agent) => agent.name.toLowerCase() === result.agent.toLowerCase())
+  const agentPreferences = (matchedAgent as (typeof matchedAgent & { preferences?: Record<string, unknown> }) | undefined)?.preferences
+
   useEffect(() => {
     if (result.agent && sessionID && (result.fromMessage || result.fromSession)) {
       setAgent(sessionID, result.agent)
     }
   }, [result.agent, result.fromMessage, result.fromSession, sessionID, setAgent])
 
-  return { agent: result.agent, model: result.model, permission: result.permission, variant: result.variant, fromMessage: result.fromMessage, fromSession: result.fromSession }
+  return { agent: result.agent, model: result.model, permission: result.permission, variant: result.variant, fromMessage: result.fromMessage, fromSession: result.fromSession, preferences: agentPreferences }
 }
 
 export function getSessionAgentFromMessages(

@@ -18,7 +18,10 @@
         "test:ui": "bun run --cwd @subpolar-agent test:ui",
         "test:server": "bun run --cwd @subpolar-agent test:server",
         "test:voice": "bun run --cwd @subpolar-agent test:voice",
-    "test:core": "bun test packages/subpolar-contracts packages/subpolar-core packages/subpolar-persistance-local packages/subpolar-persistance-pocketbase packages/subpolar-core-pi packages/subpolar-tools packages/subpolar-cli",
+    "test:core": "bun test packages/subpolar-contracts packages/subpolar-core packages/subpolar-operations packages/subpolar-persistance-local packages/subpolar-persistance-pocketbase packages/subpolar-core-pi packages/subpolar-adapter-pi-durable packages/subpolar-tools packages/subpolar-cli",
+    "test:adapter-pi-durable": "bun test packages/subpolar-adapter-pi-durable/test",
+    "test:client": "bun run --cwd packages/subpolar-client test",
+    "test:test-cli": "bun run --cwd packages/subpolar-test-cli test",
     "test:e2e:contract": "bun test e2e/contract-smoke.test.ts",
     "test:e2e:live": "E2E_LIVE=true bun test e2e/live-smoke.test.ts"
   }

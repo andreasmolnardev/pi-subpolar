@@ -1,6 +1,7 @@
 import type PocketBase from "pocketbase";
 import { escapeFilter } from "../persistence/pocketbase.ts";
 import { InboxRepository } from "../persistence/inbox.ts";
+import { NotificationRepository } from "../persistence/notifications.ts";
 
 export const TASK_STATES = [
   "draft",
@@ -143,8 +144,10 @@ function task(value: Record<string, unknown>): TaskRecord {
 export class TaskRepository {
   readonly capabilities: TaskPersistenceCapabilities;
   private readonly inbox: InboxRepository;
+  private readonly notifications: NotificationRepository;
   constructor(private readonly client: PocketBase, inbox?: InboxRepository) {
     this.inbox = inbox ?? new InboxRepository(client);
+    this.notifications = new NotificationRepository(client, { scope: "process" });
     const collection = this.client.collection("tasks") as unknown as ConditionalCollection;
     this.capabilities = {
       conditionalTransitions: typeof collection.updateConditional === "function",
@@ -258,18 +261,26 @@ export class TaskRepository {
       const previousKind = inboxKind(current.state);
       if (previousKind && previousKind !== kind) await this.inbox.resolveReference(ownerId, previousKind, id, current.project_id);
       if (kind) {
-        await this.inbox.upsert({
+        const item = await this.inbox.upsert({
           owner_id: ownerId,
           ...(current.project_id ? { project_id: current.project_id } : {}),
           kind,
           reference_id: id,
           title: state === "review_required" ? "Task requires review" : state === "completed" ? "Task completed" : "Task failed",
           body: state === "failed" ? "The task failed and may need attention." : state === "review_required" ? "Review the task result before approving it." : "The task completed successfully.",
-          deep_link: { taskId: id },
+          deep_link: {
+            path: current.session_id
+              ? `/projects/${encodeURIComponent(current.project_id ?? "0")}/sessions/${encodeURIComponent(current.session_id)}`
+              : current.project_id ? `/projects/${encodeURIComponent(current.project_id)}` : "/new",
+            ...(current.project_id ? { projectId: current.project_id } : {}),
+            ...(current.session_id ? { sessionId: current.session_id } : {}),
+            taskId: id,
+          },
           underlying_state: state,
           metadata: { state, task_id: id },
           reopen: true,
         });
+        await this.notifications.deliver(ownerId, item).catch(() => undefined)
         for (const previous of ["review_required", "task_completed", "task_failed"] as const) if (previous !== kind && previous !== previousKind) await this.inbox.resolveReference(ownerId, previous, id, current.project_id);
       }
       return task(record);

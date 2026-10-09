@@ -5,15 +5,17 @@ import { useDesktop } from "@/hooks/useDesktop";
 import { useSidebarCollapsed } from "@/hooks/useSidebarCollapsed";
 import { useAuth } from "@/hooks/useAuth";
 import { createProject, getProject, hasProjectId, listProjects } from "@/api/projects";
-import { listStoredSessions } from "@/api/sessions";
+import { listStoredSessions, updateStoredSession, type StoredSession } from "@/api/sessions";
 import { settingsApi, type AgentToolPolicyEffect } from "@/api/settings";
-import { DEFAULT_USER_PREFERENCES } from "@/api/types/settings";
-import { useAgents } from "@/hooks/usePiHarness";
+import { getHiddenAgents } from "@/lib/agentVisibility";
+import { useAgents, useDeleteSession } from "@/hooks/usePiDurableHarness";
 import { useSettings } from "@/hooks/useSettings";
 import { useSettingsDialog } from "@/hooks/useSettingsDialog";
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { GENERAL_CHAT_PROJECT_ID } from "@subpolar/shared/utils";
 import {
+  Bell,
+  Archive,
   Bot,
   ChevronDown,
   ChevronRight,
@@ -39,6 +41,10 @@ import { ProjectDialog } from "@/components/project/ProjectDialog";
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getSidebarProjectRoute } from "@/lib/projectNavigation";
 import { showToast } from "@/lib/toast";
+import { NotificationsSheet } from "@/components/navigation/NotificationsSheet";
+import { SessionSearchButton } from "@/components/navigation/SessionSearchCommand";
+import { DeleteSessionDialog } from "@/components/session/DeleteSessionDialog";
+import { newSessionPath } from "@/lib/new-session-route";
 
 const NEW_PROJECT_VALUE = "__new_project__";
 
@@ -109,6 +115,7 @@ function SidebarNavItem({
   onClick,
   indent,
   sessionID,
+  sessionArchived = false,
 }: {
   icon?: React.ElementType;
   label: string;
@@ -116,6 +123,7 @@ function SidebarNavItem({
   onClick?: () => void;
   indent?: boolean;
   sessionID?: string;
+  sessionArchived?: boolean;
 }) {
   const status = useSessionStatusForSession(sessionID);
   const completedUnread = useSessionCompletedUnread(sessionID);
@@ -129,18 +137,80 @@ function SidebarNavItem({
         active
           ? "bg-accent text-accent-foreground font-medium"
           : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
+        sessionID && "select-none",
+        sessionID && "min-w-0 flex-1",
         indent && "pl-8",
       )}
     >
       {Icon && <Icon className="h-4 w-4 flex-shrink-0" />}
-      {sessionID && status.type !== "idle" && (
+      {sessionID && !sessionArchived && status.type !== "idle" && (
         <Spinner className="h-3.5 w-3.5 flex-shrink-0 text-primary" />
       )}
-      {sessionID && status.type === "idle" && completedUnread && (
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {sessionID && !sessionArchived && status.type === "idle" && completedUnread && (
         <span className="h-2 w-2 flex-shrink-0 rounded-full bg-primary" aria-label="New message" />
       )}
-      <span className="truncate">{label}</span>
     </button>
+  );
+}
+
+function SidebarSessionItem({
+  session,
+  active,
+  archived = false,
+  onClick,
+  onArchive,
+  onUnarchive,
+  onDelete,
+}: {
+  session: StoredSession;
+  active?: boolean;
+  archived?: boolean;
+  onClick: () => void;
+  onArchive: () => void;
+  onUnarchive: () => void;
+  onDelete: () => void;
+}) {
+  const label = session.title || session.id;
+  return (
+    <div className={cn("group flex items-center gap-1 rounded-md", archived && "opacity-60")}>
+      <SidebarNavItem
+        label={label}
+        active={active}
+        onClick={onClick}
+        indent
+        sessionID={session.id}
+        sessionArchived={archived}
+      />
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-colors hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:opacity-100 group-hover:opacity-100"
+            aria-label={`Session actions for ${label}`}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {archived ? (
+            <DropdownMenuItem onSelect={onUnarchive}>
+              <Archive className="mr-2 h-4 w-4" />
+              Restore from archive
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuItem onSelect={onArchive}>
+              <Archive className="mr-2 h-4 w-4" />
+              Archive
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem className="text-red-500 focus:text-red-600" onSelect={onDelete}>
+            <Trash2 className="mr-2 h-4 w-4" />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }
 
@@ -245,12 +315,14 @@ export function DesktopSidebar() {
   const { open: openSettings, setActiveTab } = useSettingsDialog();
   const isDesktop = useDesktop();
 
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [agentsExpanded, setAgentsExpanded] = useState(true);
   const [historyExpanded, setHistoryExpanded] = useState(true);
   const [selectedSidebarProjectId, setSelectedSidebarProjectId] = useState<string>(String(GENERAL_CHAT_PROJECT_ID));
   const [isCreateProjectDialogOpen, setIsCreateProjectDialogOpen] = useState(false);
   const [isCreateAgentDialogOpen, setIsCreateAgentDialogOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<{ name: string; agent: Agent } | null>(null);
+  const [sessionToDelete, setSessionToDelete] = useState<StoredSession | null>(null);
   const { data: projects } = useQuery({
     queryKey: ["projects"],
     queryFn: listProjects,
@@ -265,13 +337,13 @@ export function DesktopSidebar() {
   const generalChatDirectory = generalChatProject?.fullPath;
 
   const { data: storedSessions } = useQuery({
-    queryKey: ["sessions"],
+    queryKey: ["stored-sessions"],
     queryFn: listStoredSessions,
   });
 
   const hiddenSidebarAgents = useMemo(
-    () => new Set((preferences?.hiddenSidebarAgents ?? DEFAULT_USER_PREFERENCES.hiddenSidebarAgents).map((name) => name.toLowerCase())),
-    [preferences?.hiddenSidebarAgents],
+    () => new Set(getHiddenAgents(preferences).map((name) => name.toLowerCase())),
+    [preferences?.hiddenAgents, preferences?.hiddenSidebarAgents, preferences?.hiddenChatInputAgents],
   );
   const navigableProjects = useMemo(
     () => projects?.filter((project) => hasProjectId(project) && project.id !== GENERAL_CHAT_PROJECT_ID) ?? [],
@@ -330,6 +402,33 @@ export function DesktopSidebar() {
   const parsedConfig = rawContent ? tryParseJson(rawContent) : null;
 
   const queryClient = useQueryClient();
+  const deleteSessionMutation = useDeleteSession(SUBPOLAR_API_BASE_URL);
+  const archiveSessionMutation = useMutation({
+    mutationFn: ({ session, archived }: { session: StoredSession; archived: boolean }) =>
+      updateStoredSession(session.id, { archived }),
+    onSuccess: async (_, { archived }) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["stored-sessions"] }),
+        queryClient.invalidateQueries({ queryKey: ["sessions"] }),
+      ]);
+      showToast.success(archived ? "Session archived" : "Session restored");
+    },
+    onError: (error) => showToast.error(error instanceof Error ? error.message : "Failed to update session"),
+  });
+
+  const confirmDeleteSession = async () => {
+    if (!sessionToDelete) return;
+    const projectId = getSessionProjectId(sessionToDelete.directory, sessionToDelete.projectId);
+    try {
+      await deleteSessionMutation.mutateAsync({ id: sessionToDelete.id, directory: sessionToDelete.directory ?? undefined });
+    } catch {
+      return;
+    }
+    if (isSessionActive(sessionToDelete.id)) {
+      navigate(projectId === GENERAL_CHAT_PROJECT_ID ? "/new" : `/projects/${projectId}`);
+    }
+    setSessionToDelete(null);
+  };
 
   const createProjectMutation = useMutation({
     mutationFn: createProject,
@@ -368,6 +467,7 @@ export function DesktopSidebar() {
         tool_context_modes: agent.tool_context_modes || {},
         skill_context_modes: agent.skill_context_modes || {},
         project_overrides: agent.project_overrides || {},
+        preferences: agent.preferences || {},
       };
       const saved = existing?.id
         ? await settingsApi.updateAgent(existing.id, request)
@@ -545,7 +645,10 @@ export function DesktopSidebar() {
                    key={name}
                    label={name}
                    active={isAgentActive(name)}
-                   onClick={() => navigate(`/agents/${encodeURIComponent(name)}`)}
+                   onClick={() => navigate(newSessionPath({
+                     ...(selectedSidebarProject?.name && selectedSidebarProject.name !== 'General Chat' ? { projectName: selectedSidebarProject.name } : {}),
+                     agentName: name,
+                   }))}
                    onEdit={() => setEditingAgent({ name, agent: editableAgent })}
                    onDelete={() => handleDeleteAgent(name)}
                  />
@@ -565,19 +668,20 @@ export function DesktopSidebar() {
             onClick={() => navigate("/history")}
             active={location.pathname === "/history"}
           >
-{selectedProjectSessions.map((session) => {
+            {selectedProjectSessions.map((session) => {
                 const projectId = getSessionProjectId(session.directory, session.projectId);
                 return (
-                  <SidebarNavItem
+                  <SidebarSessionItem
                     key={session.id}
-                    label={session.title || session.id}
+                    session={session}
                     active={isSessionActive(session.id)}
                     onClick={() => {
                       useSessionStatus.getState().markRead(session.id);
                       navigate(`/projects/${projectId}/sessions/${encodeURIComponent(session.id)}`);
                     }}
-                    indent
-                    sessionID={session.id}
+                    onArchive={() => archiveSessionMutation.mutate({ session, archived: true })}
+                    onUnarchive={() => archiveSessionMutation.mutate({ session, archived: false })}
+                    onDelete={() => setSessionToDelete(session)}
                   />
                 );
               })}
@@ -591,12 +695,15 @@ export function DesktopSidebar() {
                 {archivedProjectSessions.map((session) => {
                   const projectId = getSessionProjectId(session.directory, session.projectId);
                   return (
-                    <SidebarNavItem
+                    <SidebarSessionItem
                       key={session.id}
-                      label={session.title || session.id}
+                      session={session}
                       active={isSessionActive(session.id)}
                       onClick={() => navigate(`/projects/${projectId}/sessions/${encodeURIComponent(session.id)}`)}
-                      indent
+                      archived
+                      onArchive={() => archiveSessionMutation.mutate({ session, archived: true })}
+                      onUnarchive={() => archiveSessionMutation.mutate({ session, archived: false })}
+                      onDelete={() => setSessionToDelete(session)}
                     />
                   );
                 })}
@@ -606,41 +713,67 @@ export function DesktopSidebar() {
           </SidebarSection>
         </div>
 
-        {/* Profile */}
-        <div className="border-t border-border mt-auto">
-          <button
-            type="button"
-            aria-label="Open account settings"
-            onClick={() => { setActiveTab('account'); openSettings(); }}
-            className={cn(
-              "flex items-center gap-3 w-full p-3 hover:bg-accent/50 transition-colors text-left",
-              collapsed && "justify-center",
-            )}
-          >
-            <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-medium text-primary flex-shrink-0 overflow-hidden">
-              {user?.image
-                ? (
-                  <img
-                    src={user.image}
-                    alt=""
-                    className="h-full w-full object-cover"
-                  />
-                )
-                : (
-                  (user?.name?.[0] || user?.email?.[0] || "?").toUpperCase()
-                )}
-            </div>
-            {!collapsed && (
-              <div className="flex flex-col items-start min-w-0">
-                <span className="text-sm font-medium text-foreground truncate w-full text-left">
-                  {user?.name || "User"}
-                </span>
-                <span className="text-xs text-muted-foreground truncate w-full text-left">
-                  {user?.email || ""}
-                </span>
+        <div className="mt-auto">
+          <div className="border-t border-border p-2">
+            <SessionSearchButton collapsed={collapsed} />
+            <NotificationsSheet
+              isOpen={notificationsOpen}
+              onOpen={() => setNotificationsOpen(true)}
+              onClose={() => setNotificationsOpen(false)}
+              side="top"
+              trigger={(
+                <button
+                  type="button"
+                  aria-label="Open notifications"
+                  title={collapsed ? "Notifications" : undefined}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-md p-2.5 text-sm text-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    collapsed && "justify-center",
+                  )}
+                >
+                  <Bell className="h-4 w-4 flex-shrink-0" />
+                  {!collapsed && <span>Notifications</span>}
+                </button>
+              )}
+            />
+          </div>
+
+          {/* Profile */}
+          <div>
+            <button
+              type="button"
+              aria-label="Open account settings"
+              onClick={() => { setActiveTab('account'); openSettings(); }}
+              className={cn(
+                "flex items-center gap-3 w-full p-3 hover:bg-accent/50 transition-colors text-left",
+                collapsed && "justify-center",
+              )}
+            >
+              <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-medium text-primary flex-shrink-0 overflow-hidden">
+                {user?.image
+                  ? (
+                    <img
+                      src={user.image}
+                      alt=""
+                      className="h-full w-full object-cover"
+                    />
+                  )
+                  : (
+                    (user?.name?.[0] || user?.email?.[0] || "?").toUpperCase()
+                  )}
               </div>
-            )}
-          </button>
+              {!collapsed && (
+                <div className="flex flex-col items-start min-w-0">
+                  <span className="text-sm font-medium text-foreground truncate w-full text-left">
+                    {user?.name || "User"}
+                  </span>
+                  <span className="text-xs text-muted-foreground truncate w-full text-left">
+                    {user?.email || ""}
+                  </span>
+                </div>
+              )}
+            </button>
+          </div>
         </div>
       </Sidebar>
 
@@ -660,6 +793,15 @@ export function DesktopSidebar() {
         onSubmit={handleCreateAgent}
         editingAgent={null}
         availableSkills={subpolarSkills || []}
+      />
+      <DeleteSessionDialog
+        open={sessionToDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setSessionToDelete(null);
+        }}
+        onConfirm={() => void confirmDeleteSession()}
+        onCancel={() => setSessionToDelete(null)}
+        isDeleting={deleteSessionMutation.isPending}
       />
       <AgentDialog
         open={editingAgent !== null}

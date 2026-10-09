@@ -27,7 +27,7 @@ const mocks = vi.hoisted(() => ({
   useSidebarAction: vi.fn(),
 }))
 
-vi.mock('@/hooks/usePiHarness', () => ({
+vi.mock('@/hooks/usePiDurableHarness', () => ({
   useSession: mocks.useSession,
   useAbortSession: vi.fn(() => ({ mutate: vi.fn() })),
   useUpdateSession: vi.fn(() => ({ mutate: vi.fn() })),

@@ -37,6 +37,7 @@ type ToolExecutionContext = {
 import { PocketBaseMemoryService, type MemoryContext, type MemoryScope } from '../../persistence/memory.ts'
 import { BrowserSessionService, BrowserRuntimeError, browserProfileAllows, type BrowserContext } from '../../browser/index.ts'
 import { webFetch, webSearch, type WebFetchInput, type WebSearchInput } from './web-search.ts'
+import { WebSearchCredentialService } from '../../persistence/web-search-credentials.ts'
 import type { SkillRepository } from '../../../../packages/subpolar-contracts/src/index.ts'
 import { createGateway as createCoreGateway } from '../../../../packages/subpolar-core/src/index.ts'
 import type {
@@ -145,6 +146,7 @@ export type AgentDefinition = {
   project_overrides: Record<string, AgentProjectOverride>
   tool_context_modes: Record<string, ToolContextMode>
   skill_context_modes: Record<string, SkillContextMode>
+  preferences?: Record<string, unknown>
   effective_source: AgentEffectiveSource
   created_at?: number
   updated_at?: number
@@ -1292,13 +1294,14 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     const preferenceData = recordObject(preferences?.preferences)
     const integrations = Array.isArray(preferenceData.integrations) ? preferenceData.integrations : []
     const searchSettings = integrations.map(recordObject).find((item) => item.type === 'web-search')
-    const configuredProviders: Array<'exa' | 'firecrawl' | 'parallel'> = Array.isArray(searchSettings?.providers)
-      ? searchSettings.providers.filter((provider): provider is 'exa' | 'firecrawl' | 'parallel' => provider === 'exa' || provider === 'firecrawl' || provider === 'parallel')
+    const configuredProviders: Array<'exa' | 'duckduckgo' | 'firecrawl' | 'parallel'> = Array.isArray(searchSettings?.providers)
+      ? searchSettings.providers.filter((provider): provider is 'exa' | 'duckduckgo' | 'firecrawl' | 'parallel' => provider === 'exa' || provider === 'duckduckgo' || provider === 'firecrawl' || provider === 'parallel')
       : ['exa', 'firecrawl']
     if (searchSettings?.enabled === false || configuredProviders.length === 0) throw new Error('Web Search is disabled in Integrations settings')
     const networkPolicy = networkPolicyFromMetadata(tool.metadata)
-    networkPolicy.allowedHosts = [...new Set([...(networkPolicy.allowedHosts ?? []), 'mcp.exa.ai', 'mcp.firecrawl.dev', 'search.parallel.ai'])]
-    return webSearch(input as WebSearchInput, { networkPolicy, providers: configuredProviders })
+    networkPolicy.allowedHosts = [...new Set([...(networkPolicy.allowedHosts ?? []), 'mcp.exa.ai', 'html.duckduckgo.com', 'mcp.firecrawl.dev', 'search.parallel.ai'])]
+    const apiKeys = context?.userId ? await new WebSearchCredentialService(client).getAll(context.userId) : {}
+    return webSearch(input as WebSearchInput, { networkPolicy, providers: configuredProviders, apiKeys })
   }
   if (tool.target === 'web' && tool.operation === 'fetch') return webFetch(input as WebFetchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
   if (tool.target === 'mcp-discovery' && tool.operation === 'discover') return discoverMcpServer(input as Parameters<typeof discoverMcpServer>[0])

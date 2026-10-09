@@ -12,15 +12,15 @@ import { WORKSPACE_OPEN_FILE, isWorkspaceOpenFileDetail, requestQuickOpen, type 
 import { control, WorkspaceError } from './shared'
 import { useAuthGeneration, useAuthOwner } from '@/stores/authIdentityStore'
 
-export interface SessionWorkspaceChangesProps { sessionId: string; projectRouteId?: string }
+export interface SessionWorkspaceChangesProps { sessionId: string; projectRouteId?: string; openRequest?: number; openButtonRef?: { current: HTMLButtonElement | null } }
 
-/** Standalone launcher intended above ChatInputBar. Requires the app QueryClientProvider. */
-export function SessionWorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChangesProps) {
+/** Requires the app QueryClientProvider. */
+export function SessionWorkspaceChanges({ sessionId, projectRouteId, openRequest, openButtonRef }: SessionWorkspaceChangesProps) {
   const owner = useAuthOwner()
   const generation = useAuthGeneration()
-  return <WorkspaceChanges key={JSON.stringify([owner, generation, sessionId, projectRouteId])} sessionId={sessionId} projectRouteId={projectRouteId} />
+  return <WorkspaceChanges key={JSON.stringify([owner, generation, sessionId, projectRouteId])} sessionId={sessionId} projectRouteId={projectRouteId} openRequest={openRequest} openButtonRef={openButtonRef} />
 }
-function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChangesProps) {
+function WorkspaceChanges({ sessionId, projectRouteId, openRequest, openButtonRef }: SessionWorkspaceChangesProps) {
   const owner = useAuthOwner()
   const generation = useAuthGeneration()
   const client = useQueryClient()
@@ -32,17 +32,18 @@ function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChanges
     })
   }, [client, owner, generation])
   const [open, setOpen] = useState(false)
+  const previousOpenRequest = useRef(0)
   const [tab, setTab] = useState<'Review' | 'Files' | 'Browser' | 'Repository'>('Review')
   const [addedViews, setAddedViews] = useState<Array<'Review' | 'Files' | 'Browser' | 'Repository'>>([])
   const [filesVisited, setFilesVisited] = useState(false)
   const [panelWidth, setPanelWidth] = useState(480)
   const resizeStart = useRef<{ x: number; width: number } | null>(null)
-  const [openRequest, setOpenRequest] = useState<FileOpenRequest>()
+  const [fileOpenRequest, setFileOpenRequest] = useState<FileOpenRequest>()
   useEffect(() => {
     const receive = (event: Event) => {
       const detail: unknown = (event as CustomEvent<unknown>).detail
       if (!isWorkspaceOpenFileDetail(detail) || detail.sessionId !== sessionId) return
-      setOpenRequest({ path: detail.path, requestId: detail.requestId })
+      setFileOpenRequest({ path: detail.path, requestId: detail.requestId })
       setAddedViews(views => views.includes('Files') ? views : [...views, 'Files'])
       setTab('Files'); setFilesVisited(true); setOpen(true)
     }
@@ -52,7 +53,6 @@ function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChanges
 
   const panelId = useId()
   const panel = useRef<HTMLElement>(null)
-  const launcher = useRef<HTMLButtonElement>(null)
   const query = useQuery({
     queryKey: ['session-workspace', sessionId, owner, generation], queryFn: () => api.get(sessionId), retry: false,
     refetchInterval: status.type !== 'idle' ? 4000 : open ? 10000 : false,
@@ -66,6 +66,12 @@ function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChanges
     }
   }, [status.type, refetch])
   useEffect(() => { if (open) panel.current?.focus() }, [open])
+  useEffect(() => {
+    if (openRequest === undefined || openRequest === previousOpenRequest.current) return
+    previousOpenRequest.current = openRequest
+    setAddedViews(views => views.length === 0 ? ['Review'] : views)
+    setOpen(true)
+  }, [openRequest])
   async function refresh() {
     await Promise.all([
       client.invalidateQueries({ queryKey: ['session-workspace', sessionId] }),
@@ -82,25 +88,8 @@ function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChanges
     if (name === 'Files') setFilesVisited(true)
     setOpen(true)
   }
-  function close() { setOpen(false); launcher.current?.focus() }
+  function close() { setOpen(false); openButtonRef?.current?.focus() }
   return <>
-    <div className="fixed right-3 top-1/2 z-40 -translate-y-1/2" aria-label="Session workspace tools">
-      <Popover>
-        <PopoverTrigger asChild>
-          <button ref={launcher} type="button" className={`${control} flex h-10 w-10 items-center justify-center rounded-full bg-background shadow-md`} aria-label="Add sidebar view" title="Add sidebar view">
-            <Plus className="h-4 w-4" />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="end" side="left" className="w-52 p-1">
-          {(['Review', 'Files', 'Browser', 'Repository'] as const).map(name => <button key={name} type="button" className={`${control} flex h-9 w-full items-center justify-start`} onClick={() => addView(name)}>
-            {addedViews.includes(name) ? '✓ ' : '+ '}{name}
-          </button>)}
-          <button type="button" className={`${control} flex h-9 w-full items-center justify-start`} onClick={() => requestQuickOpen(sessionId)}>Quick open</button>
-        </PopoverContent>
-      </Popover>
-      {query.isPending && <span className="sr-only" role="status">Loading workspace…</span>}
-      {!open && <WorkspaceError error={query.error} retry={() => void query.refetch()} />}
-    </div>
     {createPortal(<aside ref={panel} id={panelId} role="region" aria-label="Session workspace panel" tabIndex={-1} hidden={!open}
       className="fixed inset-y-0 right-0 z-40 flex flex-col border-l border-border bg-background text-foreground shadow-xl"
       style={{ width: `min(${panelWidth}px, 90vw)`, ...(!open ? { display: 'none' } : {}) }}
@@ -115,14 +104,14 @@ function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChanges
           setTab(next); if (next === 'Files') setFilesVisited(true)
           document.getElementById(`${panelId}-${next}`)?.focus()
         }}>{name}</button>)}
-        <Popover><PopoverTrigger asChild><button className={control} aria-label="Add sidebar view"><Plus className="h-4 w-4" /></button></PopoverTrigger><PopoverContent align="end" className="w-48 p-1">{(['Review', 'Files', 'Browser', 'Repository'] as const).map(name => <button key={name} type="button" className={`${control} flex h-9 w-full justify-start`} onClick={() => addView(name)}>{addedViews.includes(name) ? '✓ ' : '+ '}{name}</button>)}</PopoverContent></Popover>
+        <Popover><PopoverTrigger asChild><button className={control} aria-label="Add sidebar view"><Plus className="h-4 w-4" /></button></PopoverTrigger><PopoverContent align="end" className="w-48 p-1">{(['Review', 'Files', 'Browser', 'Repository'] as const).map(name => <button key={name} type="button" className={`${control} flex h-9 w-full justify-start`} onClick={() => addView(name)}>{addedViews.includes(name) ? '✓ ' : '+ '}{name}</button>)}<button type="button" className={`${control} flex h-9 w-full justify-start`} onClick={() => requestQuickOpen(sessionId)}>Quick open</button></PopoverContent></Popover>
       </div>
       <div className="px-4"><WorkspaceError error={query.error} retry={() => void query.refetch()} /></div>
       <div id={`${panelId}-Review-content`} role="tabpanel" aria-labelledby={`${panelId}-Review`} hidden={tab !== 'Review'} className="min-h-0 flex-1 overflow-auto">
         {query.data ? <WorkspaceReview sessionId={sessionId} workspace={query.data} refresh={refresh} commitFocus={false} /> : <p className="p-4 text-sm">{query.isPending ? 'Loading workspace…' : 'Workspace unavailable.'}</p>}
       </div>
       <div id={`${panelId}-Files-content`} role="tabpanel" aria-labelledby={`${panelId}-Files`} hidden={tab !== 'Files'} className="min-h-0 flex-1 overflow-auto" style={tab === 'Files' ? { display: 'flex', flexDirection: 'column' } : undefined}>
-        {filesVisited && <WorkspaceFiles sessionId={sessionId} refresh={refresh} openRequest={openRequest} />}
+        {filesVisited && <WorkspaceFiles sessionId={sessionId} refresh={refresh} openRequest={fileOpenRequest} />}
       </div>
       <div id={`${panelId}-Browser-content`} role="tabpanel" aria-labelledby={`${panelId}-Browser`} hidden={tab !== 'Browser'} className="min-h-0 flex-1 overflow-auto">
         <ProviderBrowserPanel sessionId={sessionId} projectRouteId={projectRouteId} enabled={open && tab === 'Browser'} />

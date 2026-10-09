@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { CircleChevronDown } from 'lucide-react'
+import { CircleChevronDown, History } from 'lucide-react'
 
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { listProjects, type Project } from '@/api/projects'
@@ -10,13 +10,16 @@ import { worktreesApi } from '@/api/worktrees'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { getProviders } from '@/api/providers'
 import { SUBPOLAR_API_BASE_URL } from '@/config'
-import { useAgents } from '@/hooks/usePiHarness'
+import { useAgents } from '@/hooks/usePiDurableHarness'
 import { useSettings } from '@/hooks/useSettings'
 import { ChatInputBar } from '@/components/chat/ChatInputBar'
 import { resolveNewSessionContext } from '@/api/new-session'
 import { FetchError } from '@/api/fetchWrapper'
 import { newSessionPath, parseNewSessionRoute } from '@/lib/new-session-route'
 import { useSidebarAction } from '@/hooks/useSidebarAction'
+import { listStoredSessionsPage, type StoredSession } from '@/api/sessions'
+import { formatDistanceToNow } from 'date-fns'
+import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 
 const MOTIVATIONAL_MESSAGES = [
   'Ready to dive in',
@@ -93,7 +96,9 @@ export function NewSession() {
   const [customized, setCustomized] = useState(() => Boolean(route.agentName))
   const [hoveringCustomize, setHoveringCustomize] = useState(() => Boolean(route.agentName))
   const [controlsPinned, setControlsPinned] = useState(false)
+  const [customizationRowHeight, setCustomizationRowHeight] = useState(32)
   const customizationCardRef = useRef<HTMLDivElement>(null)
+  const customizationRowRef = useRef<HTMLDivElement>(null)
   const customizationHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => () => {
@@ -144,6 +149,15 @@ export function NewSession() {
   const visibleAgents = (agentsQuery.data ?? []).filter((agent) =>
     !selectedProject?.hasAgentOverride || selectedProject.agentNames?.includes(agent.name),
   )
+  const previousSessionsQuery = useQuery({
+    queryKey: ['agent-previous-sessions', agentName],
+    queryFn: () => listStoredSessionsPage({ limit: 100 }),
+    enabled: Boolean(agentName),
+    staleTime: 30_000,
+  })
+  const previousAgentSessions = (previousSessionsQuery.data?.sessions ?? [])
+    .filter((session: StoredSession) => session.profile === agentName && !session.archived)
+    .slice(0, 3)
   const projectOptions = contextQuery.data
     ? Array.from(new Map([contextQuery.data.project, ...(projectsQuery.data ?? [])].map((project) => [String(project.id), project])).values())
     : []
@@ -163,6 +177,21 @@ export function NewSession() {
   }, [model, providersQuery.data])
   const selectedModelOption = modelOptions.find((option) => option.value === model)
   const variantOptions = Object.keys(selectedModelOption?.variants ?? {})
+
+  useLayoutEffect(() => {
+    const row = customizationRowRef.current
+    if (!row) return
+
+    const measure = () => {
+      const height = Math.max(32, Math.ceil(row.getBoundingClientRect().height))
+      setCustomizationRowHeight((current) => current === height ? current : height)
+    }
+
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(row)
+    return () => observer.disconnect()
+  }, [contextQuery.data, modelOptions, selectedProject?.isGeneralChat, visibleAgents.length])
 
   if (contextQuery.isLoading) return <div className="flex h-dvh items-center justify-center">Loading...</div>
   if (contextQuery.isError || !contextQuery.data) return <NewSessionError error={contextQuery.error} />
@@ -248,11 +277,14 @@ export function NewSession() {
             onFocus={() => { cancelCustomizationHide(); setHoveringCustomize(true) }}
           >
             <p className="mb-2 text-2xl text-muted-foreground">{motivationalMessage}</p>
-            <div className="relative h-8 max-h-8 overflow-hidden">
+            <div
+              className="relative w-full overflow-hidden transition-[height] duration-300 ease-out"
+              style={{ height: customizationRowHeight }}
+            >
               <div
                 aria-hidden={controlsVisible}
                 inert={controlsVisible}
-                className={`absolute inset-0 flex h-8 max-h-8 items-center justify-center transition-transform duration-300 ease-out ${controlsVisible ? '-translate-y-full' : 'translate-y-0'}`}
+                className={`absolute inset-0 flex items-center justify-center transition-transform duration-300 ease-out ${controlsVisible ? '-translate-y-full' : 'translate-y-0'}`}
               >
                 <button
                   type="button"
@@ -266,12 +298,12 @@ export function NewSession() {
                 </button>
               </div>
               <div
+                ref={customizationRowRef}
                 aria-hidden={!controlsVisible}
                 inert={!controlsVisible}
-
-                className={`absolute inset-0 h-8 max-h-8 transition-transform duration-300 ease-out ${controlsVisible ? 'translate-y-0' : 'translate-y-full pointer-events-none'}`}
+                className={`absolute inset-x-0 top-0 min-h-8 transition-transform duration-300 ease-out ${controlsVisible ? 'translate-y-0' : 'translate-y-full pointer-events-none'}`}
               >
-                <div className="flex h-8 max-h-8 w-full min-w-0 flex-nowrap items-center justify-center gap-1 overflow-hidden whitespace-nowrap text-sm">
+                <div className="flex min-h-8 w-full min-w-0 flex-wrap items-center justify-center gap-x-1 gap-y-1 text-sm">
                   <Select
                     onOpenChange={handleSelectOpenChange}
                     value={resolvedProjectId}
@@ -403,6 +435,27 @@ export function NewSession() {
             routingEnabled={!customized}
             hideModelSelect
           />
+          {agentName && previousAgentSessions.length > 0 && (
+            <section className="w-full space-y-2" aria-label={`Previous sessions with ${agentName}`}>
+              <h2 className="flex items-center gap-2 px-1 text-xs font-medium text-muted-foreground">
+                <History className="h-3.5 w-3.5" />
+                Previous sessions with {agentName}
+              </h2>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {previousAgentSessions.map((session) => (
+                  <button
+                    key={session.id}
+                    type="button"
+                    onClick={() => navigate(`/projects/${session.projectId ?? GENERAL_CHAT_PROJECT_ID}/sessions/${encodeURIComponent(session.id)}`)}
+                    className="min-w-0 rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <span className="block truncate text-sm font-medium">{session.title?.trim() || 'Untitled session'}</span>
+                    <span className="mt-1 block text-xs text-muted-foreground">Updated {formatDistanceToNow(new Date(session.updatedAt), { addSuffix: true })}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
           <Dialog open={newWorktreeOpen} onOpenChange={setNewWorktreeOpen}>
             <DialogContent>
               <DialogTitle>Create a new worktree</DialogTitle>

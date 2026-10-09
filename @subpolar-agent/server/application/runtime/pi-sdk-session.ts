@@ -161,8 +161,14 @@ export class PiSdkSession<TClient = unknown> {
     const client = await host.getClient()
     const userId = this.record.userId
     if (!userId) throw new Error('Session has no authenticated owner')
-    const sessionCwd = this.record.directory ?? this.project.path
-    this.workspaceAvailable = host.isWorkspaceAvailable?.(sessionCwd) ?? true
+    const sessionDirectory = this.record.directory ?? this.project.path
+    const sessionDirectoryAvailable = host.isWorkspaceAvailable?.(sessionDirectory) ?? true
+    const sessionCwd = this.project.name === 'General Chat' && !sessionDirectoryAvailable
+      ? this.project.path
+      : sessionDirectory
+    this.workspaceAvailable = sessionCwd === sessionDirectory
+      ? sessionDirectoryAvailable
+      : host.isWorkspaceAvailable?.(sessionCwd) ?? true
     const persistedTranscript = await host.loadTranscript(client, userId, this.record.id)
     this.sessionManager = SessionManager.inMemory(sessionCwd, { id: this.record.id })
     hydrateSessionManager(this.sessionManager, persistedTranscript)

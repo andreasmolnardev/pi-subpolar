@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { SessionDetail } from '../SessionDetail'
+import { getProject } from '@/api/projects'
 
 const mocks = vi.hoisted(() => ({
   useSession: vi.fn(),
@@ -25,7 +26,7 @@ const mocks = vi.hoisted(() => ({
   RepoSkillsDialog: vi.fn(() => null),
 }))
 
-vi.mock('@/hooks/usePiHarness', () => ({
+vi.mock('@/hooks/usePiDurableHarness', () => ({
   useSession: mocks.useSession,
   useAbortSession: vi.fn(() => ({ mutate: vi.fn() })),
   useUpdateSession: vi.fn(() => ({ mutate: vi.fn() })),
@@ -248,6 +249,16 @@ describe('SessionDetail assistant loading at repoId=0', () => {
     await waitFor(() => {
       expect(screen.getByTestId('session-header-region')).toBeInTheDocument()
     })
+  })
+
+  it('does not show project-not-found when the General Chat lookup fails', async () => {
+    vi.mocked(getProject).mockRejectedValueOnce(new Error('General Chat lookup failed'))
+    renderAssistantSession('sess-asst-1')
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-header-region')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('Project not found')).not.toBeInTheDocument()
   })
 
   it('shows the project-not-found dialog when a non-general project is unavailable', async () => {

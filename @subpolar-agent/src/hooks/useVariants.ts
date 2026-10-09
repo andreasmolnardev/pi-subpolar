@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useModelSelection } from './useModelSelection'
 import { useModelStore } from '@/stores/modelStore'
-import { useSubpolarClient } from './usePiHarness'
+import { useSubpolarClient } from './usePiDurableHarness'
 import { getProviders } from '@/api/providers'
 import { useQuery } from '@tanstack/react-query'
 

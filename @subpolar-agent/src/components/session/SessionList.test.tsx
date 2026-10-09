@@ -14,7 +14,7 @@ const { createSessionMock, deleteSessionMock, sessionsData, createSessionState, 
   lastSessionsHookArgs: { current: undefined as { apiUrl: string; directories: string[]; options?: { search?: string; limit?: number } } | undefined },
 }))
 
-vi.mock('@/hooks/usePiHarness', () => ({
+vi.mock('@/hooks/usePiDurableHarness', () => ({
   useSessionsAcrossDirectories: (apiUrl: string, directories: string[], options?: { search?: string; limit?: number }) => {
     lastSessionsHookArgs.current = { apiUrl, directories, options }
     // Simulate server-side search: return empty data when a search query is active

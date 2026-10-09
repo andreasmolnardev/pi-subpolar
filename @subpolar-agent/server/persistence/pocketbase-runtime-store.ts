@@ -207,6 +207,12 @@ export class PocketBaseRuntimeStore {
     }
   }
 
+  async getRuntimeRun(ownerId: string, runId: string): Promise<RuntimeRun | null> {
+    const matches = await scopedCollection(this.client, 'runtime_runs', { owner_id: ownerId, run_id: runId }).getFullList({ filter: `owner_id = "${filter(ownerId)}" && run_id = "${filter(runId)}"` })
+    if (matches.length !== 1) return null
+    return runtimeFromRecord(matches[0]!)
+  }
+
   async updateRuntimeRun(ownerId: string, sessionId: string, runId: string, state: RuntimeRunState, error?: unknown): Promise<RuntimeRun | null> {
     const record = await firstOrNull(() => scopedCollection(this.client, 'runtime_runs', { owner_id: ownerId, session_id: sessionId, run_id: runId }).getFirstListItem(`owner_id = "${filter(ownerId)}" && session_id = "${filter(sessionId)}" && run_id = "${filter(runId)}"`))
     if (!record) return null

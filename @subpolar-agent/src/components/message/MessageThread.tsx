@@ -33,6 +33,8 @@ interface MessageThreadProps {
   suggestionsByAssistantId?: ReadonlyMap<string, string[]>
   onSuggestionSelect?: (suggestion: string) => void
   sessionStartedAt?: number
+  readOnly?: boolean
+  agentPreferences?: Record<string, unknown>
 }
 
 function SendingIndicator() {
@@ -274,6 +276,7 @@ interface MessageRowProps {
   setActiveAttemptID: (id: string) => void
   onRetryRequest: (messageID: string, content: string, assistantMessageID: string, model?: string) => Promise<void>
   retryingMessageID: string | null
+  readOnly: boolean
 }
 
 const MessageRow = memo(function MessageRow({
@@ -300,6 +303,7 @@ const MessageRow = memo(function MessageRow({
   setActiveAttemptID,
   onRetryRequest,
   retryingMessageID,
+  readOnly,
 }: MessageRowProps) {
   const msg = msgWithParts.info
   const parts = msgWithParts.parts
@@ -321,10 +325,10 @@ const MessageRow = memo(function MessageRow({
 
   const nextAssistantMsg = nextAssistantMessage?.info
   const isUserBeforeAssistant = msg.role === 'user' && nextAssistantMessage
-  const canEditUserMessage = isLastUserMessage && isUserBeforeAssistant && !isSessionBusy
-  const canRetryUserMessage = isLastUserMessage && nextAssistantMessage && !isSessionBusy
+  const canEditUserMessage = !readOnly && isLastUserMessage && isUserBeforeAssistant && !isSessionBusy
+  const canRetryUserMessage = !readOnly && isLastUserMessage && nextAssistantMessage && !isSessionBusy
 
-  const isEditingThisMessage = editingUserMessageId === msg.id
+  const isEditingThisMessage = !readOnly && editingUserMessageId === msg.id
 
   const hasContent = hasRenderableContent(msg.role, parts, simpleChatMode)
   const hasError = msg.role === 'assistant' && 'error' in msg && msg.error
@@ -350,6 +354,7 @@ const MessageRow = memo(function MessageRow({
             <div key={`${msg.id}-${part.id}-${partIndex}`}>
               <MessagePart
                 part={part}
+                simpleChatMode={simpleChatMode}
                 role={msg.role}
                 allParts={parts}
                 partIndex={partIndex}
@@ -400,6 +405,7 @@ const MessageRow = memo(function MessageRow({
               <div key={`${msg.id}-${part.id}-${partIndex}`}>
                 <MessagePart
                   part={part}
+                  simpleChatMode={simpleChatMode}
                   role={msg.role}
                   allParts={parts}
                   partIndex={parts.indexOf(part)}
@@ -464,6 +470,7 @@ const MessageRow = memo(function MessageRow({
                   <div key={`${msg.id}-${part.id}-${partIndex}`}>
                     <MessagePart
                       part={part}
+                      simpleChatMode={simpleChatMode}
                       role={msg.role}
                       allParts={parts}
                       partIndex={parts.indexOf(part)}
@@ -518,6 +525,7 @@ const MessageRow = memo(function MessageRow({
               <div key={`${msg.id}-${part.id}-${partIndex}`}>
                 <MessagePart
                   part={part}
+                  simpleChatMode={simpleChatMode}
                   role={msg.role}
                   allParts={parts}
                   partIndex={parts.indexOf(part)}
@@ -550,6 +558,8 @@ export const MessageThread = memo(function MessageThread({
   suggestionsByAssistantId,
   onSuggestionSelect,
   sessionStartedAt,
+  readOnly = false,
+  agentPreferences,
 }: MessageThreadProps) {
   const [editingUserMessageId, setEditingUserMessageId] = useState<string | null>(null)
   const [editingForAssistantId, setEditingForAssistantId] = useState<string | null>(null)
@@ -559,7 +569,9 @@ export const MessageThread = memo(function MessageThread({
   const retryMutation = useRefreshMessage({ apiUrl, sessionId: sessionID, directory })
   const sessionStatus = useSessionStatusForSession(sessionID)
   const { preferences } = useSettings()
-  const simpleChatMode = preferences?.simpleChatMode ?? false
+  const simpleChatMode = typeof agentPreferences?.simpleChatMode === 'boolean'
+    ? agentPreferences.simpleChatMode
+    : preferences?.simpleChatMode ?? false
   
   const pendingAssistantId = useMemo(() => {
     if (!messages) return undefined
@@ -702,6 +714,7 @@ export const MessageThread = memo(function MessageThread({
           setActiveAttemptID={(attemptID) => setActiveAttemptByMessageID((current) => ({ ...current, [msgWithParts.info.id]: attemptID }))}
           onRetryRequest={handleRetryRequest}
           retryingMessageID={retryingMessageID}
+          readOnly={readOnly}
           editingUserMessageId={editingUserMessageId}
           editingForAssistantId={editingForAssistantId}
           apiUrl={apiUrl}

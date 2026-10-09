@@ -1,4 +1,4 @@
-import { UnsupportedCapabilityError } from "../../subpolar-contracts/src/index.ts";
+import { UnsupportedCapabilityError } from "@subpolar/contracts";
 import type {
   AdapterCapability,
   AdapterCapabilities,
@@ -24,8 +24,8 @@ import type {
   RunEvent,
   RunOutcome,
   RunStore,
-} from "../../subpolar-contracts/src/index.ts";
-import { SkillConflictError, SkillNotFoundError, SkillValidationError, createSkill, updateSkill, listSkills, resolveEffectiveSkills, assertValidSkill } from "../../subpolar-contracts/src/index.ts";
+} from "@subpolar/contracts";
+import { SkillConflictError, SkillNotFoundError, SkillValidationError, createSkill, updateSkill, listSkills, resolveEffectiveSkills, assertValidSkill } from "@subpolar/contracts";
 import { createPocketBaseTargetPersistence } from "./durable.ts";
 import type {
   ApprovalClaim,

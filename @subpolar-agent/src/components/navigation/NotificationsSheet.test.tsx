@@ -11,6 +11,41 @@ describe('NotificationsSheet', () => {
     vi.clearAllMocks()
   })
 
+  it('renders as a non-modal popover controlled by the existing opener props', () => {
+    vi.mocked(usePermissions).mockReturnValue({
+      pendingCount: 0,
+      setShowDialog: vi.fn(),
+      navigateToCurrent: vi.fn(),
+      current: null,
+      respond: vi.fn(),
+      dismiss: vi.fn(),
+      getForCallID: vi.fn(),
+      hasForSession: vi.fn(),
+    })
+    vi.mocked(useQuestions).mockReturnValue({
+      pendingCount: 0,
+      navigateToCurrent: vi.fn(),
+      current: null,
+      reply: vi.fn(),
+      reject: vi.fn(),
+      dismiss: vi.fn(),
+      getForCallID: vi.fn(),
+      hasForSession: vi.fn(),
+    })
+    const handleClose = vi.fn()
+    const { rerender } = render(
+      <NotificationsSheet isOpen onClose={handleClose} />,
+      { wrapper: ({ children }) => <MemoryRouter>{children}</MemoryRouter> },
+    )
+
+    const popover = screen.getByRole('dialog', { name: 'Notifications' })
+    expect(popover).not.toHaveAttribute('aria-modal', 'true')
+    expect(popover).toHaveClass('max-h-[min(70vh,34rem)]')
+
+    rerender(<NotificationsSheet isOpen={false} onClose={handleClose} />)
+    expect(screen.queryByRole('dialog', { name: 'Notifications' })).not.toBeInTheDocument()
+  })
+
   it('renders empty state when both counts are 0', () => {
     vi.mocked(usePermissions).mockReturnValue({
       pendingCount: 0,

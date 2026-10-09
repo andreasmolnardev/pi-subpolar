@@ -13,6 +13,8 @@ export {
 
 export {
   authConfig,
+  devAdminTokenEnabled,
+  createOneShotTokenIssuer,
   changePassword,
   signIn,
   signOut,

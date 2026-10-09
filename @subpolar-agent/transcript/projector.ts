@@ -68,7 +68,7 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
   }
   let assistantGroup: AssistantGroup | undefined
 
-  const projectAssistantParts = (message: Obj, messageId: string, created: number, completed: number): Obj[] => {
+  const projectAssistantParts = (message: Obj, messageId: string, created: number): Obj[] => {
     const parts: Obj[] = []
     const content = Array.isArray(message.content) ? message.content : []
     content.forEach((raw: unknown, index: number) => {
@@ -78,8 +78,17 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
       } else if ((block.type === 'thinking' || block.type === 'reasoning') && typeof (block.thinking ?? block.text) === 'string') {
         const blockTime = obj(block.time)
         const start = timestampOf(blockTime.start ?? block.startTime) ?? created
-        const end = timestampOf(blockTime.end ?? block.endTime) ?? completed
-        parts.push({ id: partId, sessionID: sessionId, messageID: assistantGroup?.id ?? messageId, type: 'reasoning', text: redactSensitiveText(block.thinking ?? block.text), time: { start, end } })
+        const nextBlock = obj(content[index + 1])
+        const nextBlockTime = obj(nextBlock.time)
+        const end = timestampOf(blockTime.end ?? block.endTime) ?? timestampOf(nextBlockTime.start ?? nextBlock.startTime)
+        parts.push({
+          id: partId,
+          sessionID: sessionId,
+          messageID: assistantGroup?.id ?? messageId,
+          type: 'reasoning',
+          text: redactSensitiveText(block.thinking ?? block.text),
+          time: { start, ...(end === undefined ? {} : { end }) },
+        })
       } else if (block.type === 'toolCall') {
         const callID = typeof block.id === 'string' ? block.id : `${messageId}:tool:${index}`
         const input = argumentsOf(block.arguments)
@@ -140,7 +149,7 @@ export function projectEntries(entries: unknown[], leafId: string | null | undef
     assistantGroup.tokens.reasoning += typeof usage.reasoning === 'number' ? usage.reasoning : 0
     assistantGroup.tokens.cacheRead += typeof usage.cacheRead === 'number' ? usage.cacheRead : typeof cache.read === 'number' ? cache.read : 0
     assistantGroup.tokens.cacheWrite += typeof usage.cacheWrite === 'number' ? usage.cacheWrite : typeof cache.write === 'number' ? cache.write : 0
-    assistantGroup.parts.push(...projectAssistantParts(message, id, created, completed))
+    assistantGroup.parts.push(...projectAssistantParts(message, id, created))
     assistantGroup.info.time = { created: assistantGroup.created, completed: assistantGroup.completed }
   })
 

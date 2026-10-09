@@ -1,6 +1,7 @@
 /* Domain route extracted from bridge-request-handler.ts. */
 // @ts-nocheck
 import type { BridgeRequestContext } from '../bridge-route-context.ts'
+import { WebSearchCredentialService, WEB_SEARCH_KEY_PROVIDERS } from '../persistence/web-search-credentials.ts'
 
 type ModelSelection = { providerID: string; modelID: string }
 type ModelState = { recent: ModelSelection[]; favorite: ModelSelection[]; variant: Record<string, string | undefined> }
@@ -44,6 +45,27 @@ export async function handleProvidersRoute(context: BridgeRequestContext): Promi
   if (path[1] === 'providers' && authenticatedUser) {
     try {
       const userId = authenticatedUser.id
+
+      if (path[2] === 'web-search-credentials') {
+        const credentials = new WebSearchCredentialService(await deps.applicationDatabase())
+        if (path.length === 3 && request.method === 'GET') return deps.json({ configured: await credentials.statuses(userId) })
+        if (path.length === 3 && request.method === 'PUT') {
+          try {
+            const input = deps.object(await deps.body(request))
+            return deps.json({ configured: await credentials.save(userId, input.credentials && typeof input.credentials === 'object' ? deps.object(input.credentials) : {}) })
+          } catch (error) {
+            if (error instanceof Error && error.message.startsWith('Invalid ')) return deps.json({ message: error.message }, 400)
+            console.warn(`Web search credential update failed: ${deps.redactedDiagnostic(error)}`)
+            return deps.json({ message: 'Web search credentials unavailable' }, 503)
+          }
+        }
+        if (path.length === 4 && request.method === 'DELETE') {
+          const provider = decodeURIComponent(path[3] ?? '')
+          if (!WEB_SEARCH_KEY_PROVIDERS.includes(provider as typeof WEB_SEARCH_KEY_PROVIDERS[number])) return deps.json({ message: 'Unsupported web search provider' }, 400)
+          return deps.json({ configured: await credentials.remove(userId, provider as typeof WEB_SEARCH_KEY_PROVIDERS[number]) })
+        }
+        return deps.json({ message: 'Not found' }, 404)
+      }
 
       if (path[2] === 'custom') {
         const customProviders = deps.createCustomProviderService(await deps.applicationDatabase())
@@ -233,6 +255,10 @@ export async function handleProvidersRoute(context: BridgeRequestContext): Promi
         }
       }
     } catch (error) {
+      if (path[2] === 'web-search-credentials') {
+        console.warn(`Web search credential request failed: ${deps.redactedDiagnostic(error)}`)
+        return deps.json({ message: 'Web search credentials unavailable' }, 503)
+      }
       if (error instanceof deps.CustomProviderValidationError) return deps.json({ message: error.message }, 400)
       if (error instanceof deps.RequestSecurityError) return deps.json({ message: error.message }, error.status)
       if (error instanceof deps.ProviderLoginFlowError) {

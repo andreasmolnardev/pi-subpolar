@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { Loader2, Check, X, Shield, Search, Pencil, Trash2, Plus, RefreshCw } from 'lucide-react'
+import { Loader2, Check, X, Shield, Pencil, Trash2, Plus, RefreshCw } from 'lucide-react'
 import { providerAccountsApi, getProviders, customProvidersApi } from '@/api/providers'
 import type { CustomProviderConfig, PiProviderApiType, Provider, ProviderCatalogProvider, ProviderInstance, ProviderAuthMethodKind } from '@/api/providers'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -406,7 +406,6 @@ export function ProviderSettings() {
   const [apiKeyTarget, setApiKeyTarget] = useState<ProviderLoginTarget | null>(null)
   const [apiKeyMode, setApiKeyMode] = useState<'add' | 'edit'>('add')
   const [deleteTarget, setDeleteTarget] = useState<ProviderInstance | null>(null)
-  const [availableSearch, setAvailableSearch] = useState('')
   const [customProviderDialogOpen, setCustomProviderDialogOpen] = useState(false)
   const [customProviderTarget, setCustomProviderTarget] = useState<CustomProviderConfig | null>(null)
   const [customProviderDeleteTarget, setCustomProviderDeleteTarget] = useState<string | null>(null)
@@ -419,6 +418,27 @@ export function ProviderSettings() {
   })
   const providers = providersData?.providers ?? []
   const catalogProviders = providersData?.catalog?.providers ?? []
+
+  const providerChoices = useMemo(
+    () => catalogProviders
+      .filter((provider) => provider.authMethods.some((method) => method.available))
+      .map((provider) => loginTarget(provider, {
+        id: provider.id,
+        instanceId: provider.id,
+        providerId: provider.id,
+        label: provider.name,
+        source: 'runtime',
+        status: provider.authStatus,
+      })),
+    [catalogProviders],
+  )
+
+  const connectedAccounts = useMemo(
+    () => catalogProviders.flatMap((provider) => provider.instances
+      .filter((instance) => instance.status.configured)
+      .map((instance) => ({ provider, instance }))),
+    [catalogProviders],
+  )
 
   const { data: customProviders = [], isLoading: customProvidersLoading } = useQuery({
     queryKey: ['custom-providers'],
@@ -459,24 +479,6 @@ export function ProviderSettings() {
     setApiKeyDialogOpen(true)
   }, [])
 
-  const filteredProviders = useMemo(() => {
-    const search = availableSearch.trim().toLowerCase()
-    if (!search) return catalogProviders
-    return catalogProviders.filter((provider) => (
-      provider.name.toLowerCase().includes(search) || provider.id.toLowerCase().includes(search) ||
-      provider.instances.some((instance) => instance.label.toLowerCase().includes(search) || instance.email?.toLowerCase().includes(search))
-    ))
-  }, [availableSearch, catalogProviders])
-
-  const chatGPTProvider = catalogProviders.find((provider) => provider.id === 'openai' &&
-    provider.authMethods.some((method) => method.kind !== 'api_key' && method.available && method.label === 'Sign in with ChatGPT'))
-  const chatGPTMethod = chatGPTProvider?.authMethods.find((method) => method.kind !== 'api_key' && method.available)
-
-  const connectedInstances = useMemo(
-    () => catalogProviders.flatMap((provider) => provider.instances.filter((instance) => instance.status.configured)),
-    [catalogProviders],
-  )
-
   const conversationProviders = useMemo(
     () => providers.filter((provider) => provider.isConnected),
     [providers],
@@ -499,7 +501,7 @@ export function ProviderSettings() {
 
   return (
     <Tabs defaultValue="providers" className="space-y-6">
-      <TabsList className="w-full justify-start">
+      <TabsList>
         <TabsTrigger value="defaults">Default Models</TabsTrigger>
         <TabsTrigger value="providers">Providers</TabsTrigger>
       </TabsList>
@@ -511,86 +513,56 @@ export function ProviderSettings() {
       <TabsContent value="providers" className="px-0">
         <div className="space-y-8">
           <section className="space-y-4">
-            <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold text-foreground mb-2">Provider Accounts</h2>
                 <p className="text-sm text-muted-foreground">
-                  Each account is a separate provider instance. Credentials stay on the server and are never displayed.
+                  Connect provider accounts to make their models available. Credentials stay on the server and are never displayed.
                 </p>
               </div>
-              <Badge variant="secondary">{connectedInstances.length} connected</Badge>
+              <Button type="button" size="sm" className="shrink-0" onClick={() => {
+                setApiKeyTarget(null)
+                setApiKeyMode('add')
+                setApiKeyDialogOpen(true)
+              }}>
+                <Plus className="mr-2 h-4 w-4" /> Add provider
+              </Button>
             </div>
 
-            {chatGPTProvider && (
-              <Card className="bg-card border-border">
-                <CardContent className="pt-4 space-y-3">
-                  <p className="text-sm text-muted-foreground">
-                    Sign in to use the normal OpenAI Responses API with an eligible ChatGPT account, or choose an OpenAI API key. OpenAI Codex remains a separate provider; account and model usage limits apply.
-                  </p>
-                  <Button onClick={() => {
-                    setApiKeyTarget(loginTarget(chatGPTProvider, { id: chatGPTProvider.id, instanceId: chatGPTProvider.id, providerId: chatGPTProvider.id, label: chatGPTProvider.name, source: 'runtime', status: chatGPTProvider.authStatus }, chatGPTMethod?.kind))
-                    setApiKeyMode('add')
-                    setApiKeyDialogOpen(true)
-                  }}>
-                    <Shield className="h-4 w-4 mr-2" /> Sign in with ChatGPT
-                  </Button>
-                </CardContent>
-              </Card>
-            )}
-
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input placeholder="Search providers or accounts..." value={availableSearch} onChange={(event) => setAvailableSearch(event.target.value)} className="pl-9" autoComplete="off" />
-            </div>
-
-            {filteredProviders.length === 0 ? (
-              <Card className="bg-card border-border"><CardContent className="pt-6"><p className="text-sm text-muted-foreground text-center">No providers available.</p></CardContent></Card>
+            {connectedAccounts.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border px-6 py-10 text-center">
+                <Shield className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+                <h3 className="mb-1 font-medium text-foreground">No provider accounts connected</h3>
+                <p className="text-sm text-muted-foreground">Add a provider to sign in or enter an API key.</p>
+              </div>
             ) : (
-              <div className="grid gap-4">
-                {filteredProviders.map((provider) => (
-                  <Card key={provider.id} className="bg-card border-border">
-                    <CardHeader className="p-4 pb-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <CardTitle className="text-base">{provider.name}</CardTitle>
-                          <CardDescription className="text-xs mt-1">{provider.instances.length} instance{provider.instances.length !== 1 ? 's' : ''}</CardDescription>
+              <div className="space-y-3">
+                {connectedAccounts.map(({ provider, instance }) => (
+                  <div key={instance.instanceId} className="flex flex-col gap-3 rounded-lg border border-border p-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="rounded-md bg-accent p-2"><Shield className="h-4 w-4 text-muted-foreground" /></div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="truncate font-medium text-foreground">{instance.label}</h3>
+                          {statusBadge(instance)}
                         </div>
-                        <div className="flex flex-wrap justify-end gap-1">
-                          {provider.authMethods.map((method) => <Badge key={method.kind} variant="outline" className="text-xs">{method.label}</Badge>)}
-                        </div>
+                        <p className="mt-1 truncate text-sm text-muted-foreground">{provider.name}</p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {[instance.email, instance.status.label, instance.authMethod && provider.authMethods.find((method) => method.kind === instance.authMethod)?.label].filter(Boolean).join(' · ') || 'Connected account'}
+                        </p>
                       </div>
-                    </CardHeader>
-                    <CardContent className="p-4 pt-0 space-y-3">
-                      {provider.instances.map((instance) => (
-                        <div key={instance.instanceId} className="rounded-md border border-border p-3">
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-sm font-medium">{instance.label}</span>
-                                {statusBadge(instance)}
-                              </div>
-                              {instance.email && <p className="text-xs text-muted-foreground mt-1">{instance.email}</p>}
-                              {instance.status.label && <p className="text-xs text-muted-foreground mt-1">Source: {instance.status.label}</p>}
-                            </div>
-                            <div className="flex flex-wrap gap-2 shrink-0">
-                              <Button size="sm" variant={instance.status.configured ? 'outline' : 'default'} onClick={() => openLogin(provider, instance, 'edit')}>
-                                {instance.status.configured ? <RefreshCw className="h-3.5 w-3.5 mr-1" /> : <Shield className="h-3.5 w-3.5 mr-1" />}
-                                {instance.status.configured ? 'Reconnect' : 'Login'}
-                              </Button>
-                              {instance.source === 'pocketbase' && (
-                                <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(instance)} disabled={deleteAccountMutation.isPending}>
-                                  <Trash2 className="h-3.5 w-3.5 mr-1" /> Disconnect
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                      <Button size="sm" variant="outline" onClick={() => openLogin(provider, { id: provider.id, instanceId: provider.id, providerId: provider.id, label: provider.name, source: 'runtime', status: provider.authStatus }, 'add')}>
-                        <Plus className="h-3.5 w-3.5 mr-1" /> Add another account
+                    </div>
+                    <div className="flex flex-wrap gap-2 lg:shrink-0">
+                      <Button size="sm" variant="ghost" onClick={() => openLogin(provider, instance, 'edit')}>
+                        <RefreshCw className="mr-1 h-3.5 w-3.5" /> Reconnect
                       </Button>
-                    </CardContent>
-                  </Card>
+                      {instance.source === 'pocketbase' && (
+                        <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(instance)} disabled={deleteAccountMutation.isPending}>
+                          <Trash2 className="mr-1 h-3.5 w-3.5" /> Disconnect
+                        </Button>
+                      )}
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
@@ -602,7 +574,7 @@ export function ProviderSettings() {
                 <h2 className="text-lg font-semibold text-foreground mb-2">Custom Providers</h2>
                 <p className="text-sm text-muted-foreground">Manage custom Pi-compatible provider endpoints.</p>
               </div>
-              <Button size="sm" onClick={() => { setCustomProviderTarget(null); setCustomProviderDialogOpen(true) }}><Plus className="h-4 w-4 mr-1" /> Add</Button>
+              <Button size="sm" variant="outline" onClick={() => { setCustomProviderTarget(null); setCustomProviderDialogOpen(true) }}><Plus className="h-4 w-4 mr-1" /> Add custom</Button>
             </div>
 
             {customProviders.length === 0 ? (
@@ -616,7 +588,7 @@ export function ProviderSettings() {
             )}
           </section>
 
-          {apiKeyTarget && <ApiKeyDialog open={apiKeyDialogOpen} onOpenChange={handleApiKeyDialogClose} provider={apiKeyTarget} onSuccess={handleApiKeySuccess} mode={apiKeyMode} />}
+          {apiKeyDialogOpen && <ApiKeyDialog open={apiKeyDialogOpen} onOpenChange={handleApiKeyDialogClose} provider={apiKeyTarget} providerChoices={apiKeyTarget ? undefined : providerChoices} onSuccess={handleApiKeySuccess} mode={apiKeyMode} />}
           {customProviderDialogOpen && <CustomProviderDialog key={customProviderTarget?.id ?? 'new'} open={customProviderDialogOpen} provider={customProviderTarget} onOpenChange={(open) => { setCustomProviderDialogOpen(open); if (!open) setCustomProviderTarget(null) }} onSave={(provider) => saveCustomProviderMutation.mutate(provider)} isSaving={saveCustomProviderMutation.isPending} />}
 
           <DeleteDialog

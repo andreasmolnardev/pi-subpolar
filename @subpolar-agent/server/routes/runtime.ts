@@ -1,10 +1,22 @@
 /* Domain route extracted from bridge-request-handler.ts. */
 // @ts-nocheck
 import type { BridgeRequestContext } from '../bridge-route-context.ts'
+import { redactSensitiveText } from '../core/security-redaction.ts'
 
 export async function handleRuntimeRoute(context: BridgeRequestContext): Promise<Response | undefined> {
   const { request, url, path, correlationId, deps, gatewayCredential, internalRequest } = context
   let authenticatedUser = context.authenticatedUser
+  if (path[1] === 'runs' && path.length === 3) {
+    if (request.method !== 'GET') return deps.json({ error: 'Method not allowed' }, 405)
+    if (context.internalRequest || context.gatewayCredential) return deps.json({ error: 'Authentication required' }, 401)
+    if (!authenticatedUser?.id) return deps.json({ error: 'Authentication required' }, 401)
+    let runId: string
+    try { runId = decodeURIComponent(path[2] ?? '') } catch { return deps.json({ error: 'Run not found' }, 404) }
+    const store = new deps.PocketBaseRuntimeStore(await deps.applicationDatabase())
+    const run = await store.getRuntimeRun(authenticatedUser.id, runId)
+    if (!run) return deps.json({ error: 'Run not found' }, 404)
+    return deps.json({ run: { ...run, ...(run.error === undefined ? {} : { error: redactSensitiveText(run.error) }) } })
+  }
   if (request.method === 'GET' && url.pathname === '/api/usage/daily') return deps.json(await deps.dailyUsage(authenticatedUser!.id, await deps.applicationDatabase()))
   if (url.pathname === '/api/proxy/credentials' && request.method === 'GET') {
     if (!authenticatedUser) return deps.json({ error: 'Authentication required' }, 401)

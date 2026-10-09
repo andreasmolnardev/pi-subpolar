@@ -45,6 +45,7 @@ const SESSION_LIST_PAGE_SIZE = 25
 interface UseSessionsAcrossDirectoriesOptions {
   search?: string
   limit?: number
+  enabled?: boolean
 }
 
 type SessionPageParam = Record<string, string>
@@ -110,7 +111,7 @@ export const useSessionsAcrossDirectories = (
       }
       return undefined;
     },
-    enabled: !!apiUrl && uniqueDirectories.length > 0,
+    enabled: !!apiUrl && uniqueDirectories.length > 0 && options?.enabled !== false,
     staleTime: 10000,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
@@ -289,6 +290,7 @@ export const useDeleteSession = (apiUrl: string | null | undefined, directory?: 
     onSettled: () => {
       invalidateSessionListCaches(queryClient, apiUrl);
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: ['stored-sessions'] });
     },
   });
 };
@@ -564,6 +566,18 @@ export const useSendPrompt = (apiUrl: string | null | undefined, directory?: str
       const queryKey = messagesQueryKey(apiUrl, sessionID, directory);
 
       useSendErrorStore.getState().clearError(sessionID);
+
+      if (
+        !data.queued &&
+        response &&
+        typeof response === "object" &&
+        "state" in response &&
+        response.state === "completed"
+      ) {
+        const sessionStatus = useSessionStatus.getState();
+        sessionStatus.clearStatus(sessionID);
+        sessionStatus.markCompleted(sessionID);
+      }
 
       if (data.queued || !response) {
         queryClient.invalidateQueries({ queryKey });

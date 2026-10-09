@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useConfig } from './usePiHarness'
-import { useSubpolarClient } from './usePiHarness'
+import { useConfig } from './usePiDurableHarness'
+import { useSubpolarClient } from './usePiDurableHarness'
 import { useModelStore, modelExists, type ModelSelection } from '@/stores/modelStore'
 import { addPiRecentModel, getPiModelState, getProviders, removePiRecentModel, togglePiFavoriteModel, type PiModelState } from '@/api/providers'
 

@@ -88,7 +88,7 @@ export function useNotifications() {
   });
 
   const removeDeviceMutation = useMutation({
-    mutationFn: (id: number) => notificationsApi.removeSubscription(id),
+    mutationFn: (id: string | number) => notificationsApi.removeSubscription(id),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ["notifications", "subscriptions"],
@@ -109,15 +109,14 @@ export function useNotifications() {
     if (result !== "granted") return false;
 
     const reg = await getServiceWorkerRegistration();
-    if (reg) {
-      await subscribeMutation.mutateAsync(undefined);
-    }
+    if (!reg) throw new Error("Service worker is not ready");
+    await subscribeMutation.mutateAsync(navigator.platform || "This device");
     return true;
   }, [subscribeMutation]);
 
   const enable = useCallback(async () => {
     const granted = await requestPermissionAndSubscribe();
-    if (!granted) return;
+    if (!granted) throw new Error("Notification permission was not granted");
     updateSettings({
       notifications: { ...notificationPrefs, enabled: true },
     });

@@ -1,6 +1,12 @@
 import { API_BASE_URL } from "@/config";
 import { settingsApi } from "./settings";
-import { fetchWrapper } from "./fetchWrapper";
+import { fetchForSubpolarClient, fetchWrapper } from "./fetchWrapper";
+import { SubpolarClient } from "@subpolar/client";
+
+const providerCatalogClient = new SubpolarClient({
+  baseUrl: API_BASE_URL || globalThis.location?.origin || 'http://localhost',
+  fetch: fetchForSubpolarClient,
+});
 
 export type ProviderSource = "configured" | "local" | "builtin";
 
@@ -317,10 +323,7 @@ function catalogProviderToLegacyProviders(catalog: ProviderCatalog): Provider[] 
 }
 
 export async function getProviderCatalog(directory?: string): Promise<ProviderCatalog> {
-  const response = await fetchWrapper<ProviderCatalog | { catalog: ProviderCatalog }>(`${API_BASE_URL}/api/providers/catalog`, {
-    params: { directory },
-  });
-  return 'catalog' in response ? response.catalog : response;
+  return await providerCatalogClient.getProviderCatalog({ directory }) as unknown as ProviderCatalog;
 }
 
 export const providerCatalogApi = {
@@ -370,22 +373,15 @@ export interface ProviderAccountStatus {
 /** Account-instance operations. These endpoints return sanitized metadata only. */
 export const providerAccountsApi = {
   list: async (): Promise<ProviderInstance[]> => {
-    const response = await fetchWrapper<ProviderInstance[] | { accounts: ProviderInstance[] }>(`${API_BASE_URL}/api/providers/accounts`);
-    return Array.isArray(response) ? response : response.accounts;
+    return await providerCatalogClient.listProviderAccounts() as ProviderInstance[];
   },
 
   get: async (instanceId: string): Promise<ProviderInstance | null> => {
-    const response = await fetchWrapper<ProviderInstance | { account?: ProviderInstance }>(
-      `${API_BASE_URL}/api/providers/accounts/${encodeURIComponent(instanceId)}`,
-    );
-    return 'account' in response ? response.account ?? null : response as ProviderInstance;
+    return await providerCatalogClient.getProviderAccount(instanceId) as ProviderInstance | null;
   },
 
   status: async (instanceId: string): Promise<ProviderAccountStatus | null> => {
-    const response = await fetchWrapper<ProviderAccountStatus | { status?: ProviderAccountStatus }>(
-      `${API_BASE_URL}/api/providers/accounts/${encodeURIComponent(instanceId)}/status`,
-    );
-    return 'status' in response && typeof response.status === 'object' ? response.status ?? null : response as ProviderAccountStatus;
+    return await providerCatalogClient.getProviderAccountStatus(instanceId) as ProviderAccountStatus | null;
   },
 
   update: async (instanceId: string, input: ProviderAccountUpdate): Promise<ProviderInstance> => {
@@ -402,31 +398,19 @@ export const providerAccountsApi = {
 };
 
 export async function getPiModelState(): Promise<PiModelState> {
-  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`)
+  return providerCatalogClient.getModelState()
 }
 
 export async function addPiRecentModel(model: ModelSelection): Promise<PiModelState> {
-  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ recent: model }),
-  })
+  return providerCatalogClient.addRecentModel(model)
 }
 
 export async function removePiRecentModel(model: ModelSelection): Promise<PiModelState> {
-  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ removeRecent: model }),
-  })
+  return providerCatalogClient.removeRecentModel(model)
 }
 
 export async function togglePiFavoriteModel(model: ModelSelection): Promise<PiModelState> {
-  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ favorite: model }),
-  })
+  return providerCatalogClient.toggleFavoriteModel(model)
 }
 
 async function getConfiguredProviders(connectedIds: Set<string>): Promise<ProviderWithModels[]> {

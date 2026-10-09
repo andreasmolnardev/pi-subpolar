@@ -110,38 +110,36 @@ export function SettingsDialog() {
         >
           <DialogTitle className="sr-only">Settings</DialogTitle>
 <div className="hidden sm:flex sm:flex-col sm:h-full sm:min-h-0">
-            <div className="sticky top-0 z-10 bg-gradient-to-b from-background via-background to-transparent border-b border-border backdrop-blur-sm px-6 py-4 flex-shrink-0 flex items-center justify-between">
-              <h2 className="text-2xl font-semibold bg-gradient-to-r from-foreground to-muted-foreground bg-clip-text text-transparent">
-                Settings
-              </h2>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={close}
-                className="text-muted-foreground hover:text-foreground min-w-[44px] min-h-[44px]"
-              >
-                <X className="w-5 h-5" />
-              </Button>
-            </div>
             <div className="flex flex-1 overflow-hidden">
               {/* Sidebar menu */}
-              <nav className="w-64 flex-shrink-0 border-r border-border bg-card p-4">
-                {menuItems.map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => {
-                      const view = item.id as SettingsView
-                      setTeachToolsActive(view === 'teach-tools')
-                      if (view !== 'teach-tools') setActiveTab(view as Exclude<SettingsView, 'menu' | 'teach-tools'>)
-                      setMobileView(view)
-                      pushSectionHistory(view)
-                    }}
-                    className={`w-full text-left px-3 py-2 rounded-md mb-2 flex items-center gap-2 ${(item.id === 'teach-tools' ? teachToolsActive : activeTab === item.id) ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent'} transition-colors`}
-                  >
-                    <item.icon className="w-5 h-5" />
-                    <span>{item.label}</span>
-                  </button>
-                ))}
+              <nav className="flex w-64 flex-shrink-0 flex-col border-r border-border bg-card p-4">
+                <h2 className="mb-4 px-3 text-lg font-semibold text-foreground">Sessions</h2>
+                <div className="flex-1 overflow-y-auto">
+                  {menuItems.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        const view = item.id as SettingsView
+                        setTeachToolsActive(view === 'teach-tools')
+                        if (view !== 'teach-tools') setActiveTab(view as Exclude<SettingsView, 'menu' | 'teach-tools'>)
+                        setMobileView(view)
+                        pushSectionHistory(view)
+                      }}
+                      className={`w-full text-left px-3 py-2 rounded-md mb-2 flex items-center gap-2 ${(item.id === 'teach-tools' ? teachToolsActive : activeTab === item.id) ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent'} transition-colors`}
+                    >
+                      <item.icon className="w-5 h-5" />
+                      <span>{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <Button
+                  variant="ghost"
+                  onClick={close}
+                  className="mt-4 w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-5 w-5" />
+                  Close settings
+                </Button>
               </nav>
               {/* Content area */}
               <div className="flex-1 overflow-y-auto p-6">

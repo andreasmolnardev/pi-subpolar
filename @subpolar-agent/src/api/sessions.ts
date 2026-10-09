@@ -6,6 +6,7 @@ export interface StoredSession {
   projectId: number | null
   directory: string | null
   title: string | null
+  profile?: string
   createdAt: number
   updatedAt: number
   archived: boolean

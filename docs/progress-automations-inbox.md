@@ -4,6 +4,12 @@
 
 Changes are confined to `@subpolar-agent/server/application/automations/**`, the automations/notifications/inbox routes, automation/notification client APIs, their tests, and this report. No bridge-runtime, shared core, persistence implementation, router, service-worker, or other agents' work was changed. This is a focused gap-fix and verification pass, **not a claim of full feature completion**.
 
+## Notifications follow-up
+
+The notifications path now stores the full browser push subscription, signs VAPID requests, encrypts Web Push payloads, applies the user's global and per-event preferences, and supports test delivery. SSE approval, question, and session idle/error events project owner-scoped inbox items; task and automation outcomes use their domain repositories. The notification popover displays unresolved inbox items, marks them acknowledged, and navigates to their internal destinations. Retryable deliveries are rescheduled at their recorded backoff and recovered using the bridge's single-process serialization.
+
+Live browser push still requires `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` in the bridge environment. The current Docker development UI reports that these keys are not configured, so actual push delivery could not be exercised in this environment. This follow-up does not claim multi-process delivery coordination or an atomic outbox; a crash between domain state changes and inbox projection can still leave a missing notification.
+
 ## Implemented in this pass
 
 - Scheduling uses the same concurrency policy as manual triggering while another run is retrying. `skip` consumes the due occurrence without adding work; `queue` adds work behind the earlier retry; `allow` admits independent work. Retries retain their own backoff and trigger identity.

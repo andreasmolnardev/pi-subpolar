@@ -41,8 +41,8 @@ import type {
   RunState,
   RunProgressEmitter,
   SessionStore,
-} from "../../subpolar-contracts/src/index.ts";
-import { UnsupportedRecoveryError } from "../../subpolar-contracts/src/index.ts";
+} from "@subpolar/contracts";
+import { UnsupportedRecoveryError } from "@subpolar/contracts";
 
 export interface GatewayOptions {
   /** Canonical tool definitions supplied by the composition root. */

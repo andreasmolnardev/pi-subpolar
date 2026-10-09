@@ -37,24 +37,81 @@ function section(start: string, end: string, source = bridge): string {
 }
 
 describe('bridge model delivery ordering', () => {
-  it('starts first-session title generation alongside routing before the agent prompt', () => {
+  it('runs subagents and automations through the owner-scoped Durable runner', () => {
+    const subagent = section('async function executeSubagentHost(', 'const executeAutomationHost:')
+    const automation = section('const executeAutomationHost:', 'const runtimeNotificationAdapter:')
+    const rpcAllowlist = section('const allowedRpcCommands = new Set([', '// Only extensions that do not own session state')
+
+    expect(subagent).toContain('runStatelessPrompt({')
+    expect(subagent).toContain('ownerId: input.task.owner_id')
+    expect(subagent).toContain('sessionId,')
+    expect(subagent).toContain('runId: input.task.id')
+    expect(subagent).toContain('profile: input.task.subagent_id')
+    expect(subagent).toContain('directory: worktree?.path ?? cwd')
+    expect(subagent).toContain('signal: input.signal')
+    expect(subagent).toContain('capabilities: input.capabilities.join(\',\')')
+    expect(subagent).not.toContain("type: 'prompt'")
+    expect(subagent).not.toContain('createPiSession')
+
+    expect(automation).toContain('runStatelessPrompt({')
+    expect(automation).toContain('ownerId: automation.owner_id')
+    expect(automation).toContain('sessionId,')
+    expect(automation).toContain('runId: run.id')
+    expect(automation).toContain('profile: automation.agent_id')
+    expect(automation).toContain('signal,')
+    expect(automation).not.toContain("type: 'prompt'")
+    expect(automation).not.toContain('rpcSession(')
+
+    for (const command of ["'prompt'", "'steer'", "'follow_up'", "'compact'"]) {
+      expect(rpcAllowlist).not.toContain(command)
+    }
+    const queuedFollowUp = section('async function deliverNextQueuedFollowUp(', 'const active = new Map')
+    expect(queuedFollowUp).not.toContain('session.send()')
+    expect(queuedFollowUp).toContain('runStatelessPrompt({')
+    expect(queuedFollowUp).toContain('runId: `follow-up-${identity}`')
+    expect(queuedFollowUp).toContain("'delivered'")
+    expect(queuedFollowUp).toContain("'failed'")
+    expect(queuedFollowUp).toContain('redactedDiagnostic(error)')
+    expect(queuedFollowUp).toContain('queuedFollowUpQueues')
+  })
+  it('resolves stored model suffixes before configuring Pi Durable with the ModelRuntime', () => {
+    const legacySelection = section('function parseModelSelection(', 'function parseDurableModelSelection(')
+    const validatedSelection = section('function modelSelection(', 'async function validateModelSelection(')
+    const selection = section('function parseDurableModelSelection(', 'type ModelSelection')
+    const execution = section('async function runStatelessPrompt(', 'function redactConfig')
+    expect(legacySelection).toContain("model.replace(/:(off|minimal|low|medium|high|xhigh)$/")
+    expect(validatedSelection).toContain("value: typeof value === 'string' ? value.trim()")
+    expect(selection).toContain('parseProviderModelId(selection)')
+    expect(selection).toContain('off|minimal|low|medium|high|xhigh')
+    expect(selection).toContain('thinkingLevel')
+    expect(execution).toContain('models: providerRuntime')
+    expect(execution).toContain('model: { provider: selection.providerID, modelId: selection.modelID }')
+    expect(execution).toContain('thinkingLevel: selection.thinkingLevel ?? agentRuntime.agent.thinking')
+    expect(execution).toContain('sessionID: event.sessionId ?? input.sessionId')
+    expect(execution).not.toContain('as unknown as PiDurableModels')
+  })
+
+  it('starts first-session title generation alongside routing before Durable execution', () => {
     const run = section("path.length === 4 && path[3] === 'runs' && request.method === 'POST'", "path.length === 4 && path[3] === 'state' && request.method === 'GET'")
     expect(run).toContain('generateFirstSessionTitle')
     expect(run).toContain('set_session_name')
     expect(run).toContain('Promise.all([routing, title])')
-    expect(run.indexOf('Promise.all([routing, title])')).toBeLessThan(run.indexOf("type: 'prompt'"))
-    expect(run.indexOf("type: 'set_session_name'")).toBeLessThan(run.indexOf("type: 'prompt'"))
+    expect(run).toContain('runStatelessPrompt')
+    expect(run).not.toContain("type: 'prompt'")
+    expect(run.indexOf('Promise.all([routing, title])')).toBeLessThan(run.indexOf('runStatelessPrompt'))
+    expect(run.indexOf("type: 'set_session_name'")).toBeLessThan(run.indexOf('runStatelessPrompt'))
   })
 
   it('does not persist a requested model until set_model succeeds', () => {
     const messagePost = section("path.length === 4 && path[3] === 'messages' && request.method === 'POST'", "path.length === 4 && path[3] === 'runs' && request.method === 'POST'")
     const run = section("path.length === 4 && path[3] === 'runs' && request.method === 'POST'", "path.length === 4 && path[3] === 'state' && request.method === 'GET'")
+    const sessionPatch = section("if (path.length === 3 && request.method === 'PATCH')", "if (path.length === 3 && request.method === 'DELETE')")
 
     expect(messagePost).not.toContain('model: record.model')
     expect(messagePost).toContain('profile: context.agentName')
-    expect(run.indexOf("await sendRpc(id, { type: 'set_model'"))
-      .toBeLessThan(run.indexOf('await persistSessionModel('))
+    expect(run.indexOf("await sendRpc(id, { type: 'set_model'")).toBeLessThan(run.indexOf('await persistSessionModel('))
     expect(run).toContain('await store.interruptMessageDelivery(claimedDelivery)')
+    expect(sessionPatch.indexOf("await sendRpc(id, { type: 'set_model'")).toBeLessThan(sessionPatch.indexOf('updateSession(ownerId, id'))
   })
 
   it('fails closed when subagent parent capabilities are omitted or empty', () => {
@@ -66,10 +123,14 @@ describe('bridge model delivery ordering', () => {
     expect(runner).toContain('configuredParent.policies.builtin[capability] === true')
   })
 
-  it('keeps queue routes behind the owned session lookup and separates steer from follow-up', () => {
+  it('keeps queue routes behind the owned session lookup and disables legacy steering', () => {
     const sessionRoutes = section("if (path[1] === 'sessions' && path.length >= 3)", "if (path[1] === 'extensions'")
     expect(sessionRoutes.indexOf('const ownedRecord =')).toBeLessThan(sessionRoutes.indexOf("path[3] === 'steer'"))
-    expect(sessionRoutes).toContain("type: 'steer'")
+    const steeringRoute = section("path.length === 4 && path[3] === 'steer'", "path.length === 4 && path[3] === 'queue'")
+    expect(steeringRoute).toContain("code: 'DURABLE_RUN_REQUIRED'")
+    expect(steeringRoute).not.toContain('sendRpc')
+    expect(sessionRoutes).not.toContain("type: 'steer'")
+    expect(sessionRoutes).toContain("code: 'DURABLE_RUN_REQUIRED'")
     expect(bridge).toContain('store.claimQueueEntry')
     expect(sessionRoutes).toContain("await store.updateQueueEntry(ownerId, id, clientId, 'steering')")
     expect(sessionRoutes).toContain("'follow_up'")

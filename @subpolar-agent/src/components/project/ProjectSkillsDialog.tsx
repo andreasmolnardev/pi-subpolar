@@ -3,7 +3,7 @@ import { ProjectSkillsList } from './ProjectSkillsList'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { useQuery } from '@tanstack/react-query'
 import { settingsApi } from '@/api/settings'
-import { useLoadSkill } from '@/hooks/usePiHarness'
+import { useLoadSkill } from '@/hooks/usePiDurableHarness'
 import type { SkillFileInfo } from '@subpolar/shared'
 import { useMemo, useState, useEffect } from 'react'
 
@@ -78,7 +78,7 @@ export function ProjectSkillsDialog({
           </DialogDescription>
         </DialogHeader>
         <Tabs value={activeTab} onValueChange={handleTabChange} className="flex-1 flex flex-col min-h-0">
-          <TabsList className="mx-4 sm:mx-6 mt-3">
+          <TabsList className="mt-3">
             <TabsTrigger value="project">Project</TabsTrigger>
             <TabsTrigger value="global">Global</TabsTrigger>
           </TabsList>

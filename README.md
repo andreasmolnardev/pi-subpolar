@@ -75,13 +75,7 @@ See [Bun and multi-user operations](docs/bun-and-multi-user.md) for details.
 `SUBPOLAR_AGENT_FEATURES.md` for feature scope and `@subpolar-agent/README.md` for startup and
 endpoint details.
 
-Start PocketBase first, then start the bridge and Vite together from any directory:
-
-```sh
-cp /path/to/pi-subpolar/.env.example /path/to/pi-subpolar/.env
-# Set POCKETBASE_URL, POCKETBASE_EMAIL, and POCKETBASE_PASSWORD in .env
-/path/to/pi-subpolar/start-subpolar-agent.sh
-```
+Run the application and its backend services through the development Compose stack. Do not start PocketBase, the bridge, Vite, or `start-subpolar-agent.sh` directly on the host. See [Docker development](#docker-development) for setup.
 
 Open `http://localhost:5173`. The first unauthenticated visit opens the PocketBase-backed
 setup flow; subsequent application routes require a valid `pb_auth` session cookie.
@@ -134,3 +128,12 @@ installs the root workspace with the frozen Bun lockfile. Compose is a shared
 application container, not a per-tenant sandbox.
 The PocketBase data is persisted in `pocketbase/pb_data`. Stop the stack with
 `Ctrl-C`, or run `docker compose -f docker-compose.dev.yaml down` from another terminal.
+
+For local CLI debugging, the dev Compose setup enables `POST /api/auth/dev-admin-token`
+automatically (set `SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED=false` to opt out). The route is
+hard-gated on `NODE_ENV=development`, so it remains disabled in production even if the
+flag is set. It logs a one-time **normal application-admin user bearer token** without
+returning it in the HTTP response. Read it from the `subpolar-agent` container logs and
+treat those logs as secret. This is not a PocketBase superuser token or the bridge internal
+token; use it only as a user token with `subpolar-test-cli`. The dev Compose API and WebUI
+ports bind to loopback.

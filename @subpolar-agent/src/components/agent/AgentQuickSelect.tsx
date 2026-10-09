@@ -8,7 +8,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { useAgents } from '@/hooks/usePiHarness'
+import { useAgents } from '@/hooks/usePiDurableHarness'
 import { getAgentStyleVars } from '@/lib/agent-colors'
 
 interface AgentQuickSelectProps {

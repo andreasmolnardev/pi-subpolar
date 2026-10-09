@@ -1,10 +1,11 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 
 import { homedir } from 'node:os'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { SettingsManager } from '@earendil-works/pi-coding-agent'
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent'
+
 import { createProviderLoginRuntime, createSharedProviderCatalogRuntime } from './server/application/runtime/provider-runtime.ts'
 import { assertTenantSession, tenantSessionKey } from './server/application/runtime/tenant-runtime.ts'
 import { authenticateProxyRuntime, proxyModel } from './server/application/runtime/owner-bound-proxy.ts'
@@ -12,6 +13,7 @@ import { migrateLegacyGitCredentials } from './server/git/legacy-credentials-mig
 
 
 import { entriesPayload, projectEntries, redactTranscriptPayload, type TranscriptMessage } from './transcript/projector'
+import { mergeDurableTranscript } from './transcript/durable-projector.ts'
 
 import listToolsExtension from './subpolar/extensions/list-tools.ts'
 import openapiTools from './subpolar/extensions/openapi-tools.ts'
@@ -20,6 +22,8 @@ import {
   authenticateRequest,
   authConfig,
   changePassword,
+  devAdminTokenEnabled,
+  createOneShotTokenIssuer,
   clearAuthCookie,
   signIn,
   signOut,
@@ -56,6 +60,7 @@ import {
   ensureProviderAccountCollections,
   type ProviderAccount,
   createProviderCatalogAsync,
+  parseProviderModelId,
   createProviderRuntime,
   composeProviderRuntimeId,
   parseProviderRuntimeId,
@@ -110,7 +115,7 @@ import {
 } from './server/index.ts'
 import { SkillConflictError, SkillNotFoundError, SkillValidationError } from '../packages/subpolar-contracts/src/index.ts'
 import { createSkillContextAudit, effectiveAgentConfiguration } from './server/application/tools/tools.ts'
-import { hasPendingApprovalWaiter, notifyApprovalResolution } from './server/application/tools/approval-execution.ts'
+import { hasPendingApprovalWaiter, notifyApprovalResolution, waitForApprovalResolution } from './server/application/tools/approval-execution.ts'
 import {
   NewSessionRouteError,
   resolveNewSessionRoute,
@@ -120,7 +125,7 @@ import {
   parseRoutingModelSelection,
   type SessionRoutingCandidate,
 } from './server/application/runtime/session-routing.ts'
-import { generateSessionTitle } from './server/application/runtime/session-title.ts'
+import { generateSessionTitle, provisionalSessionTitle } from './server/application/runtime/session-title.ts'
 import {
   assertSafeBrowserMutation,
   isAllowedOrigin,
@@ -155,8 +160,8 @@ import {
   createStatelessSubpolarAgentRuntime,
   type StatelessSubpolarAgentRunInput,
 } from './server/application/runtime/stateless-subpolar-agent-runtime.ts'
-import { createPiRunPort } from '../packages/subpolar-core-pi/src/index.ts'
-import type { RuntimeContext, RuntimeExecution, StatelessRunRequest } from '../packages/subpolar-contracts/src/index.ts'
+import { PiDurableAgentEngine } from '../packages/subpolar-adapter-pi-durable/src/index.ts'
+import type { RuntimeContext, StatelessRunRequest, ToolDefinition as RuntimeToolDefinition } from '../packages/subpolar-contracts/src/index.ts'
 
 import { assertPathWithinWorkspace, canonicalProjectPath, configuredWorkspaceRoot, isPathWithin } from './server/core/project-filesystem.ts'
 import { GitPathPolicy } from './server/git/policy.ts'
@@ -188,6 +193,7 @@ type SseClient = { userId: string; enqueue: (chunk: Uint8Array) => void; close: 
 const root = resolve(import.meta.dir, '..')
 const subpolarAgentDir = import.meta.dir
 const subpolarDataDir = join(homedir(), '.subpolar')
+const piDurableDataDir = resolve(process.env.SUBPOLAR_PI_DURABLE_DIR ?? join(root, 'pocketbase', 'pb_data', 'pi-durable'))
 const projectsRoot = configuredWorkspaceRoot()
 
 const legacyStatePath = join(subpolarAgentDir, '.sessions.json')
@@ -198,6 +204,14 @@ const generalChatRoot = join(projectsRoot, 'general-chat')
 const port = Number(process.env.SUBPOLAR_AGENT_PORT ?? 4173)
 const internalToken = process.env.SUBPOLAR_INTERNAL_TOKEN || randomBytes(32).toString('hex')
 process.env.SUBPOLAR_INTERNAL_TOKEN = internalToken
+const issueDevAdminApiToken = createOneShotTokenIssuer(async () => {
+  if (!devAdminTokenEnabled()) throw new Error('Development admin-token endpoint is disabled')
+  const email = process.env.ADMIN_EMAIL?.trim()
+  const password = process.env.ADMIN_PASSWORD
+  if (!email || !password) throw new Error('Development application-admin credentials are not configured')
+  const authenticated = await signIn(email, password)
+  return authenticated.token
+})
 let applicationDatabasePromise: ReturnType<typeof getPocketBaseAdmin> | undefined
 let runtimeStorePromise: Promise<PocketBaseRuntimeStore> | undefined
 let applicationCollectionsReady: Promise<void> | undefined
@@ -206,6 +220,9 @@ let subagentWorktrees: WorktreeController | undefined
 let automationWorker: ReturnType<typeof createAutomationWorker> | undefined
 let automationScheduler: ReturnType<typeof setInterval> | undefined
 let automationMaintenanceInitialized = false
+const durableRunQueues = new Map<string, Promise<void>>()
+const queuedFollowUpQueues = new Map<string, Promise<void>>()
+const activeDurableRunControllers = new Map<string, Set<AbortController>>()
 let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccountService>> | undefined
 let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
 const migratedUsers = new Set<string>()
@@ -472,10 +489,10 @@ void startupReady.catch((error) => {
 
 mkdirSync(projectsRoot, { recursive: true })
 const allowedRpcCommands = new Set([
-  'prompt', 'steer', 'follow_up', 'abort', 'clear_queue', 'new_session', 'get_state',
+  'abort', 'clear_queue', 'new_session', 'get_state',
   'set_model', 'cycle_model', 'get_available_models', 'set_thinking_level',
   'cycle_thinking_level', 'get_available_thinking_levels', 'set_steering_mode',
-  'set_follow_up_mode', 'compact', 'set_auto_compaction', 'set_auto_retry', 'abort_retry',
+  'set_follow_up_mode', 'set_auto_compaction', 'set_auto_retry', 'abort_retry',
   'get_session_stats', 'get_entries', 'get_tree', 'get_last_assistant_text', 'set_session_name',
   'get_messages', 'get_commands', 'fork', 'clone', 'get_fork_messages',
 ])
@@ -493,6 +510,7 @@ const modelRuntimePromise = createSharedProviderCatalogRuntime()
 const DEFAULT_SETTINGS = {
   theme: 'dark', mode: 'build', autoScroll: true, expandDiffs: true,
   expandToolCalls: false, showReasoning: false, simpleChatMode: false,
+  generateSessionEmoji: false,
   defaultModels: {}, hiddenSidebarAgents: ['auto', 'compaction', 'summary', 'title'],
   hiddenChatInputAgents: ['compaction', 'summary', 'title'], leaderKey: 'Cmd+O',
   directShortcuts: ['submit', 'abort'], keyboardShortcuts: {
@@ -575,6 +593,7 @@ function broadcastSse(value: unknown, userId?: string): void {
       if (client.userId !== userId) continue
       try { client.enqueue(chunk) } catch { client.close(); sseClients.delete(client) }
     }
+    void persistSseNotification(userId, safeValue).catch((error) => console.warn(`Unable to project notification: ${redactedDiagnostic(error)}`))
   }).catch((error) => console.warn(`Unable to persist SSE event: ${redactedDiagnostic(error)}`))
 }
 
@@ -826,9 +845,22 @@ function rpcData(value: unknown): unknown {
 
 function parseModelSelection(model: string | undefined): { providerID: string; modelID: string } | undefined {
   if (!model) return undefined
-  const [providerID, ...rest] = model.split('/')
+  const selection = model.replace(/:(off|minimal|low|medium|high|xhigh)$/, '')
+  const [providerID, ...rest] = selection.split('/')
   const modelID = rest.join('/')
   return providerID && modelID ? { providerID, modelID } : undefined
+}
+
+function parseDurableModelSelection(model: string | undefined): { providerID: string; modelID: string; thinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' } | undefined {
+  if (!model) return undefined
+  const separator = model.indexOf('/')
+  if (separator <= 0 || separator === model.length - 1) return undefined
+  const suffix = /:(off|minimal|low|medium|high|xhigh)$/.exec(model)
+  const selection = suffix ? model.slice(0, -suffix[0].length) : model
+  const parsed = parseProviderModelId(selection)
+  return parsed
+    ? { providerID: parsed.instanceId, modelID: parsed.modelId, ...(suffix ? { thinkingLevel: suffix[1] as 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' } : {}) }
+    : undefined
 }
 
 type ModelSelection = { providerID: string; modelID: string; value: string }
@@ -853,7 +885,7 @@ function modelSelection(value: unknown): ModelSelection | undefined {
         return providerID && modelID ? { providerID, modelID } : undefined
       })()
   if (!parsed) throw new ModelUnavailableError({ providerID: '', modelID: String(value) })
-  return { ...parsed, value: `${parsed.providerID}/${parsed.modelID}` }
+  return { ...parsed, value: typeof value === 'string' ? value.trim() : `${parsed.providerID}/${parsed.modelID}` }
 }
 
 async function validateModelSelection(userId: string, selection: ModelSelection | undefined): Promise<void> {
@@ -946,7 +978,7 @@ async function generateFirstSessionTitle(
   const runtime = await userProviderRuntime(userId)
   const model = runtime.getModel(selection.providerID, selection.modelID)
   if (!model) throw new ModelUnavailableError({ providerID: selection.providerID, modelID: selection.modelID })
-  return generateSessionTitle({ runtime, model, request })
+  return generateSessionTitle({ runtime, model, request, includeEmoji: preferences?.preferences?.generateSessionEmoji === true })
 }
 
 async function persistSessionModel(
@@ -1082,7 +1114,7 @@ const piSdkSessionHost: PiSdkSessionHost<BridgeClient> = {
   redactEvent: (value) => redactSensitive(value) as RpcMessage,
   publishStatus: (record, status) => broadcastSse({ type: 'session.status', properties: { sessionID: record.id, status: { type: status } } }, record.userId),
   publishEvent: (record, message) => broadcastSse(message, record.userId),
-  onAgentSettled: (session) => { void deliverNextQueuedFollowUp(session) },
+  onAgentSettled: () => undefined,
 }
 
 function createPiSession(record: SessionRecord, project: Project, capabilities?: readonly string[]): PiSdkSession<BridgeClient> {
@@ -1121,15 +1153,24 @@ async function executeSubagentHost(input: { task: import('./server/application/t
     tags: stored.tags,
   }
   const project = generalChatProject()
-  const session = createPiSession(record, project, input.capabilities)
-  const abort = () => { void session.send({ type: 'abort' }) }
-  input.signal.addEventListener('abort', abort, { once: true })
   try {
-    await session.send({ type: 'prompt', message: typeof taskInput.prompt === 'string' ? taskInput.prompt : input.task.title })
-    return { text: session.getLastAssistantText(), sessionId: record.id, worktreeId: worktree?.id }
+    const result = await runStatelessPrompt({
+      ownerId: input.task.owner_id,
+      sessionId,
+      runId: input.task.id,
+      requestId: input.task.id,
+      prompt: typeof taskInput.prompt === 'string' ? taskInput.prompt : input.task.title,
+      signal: input.signal,
+      metadata: { capabilities: input.capabilities.join(',') },
+    }, record, project)
+    const runResult = result as { state?: string; output?: unknown; error?: { message?: string } | null }
+    const output = runResult && typeof runResult === 'object' && 'state' in runResult
+      ? runResult.state === 'completed'
+        ? runResult.output
+        : (() => { throw new Error(runResult.error?.message ?? `Run ended in ${runResult.state}`) })()
+      : result
+    return { text: output, sessionId: record.id, worktreeId: worktree?.id }
   } finally {
-    input.signal.removeEventListener('abort', abort)
-    session.close()
     await repository.deleteSession(input.task.owner_id, sessionId)
     if (worktree && subagentWorktrees) await subagentWorktrees.remove(worktree)
   }
@@ -1151,24 +1192,104 @@ const executeAutomationHost: AutomationExecutor = async (run: AutomationRun, aut
     : null
   const configuredProject: Project = project ? { name: project.name, path: project.path } : generalChatProject()
   if (automation.project_id && !project) throw new Error('Automation project is unavailable')
-  const session = rpcSession(sessionId, automation.owner_id, record, configuredProject, automation.agent_id)
-  const key = activeKey(automation.owner_id, sessionId)
-  const abort = () => { void session.send({ type: 'abort' }).catch(() => undefined) }
-  signal.addEventListener('abort', abort, { once: true })
-  try {
-    if (signal.aborted) throw new Error('Automation cancelled')
-    await session.send({ type: 'prompt', message: automation.prompt })
-    return { text: session.getLastAssistantText(), sessionId }
-  } finally {
-    signal.removeEventListener('abort', abort)
-    session.close()
-    if (active.get(key) === session) active.delete(key)
-  }
+  if (signal.aborted) throw new Error('Automation cancelled')
+  const result = await runStatelessPrompt({
+    ownerId: automation.owner_id,
+    sessionId,
+    runId: run.id,
+    requestId: run.id,
+    prompt: automation.prompt,
+    signal,
+  }, record, configuredProject)
+  const runResult = result as { state?: string; output?: unknown; error?: { message?: string } | null }
+  const output = runResult && typeof runResult === 'object' && 'state' in runResult
+    ? runResult.state === 'completed'
+      ? runResult.output
+      : (() => { throw new Error(runResult.error?.message ?? `Run ended in ${runResult.state}`) })()
+    : result
+  return { text: output, sessionId }
 }
 
 const runtimeNotificationAdapter: NotificationAdapter = async (subscription, item) => {
   if (subscription.channel !== 'push') throw Object.assign(new Error('Email notification delivery is not configured'), { code: 'EMAIL_DELIVERY_UNAVAILABLE' })
   return createPushNotificationAdapter()(subscription, item)
+}
+
+async function persistSseNotification(ownerId: string, value: unknown): Promise<void> {
+  const event = object(value)
+  const properties = object(event.properties)
+  const eventType = typeof event.type === 'string' ? event.type : ''
+  const sessionId = typeof properties.sessionID === 'string' ? properties.sessionID : undefined
+  if (!sessionId) return
+
+  let kind: import('./server/persistence/inbox.ts').InboxKind | undefined
+  let referenceId: string | undefined
+  let title = ''
+  let body = ''
+  let state: string | undefined
+  if (eventType === 'permission.asked') {
+    kind = 'approval_required'
+    referenceId = typeof properties.id === 'string' ? properties.id : undefined
+    title = 'Approval needed'
+    const permission = typeof properties.permission === 'string' ? properties.permission : 'An action'
+    const patterns = Array.isArray(properties.patterns) ? properties.patterns.filter((part): part is string => typeof part === 'string') : []
+    body = patterns[0] ? `${permission}: ${patterns[0]}` : `${permission} needs your approval.`
+    state = 'pending'
+  } else if (eventType === 'question.asked') {
+    kind = 'agent_question'
+    referenceId = typeof properties.id === 'string' ? properties.id : undefined
+    title = 'Agent needs your input'
+    const questions = Array.isArray(properties.questions) ? properties.questions : []
+    const firstQuestion = questions[0] && typeof questions[0] === 'object' ? object(questions[0]) : {}
+    body = typeof firstQuestion.question === 'string' ? firstQuestion.question : 'The agent has a question for you.'
+    state = 'pending'
+  } else if (eventType === 'session.status') {
+    const status = object(properties.status)
+    state = typeof status.type === 'string' ? status.type : undefined
+    if (state === 'idle') {
+      kind = 'task_completed'
+      title = 'Session finished'
+      body = 'The agent finished processing this session.'
+    } else if (state === 'error') {
+      kind = 'task_failed'
+      title = 'Session encountered an error'
+      body = 'The agent could not finish processing this session.'
+    }
+    referenceId = `${sessionId}-${crypto.randomUUID()}`
+  }
+  const resolvesItem = eventType === 'permission.replied' || eventType === 'question.replied' || eventType === 'question.rejected'
+  if (!kind && !resolvesItem) return
+
+  const client = await applicationDatabase()
+  const sessions = createProjectSessionRepository(client)
+  const session = await sessions.getSession(ownerId, sessionId)
+  if (!session) return
+  const projectId = typeof session.projectId === 'string' && session.projectId ? session.projectId : '0'
+  const inbox = new InboxRepository(client)
+  if (resolvesItem) {
+    const reference = typeof properties.permissionID === 'string'
+      ? properties.permissionID
+      : typeof properties.requestID === 'string' ? properties.requestID : undefined
+    const resolvedKind = eventType === 'permission.replied' ? 'approval_required' : 'agent_question'
+    if (reference) await inbox.resolveReference(ownerId, resolvedKind, reference, session.projectId)
+    return
+  }
+  if (!kind || !referenceId) return
+
+  const path = `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`
+  const item = await inbox.upsert({
+    owner_id: ownerId,
+    ...(session.projectId ? { project_id: session.projectId } : {}),
+    kind,
+    reference_id: referenceId,
+    title,
+    body,
+    deep_link: { path, sessionId },
+    underlying_state: state,
+    metadata: { session_id: sessionId, session_title: session.title },
+    reopen: true,
+  })
+  await new NotificationRepository(client, { scope: 'process' }).deliver(ownerId, item, runtimeNotificationAdapter)
 }
 
 function automationWorkerFor(client: Awaited<ReturnType<typeof applicationDatabase>>): ReturnType<typeof createAutomationWorker> {
@@ -1230,7 +1351,7 @@ async function runAutomationSchedulerTick(): Promise<void> {
   }
   await expireAutomationLeases(client, Date.now(), { serializationScope: 'process' })
   await automationWorkerFor(client).executeDue()
-  await new NotificationRepository(client).sweepDue(runtimeNotificationAdapter)
+  await new NotificationRepository(client, { scope: 'process' }).sweepDue(runtimeNotificationAdapter)
 }
 
 function startAutomationScheduler(): void {
@@ -1242,20 +1363,49 @@ function startAutomationScheduler(): void {
 
 
 
-async function deliverNextQueuedFollowUp(session: PiSdkSession<BridgeClient>): Promise<void> {
-  const ownerId = session.record.userId
-  if (!ownerId) return
-  const store = await runtimeStore()
-  const entry = (await store.listQueueEntries(ownerId, session.record.id)).find((item) => item.kind === 'follow_up' && item.state === 'enqueued')
-  if (!entry) return
-  const claimed = await store.claimQueueEntry(ownerId, session.record.id, entry.clientId)
-  if (!claimed) return
+async function deliverNextQueuedFollowUp(ownerId: string, sessionId: string): Promise<void> {
+  const key = tenantSessionKey(ownerId, sessionId)
+  const previous = queuedFollowUpQueues.get(key) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolve) => { release = resolve })
+  const tail = previous.catch(() => undefined).then(() => current)
+  queuedFollowUpQueues.set(key, tail)
+  await previous.catch(() => undefined)
   try {
-    await session.send({ type: 'follow_up', message: entry.content, id: entry.clientId })
-  } catch (error) {
-    await store.updateQueueEntry(ownerId, session.record.id, entry.clientId, 'failed', error instanceof Error ? error.message : 'Follow-up delivery failed')
+    const store = await runtimeStore()
+    while (true) {
+      const entry = (await store.listQueueEntries(ownerId, sessionId)).find((item) => item.kind === 'follow_up' && item.state === 'enqueued')
+      if (!entry) break
+      const claimed = await store.claimQueueEntry(ownerId, sessionId, entry.clientId)
+      if (!claimed) break
+      broadcastSse({ type: 'message.queue.updated', properties: { sessionID: sessionId } }, ownerId)
+      try {
+        const client = await applicationDatabase()
+        const record = await ownedSessionRecord(client, ownerId, sessionId)
+        if (!record) throw new Error('Session not found')
+        const project = await ownedSessionProject(client, ownerId, record)
+        if (!project) throw new Error('Session project is unavailable')
+        const identity = createHash('sha256').update(JSON.stringify([ownerId, sessionId, claimed.clientId])).digest('hex')
+        const result = await runStatelessPrompt({
+          ownerId,
+          sessionId,
+          runId: `follow-up-${identity}`,
+          requestId: `follow-up-request-${identity}`,
+          prompt: claimed.content,
+        }, record, project) as { state?: string; error?: { message?: string } | null }
+        if (result && typeof result === 'object' && 'state' in result && result.state !== 'completed') {
+          throw new Error(result.error?.message ?? `Run ended in ${result.state}`)
+        }
+        await store.updateQueueEntry(ownerId, sessionId, claimed.clientId, 'delivered')
+      } catch (error) {
+        await store.updateQueueEntry(ownerId, sessionId, claimed.clientId, 'failed', redactedDiagnostic(error))
+      }
+      broadcastSse({ type: 'message.queue.updated', properties: { sessionID: sessionId } }, ownerId)
+    }
+  } finally {
+    release()
+    if (queuedFollowUpQueues.get(key) === tail) queuedFollowUpQueues.delete(key)
   }
-  broadcastSse({ type: 'message.queue.updated', properties: { sessionID: session.record.id } }, ownerId)
 }
 
 const active = new Map<string, PiSdkSession<BridgeClient>>()
@@ -1377,12 +1527,69 @@ function runtimeJson(value: unknown, seen = new WeakSet<object>()): import('../p
   return result
 }
 
+async function serializeDurableSessionRun<T>(ownerId: string, sessionId: string, operation: () => Promise<T>): Promise<T> {
+  const key = tenantSessionKey(ownerId, sessionId)
+  const previous = durableRunQueues.get(key) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolve) => { release = resolve })
+  const tail = previous.catch(() => undefined).then(() => current)
+  durableRunQueues.set(key, tail)
+  await previous.catch(() => undefined)
+  try {
+    return await operation()
+  } finally {
+    release()
+    if (durableRunQueues.get(key) === tail) durableRunQueues.delete(key)
+  }
+}
+
+function durableDatabasePath(ownerId: string, sessionId: string): string {
+  const identity = createHash('sha256').update(JSON.stringify([ownerId, sessionId])).digest('hex')
+  return join(piDurableDataDir, `${identity}.sqlite`)
+}
+
 /**
- * The canonical HTTP run path composes the shared stateless runtime. Pi remains
- * an in-memory execution resource and is reconstructed from PocketBase-backed
- * session/transcript state by rpcSession when the active fast path is absent.
+ * The canonical HTTP run path composes the owner-scoped stateless runtime and
+ * executes its prompt through Pi Durable. PiSdkSession remains for compatibility
+ * RPC, WebSocket, and history behavior only.
  */
+function durableRunIdentity(ownerId: string, sessionId: string, runId: string): string {
+  return JSON.stringify([ownerId, sessionId, runId])
+}
+
+function abortActiveDurableSession(ownerId: string, sessionId: string): void {
+  tenantSessionKey(ownerId, sessionId)
+  for (const [key, controllers] of activeDurableRunControllers) {
+    const [activeOwnerId, activeSessionId] = JSON.parse(key) as [string, string, string]
+    if (activeOwnerId === ownerId && activeSessionId === sessionId) {
+      for (const controller of controllers) controller.abort()
+    }
+  }
+}
+
 async function runStatelessPrompt(input: StatelessSubpolarAgentRunInput, owner: SessionRecord, project: Project): Promise<unknown> {
+  const ownerId = owner.userId
+  if (!ownerId) throw new Error('Session owner is unavailable')
+  if (input.ownerId !== ownerId) throw new Error('Runtime owner mismatch')
+  assertTenantSession(ownerId, input.sessionId, owner)
+  const identity = durableRunIdentity(ownerId, input.sessionId, input.runId)
+  const controller = new AbortController()
+  const forwardAbort = () => controller.abort(input.signal?.reason)
+  if (input.signal?.aborted) forwardAbort()
+  else input.signal?.addEventListener('abort', forwardAbort, { once: true })
+  const controllers = activeDurableRunControllers.get(identity) ?? new Set<AbortController>()
+  controllers.add(controller)
+  activeDurableRunControllers.set(identity, controllers)
+  try {
+    return await executeStatelessPrompt({ ...input, signal: controller.signal }, owner, project)
+  } finally {
+    input.signal?.removeEventListener('abort', forwardAbort)
+    controllers.delete(controller)
+    if (controllers.size === 0 && activeDurableRunControllers.get(identity) === controllers) activeDurableRunControllers.delete(identity)
+  }
+}
+
+async function executeStatelessPrompt(input: StatelessSubpolarAgentRunInput, owner: SessionRecord, project: Project): Promise<unknown> {
   const ownerId = owner.userId
   if (!ownerId) throw new Error('Session owner is unavailable')
   if (input.ownerId !== ownerId) throw new Error('Runtime owner mismatch')
@@ -1423,34 +1630,97 @@ async function runStatelessPrompt(input: StatelessSubpolarAgentRunInput, owner: 
         },
       }
     },
-    execute: async (execution: RuntimeExecution) => {
+    execute: async (execution) => {
+      try {
+        return await serializeDurableSessionRun(ownerId, input.sessionId, async () => {
       const context = await resolveToolSessionContext(client, ownerId, input.sessionId)
-      const sessionProject = context.project as Project
-      const session = rpcSession(input.sessionId, ownerId, owner, sessionProject ?? project, context.agentName, context.permission.source === 'default' ? undefined : context.permissionOverride)
-      await session.readyPromise
-      const piRunPort = createPiRunPort(async (_config, adapterRequest) => {
-        const prompt = adapterRequest?.prompt ?? execution.request.prompt
-        const emit = adapterRequest?.emit
-        const unsubscribe = session.onMessage((message) => {
-          if (emit) void emit({ type: 'message', data: runtimeJson(message) })
-        })
-        return {
-          execute: () => session.send({ type: 'prompt', message: prompt }),
-          dispose: unsubscribe,
-        }
-      }, {})
-      return piRunPort.run({
-        runId: execution.request.runId,
-        prompt: execution.request.prompt,
-        context: execution.context,
-        transcript: { entries: [] },
-        signal: execution.request.signal,
-      }, async (event) => {
-        await execution.emit(runtimeJson(event))
+      if (execution.context.principal.id !== ownerId || execution.context.sessionId !== input.sessionId) {
+        throw new Error('Durable runtime tenant or session mismatch')
+      }
+      const selection = parseDurableModelSelection(context.session?.model)
+      if (!selection) throw new Error('A configured session model is required for Pi Durable execution')
+      const providerRuntime = await userProviderRuntime(ownerId)
+      const model = providerRuntime.getModel(selection.providerID, selection.modelID)
+      if (!model) throw new ModelUnavailableError(selection)
+      const [agentRuntime, visibleTools] = await Promise.all([
+        loadAgentRuntime(client, ownerId, context.agentName, context.session?.project, {
+          skillRepository: createOwnerBoundSkillStore(client, ownerId),
+          skillAudit: createSkillContextAudit(client),
+          permissionOverride: context.session?.permissionOverride ?? context.permissionOverride,
+        }),
+        listToolsForAgent(client, ownerId, context.agentName, context.session?.project, true,
+          context.permission.source === 'default' ? undefined : context.permissionOverride),
+      ])
+      const tools: RuntimeToolDefinition[] = visibleTools.map((tool) => ({
+        id: tool.id,
+        namespace: 'subpolar-gateway',
+        description: tool.description,
+        inputSchema: tool.inputSchema as RuntimeToolDefinition['inputSchema'],
+        enabled: true,
+        risk: 'low',
+      }))
+      const engine = await PiDurableAgentEngine.initialize({
+        databasePath: durableDatabasePath(ownerId, input.sessionId),
+        models: providerRuntime,
+        tools,
       })
+      try {
+        const runContext = execution.context
+        const sessionProject = context.project as Project
+        const cwd = context.session?.directory ?? sessionProject.path ?? project.path
+        await engine.configure(ownerId, input.sessionId, {
+          model: { provider: selection.providerID, modelId: selection.modelID },
+          thinkingLevel: selection.thinkingLevel ?? agentRuntime.agent.thinking,
+          ...(agentRuntime.systemPrompt ? { instructions: agentRuntime.systemPrompt } : {}),
+          cwd,
+        })
+        const abort = () => { void engine.abort(ownerId, input.sessionId).catch(() => undefined) }
+        execution.request.signal?.addEventListener('abort', abort, { once: true })
+        try {
+          if (execution.request.signal?.aborted) throw new Error('Pi Durable run was aborted')
+          await engine.submit({
+            ownerId,
+            sessionId: input.sessionId,
+            requestId: runContext.requestId,
+            runId: execution.request.runId,
+            prompt: execution.request.prompt,
+            ...(execution.request.signal ? { signal: execution.request.signal } : {}),
+            approval: {
+              wait: (approvalId) => waitForApprovalResolution(approvalId, Date.now() + 300_000),
+              cancel: (approvalId) => { notifyApprovalResolution(approvalId, 'expired') },
+            },
+          }, execution)
+          const result = await engine.wait(ownerId, input.sessionId, runContext.requestId)
+          if (result.status !== 'done') throw new Error(result.reason ?? 'Pi Durable run did not complete')
+          return result.output ?? ''
+        } finally {
+          execution.request.signal?.removeEventListener('abort', abort)
+          try {
+            const durableTranscript = await engine.readTranscript(ownerId, input.sessionId)
+            const repository = new SessionTranscriptRepository(client)
+            const existing = await repository.get(ownerId, input.sessionId)
+            const merged = mergeDurableTranscript(existing?.entries ?? [], existing?.leafId ?? null, durableTranscript, input.sessionId)
+            if (merged.entries.length !== (existing?.entries.length ?? 0)) {
+              await repository.save(ownerId, input.sessionId, merged.entries, merged.leafId)
+            }
+          } catch (projectionError) {
+            console.warn(`Pi Durable transcript projection failed: ${redactedDiagnostic(projectionError)}`)
+          }
+        }
+      } finally {
+        await engine.close()
+      }
+        })
+      } catch (error) {
+        console.warn(`Pi Durable execution failed: ${redactedDiagnostic(error)}`)
+        throw error
+      }
     },
     onEvent: (event) => {
-      broadcastSse({ type: 'run.event', properties: runtimeJson(event) }, ownerId)
+      broadcastSse({
+        type: 'run.event',
+        properties: { ...runtimeJson(event) as Record<string, import('../packages/subpolar-contracts/src/index.ts').JsonValue>, sessionID: event.sessionId ?? input.sessionId },
+      }, ownerId)
     },
   })
   return runtime.runPrompt(input)
@@ -1722,7 +1992,8 @@ async function handleSocketMessage(socket: TranscriptSocket, raw: unknown, sessi
 const bridgeRequestDependencies = {
   applicationDatabase, runtimeStore, createCapabilitiesPayload, createHealthPayload,
   diagnosticsComponents, internalToken, requestId, authenticateGatewayCredential, GatewayAuthError, json,
-  authenticateRequest, voiceAuthorization, voiceBackends, handleVoiceRoute, authConfig, signOut, clearAuthCookie,
+  authenticateRequest, voiceAuthorization, voiceBackends, handleVoiceRoute, authConfig, devAdminTokenEnabled,
+  issueDevAdminApiToken, signOut, clearAuthCookie,
   body, signIn, signUp, changePassword, ownedSessionRecord, configuredSuggestionService, gatewayErrorResponse,
   listGatewayCredentials, publicGatewayCredential, createGatewayCredential, rotateGatewayCredential,
   revokeGatewayCredential, AutomationRepository, automationWorkerFor, ownedProjectIdForRoute, routeError,
@@ -1737,8 +2008,8 @@ const bridgeRequestDependencies = {
   safeProjectPath, generalChatProject, mkdirSync, readdirSync, writeFileSync, statSync, projectsRoot,
   generalChatRoot, resolve, join, existsSync, isPathWithin, resolveNewSessionRoute, NewSessionRouteError, preferenceModel,
   validateModelSelection, modelSelection, normalizeSessionTags, InvalidSessionTagsError, sessionWorkspace,
-  saveState, sessions, rpcSession, sendRpc, runStatelessPrompt, storedSessionResponse, parseModelSelection,
-  parseRoutingModelSelection, routeFirstSessionRequest, generateFirstSessionTitle, localSessionRecord, sessionMessageText, entriesPayload,
+  saveState, sessions, rpcSession, sendRpc, runStatelessPrompt, abortActiveDurableSession, storedSessionResponse, parseModelSelection,
+  parseRoutingModelSelection, routeFirstSessionRequest, generateFirstSessionTitle, provisionalSessionTitle, localSessionRecord, sessionMessageText, entriesPayload,
   transcriptHistory, messageDeliveryId, queueClientId, MessageDeliveryConflictError,
   replayMessageDeliveryResponse, messageDeliveryResponse, QueueEntryConflictError, QueueEntryTransitionError,
   withDeliveryMetadata, redactSensitive, redactSensitiveText, ownedSessionProject, resolveToolSessionContext,
@@ -1746,6 +2017,7 @@ const bridgeRequestDependencies = {
   permissionAskedProperties, upsertRegisteredTool, listToolsForAgent, searchToolsForAgent,
   describeToolForAgent, createCoreToolGateway, continueCoreApprovedTool, listPendingCoreApprovals, respondToCoreApproval,
   hasPendingApprovalWaiter, notifyApprovalResolution, escapeFilter, DEFAULT_SETTINGS, applicationExtensionPaths,
+  deliverNextQueuedFollowUp,
   homedir, root, openApiProviders, dailyUsage, runtimeProviders, active, activeKey, sseClients, encoder,
   handleProxy, redactedDiagnostic, broadcastSse, persistSessionModel, rpcData, projectEntries,
   projectResponse, encodeSessionCursor, decodeSessionCursor, sessionPageLimit, ensureApplicationSessionMetadata,

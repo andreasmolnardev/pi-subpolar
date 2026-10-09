@@ -44,6 +44,21 @@ describe('RuntimeEventStream', () => {
     expect(healthStates.at(-1)).toMatchObject({ isConnected: true, isHealthy: true, isStalled: false })
   })
 
+  it('publishes the scheduled retry time after the event stream disconnects', () => {
+    const transport = new TestEventStreamTransport()
+    const stream = new EventStream({ transport })
+    const healthStates: EventStreamHealthState[] = []
+
+    stream.subscribeGlobalMonitor({
+      directories: [],
+      onEvent: vi.fn(),
+      onHealthChange: (health) => healthStates.push(health),
+    })
+    transport.fail()
+
+    expect(healthStates.at(-1)?.reconnectAt).toBe(Date.now() + 1_000)
+  })
+
   it('reconnects when the watchdog detects a stall', async () => {
     const transport = new TestEventStreamTransport()
     const stream = new EventStream({ transport })

@@ -161,8 +161,15 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
     const preferences = await deps.getUserPreferences(client, authenticatedUser!.id)
     const requestedModel = typeof input.model === 'string' && input.model.trim()
       ? input.model.trim()
-      : deps.preferenceModel(preferences?.preferences, 'conversation')
-    const model = requestedModel && thinking && !requestedModel.endsWith(`:${thinking}`) ? `${requestedModel}:${thinking}` : requestedModel
+      : typeof resolved.agent.model === 'string' && resolved.agent.model.trim()
+        ? resolved.agent.model.trim()
+        : deps.preferenceModel(preferences?.preferences, 'conversation')
+    const modelThinkingSuffix = requestedModel ? /:(off|minimal|low|medium|high|xhigh)$/.exec(requestedModel)?.[1] : undefined
+    const agentThinking = resolved.agent.thinking === 'off' || resolved.agent.thinking === 'minimal' || resolved.agent.thinking === 'low' || resolved.agent.thinking === 'medium' || resolved.agent.thinking === 'high'
+      ? resolved.agent.thinking
+      : undefined
+    const selectedThinking = modelThinkingSuffix ?? thinking ?? agentThinking
+    const model = requestedModel && selectedThinking && !modelThinkingSuffix ? `${requestedModel}:${selectedThinking}` : requestedModel
     const selectedModel = deps.modelSelection(model)
     try {
       await deps.validateModelSelection(authenticatedUser!.id, selectedModel)
@@ -258,9 +265,18 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       if (path.length === 3 && request.method === 'GET') {
         const projects = await deps.createProjectSessionRepository(ownershipClient).listProjects(ownerId)
         const project = await deps.ownedSessionProject(ownershipClient, ownerId, ownedRecord)
-        const cwd = ownedRecord.directory ?? project?.path
+        const cwdCandidates = project?.name === 'General Chat'
+          ? [ownedRecord.directory, project.path].filter(Boolean)
+          : [ownedRecord.directory ?? project?.path].filter(Boolean)
         let workspaceAvailable = false
-        try { workspaceAvailable = Boolean(cwd && deps.statSync(cwd).isDirectory()) } catch { /* Missing workspace is a transcript-only session. */ }
+        for (const cwd of cwdCandidates) {
+          try {
+            if (deps.statSync(cwd).isDirectory()) {
+              workspaceAvailable = true
+              break
+            }
+          } catch { /* Check the General Chat managed root when a session workspace is missing. */ }
+        }
         return deps.json({ ...deps.storedSessionResponse(ownedRecord, projects), workspaceAvailable })
       }
       if (path.length === 3 && request.method === 'PATCH') {
@@ -274,18 +290,31 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
           }
         }
         const title = typeof input.title === 'string' ? input.title.trim() : ''
+        let selectedModel
+        if (input.model !== undefined) {
+          try {
+            selectedModel = deps.modelSelection(input.model)
+            await deps.validateModelSelection(ownerId, selectedModel)
+          } catch (error) {
+            if (error instanceof Error && (error as { code?: unknown }).code === 'MODEL_UNAVAILABLE') return deps.json({ error: error.message, code: 'MODEL_UNAVAILABLE' }, 409)
+            return deps.json({ error: 'Invalid model selection', code: 'INVALID_MODEL' }, 400)
+          }
+        }
         const client = ownershipClient
         const record = ownedRecord
+        if (selectedModel) await deps.sendRpc(id, { type: 'set_model', provider: selectedModel.providerID, modelId: selectedModel.modelID }, ownedRecord)
         const updated = await deps.createProjectSessionRepository(client).updateSession(ownerId, id, {
           ...(title ? { title } : {}),
           ...(typeof input.archived === 'boolean' ? { archived: input.archived } : {}),
           ...(tags !== undefined ? { tags } : {}),
+          ...(selectedModel ? { model: selectedModel.value } : {}),
         })
         if (updated) {
           record.updatedAt = updated.updatedAt
           record.title = updated.title
           record.archived = updated.archived
           record.tags = updated.tags
+          record.model = updated.model
         }
         if (title) await deps.sendRpc(id, { type: 'set_session_name', name: title }, ownedRecord)
         await deps.saveState(record)
@@ -307,16 +336,27 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       }
       if (path.length === 5 && path[3] === 'tool-calls' && request.method === 'GET') {
         const callID = decodeURIComponent(path[4] ?? '')
-        const payload = deps.entriesPayload(await deps.sendRpc(id, { type: 'get_entries' }, ownedRecord))
-        for (const entry of payload.entries) {
+        const transcript = typeof deps.transcriptHistory === 'function' ? await deps.transcriptHistory(id, ownedRecord) : undefined
+        const payload = transcript?.entries?.length
+          ? transcript
+          : deps.entriesPayload(await deps.sendRpc(id, { type: 'get_entries' }, ownedRecord))
+        const entries = Array.isArray(payload.entries) ? payload.entries : []
+        for (const entry of entries) {
           const message = deps.object(deps.object(entry).message)
-          if (message.role === 'toolResult' && message.toolCallId === callID) {
-            return deps.json({ callID, tool: message.toolName ?? null, input: deps.redactSensitive(deps.object(message.input)), output: deps.redactSensitiveText(deps.sessionMessageText(message)), details: deps.redactSensitive(deps.object(message.details)), error: message.isError ? deps.redactSensitiveText(deps.sessionMessageText(message)) : null })
-          }
+          if (message.role !== 'toolResult' || message.toolCallId !== callID) continue
+          const invocation = entries
+            .map((candidate) => deps.object(deps.object(candidate).message))
+            .flatMap((candidate) => Array.isArray(candidate.content) ? candidate.content : [])
+            .map((part) => deps.object(part))
+            .find((part) => part.type === 'toolCall' && (part.id === callID || part.callID === callID))
+          const input = invocation ? invocation.arguments : message.input
+          return deps.json({ callID, tool: message.toolName ?? invocation?.name ?? null, input: deps.redactSensitive(deps.object(input)), output: deps.redactSensitiveText(deps.sessionMessageText(message)), details: deps.redactSensitive(deps.object(message.details)), error: message.isError ? deps.redactSensitiveText(deps.sessionMessageText(message)) : null })
         }
         return deps.json({ callID, output: '', details: {}, error: null }, 404)
       }
       if (path.length === 4 && path[3] === 'messages' && request.method === 'POST') {
+        const ownerId = ownedRecord.userId
+        if (!ownerId) return deps.json({ error: 'Session owner is unavailable' }, 400)
         const sessionProject = await deps.ownedSessionProject(ownershipClient, ownerId, ownedRecord)
         const cwd = ownedRecord.directory ?? sessionProject?.path
         try {
@@ -328,8 +368,6 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
         const metadata = deps.object(input.metadata)
         const record = ownedRecord
         const content = typeof input.content === 'string' ? input.content : ''
-        const ownerId = record.userId
-        if (!ownerId) return deps.json({ error: 'Session owner is unavailable' }, 400)
         const requestedAgent = typeof metadata.agent === 'string' && metadata.agent.trim() ? metadata.agent.trim() : undefined
         const requestedPermission = deps.requestedMetadataPermission(metadata)
         if (requestedPermission === null) return deps.json({ error: 'Invalid permission override' }, 400)
@@ -362,25 +400,7 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
         return deps.json(deps.messageDeliveryResponse(reservation.delivery), 201)
       }
       if (path.length === 4 && path[3] === 'steer' && request.method === 'POST') {
-        const input = await deps.body(request)
-        const content = typeof input.content === 'string' ? input.content.trim() : typeof input.message === 'string' ? input.message.trim() : ''
-        if (!content) return deps.json({ error: 'Steering content is required' }, 400)
-        const clientId = deps.queueClientId(input.clientId ?? input.messageID)
-        let reservation
-        try { reservation = await store.reserveQueueEntry(ownerId, id, clientId, content, 'steering') }
-        catch (error) {
-          if (error instanceof deps.QueueEntryConflictError) return deps.json({ error: error.message, code: error.code }, 409)
-          throw error
-        }
-        if (!reservation.created) return deps.json({ entry: reservation.entry }, 200)
-        try {
-          await deps.sendRpc(id, { type: 'steer', message: content, id: clientId }, ownedRecord)
-          return deps.json({ entry: reservation.entry }, 201)
-        } catch (error) {
-          const entry = await store.updateQueueEntry(ownerId, id, clientId, 'failed', error instanceof Error ? error.message : 'Steering failed')
-          deps.broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
-          return deps.json({ entry }, 200)
-        }
+        return deps.json({ error: 'Steering compatibility route is disabled; create a Durable run instead', code: 'DURABLE_RUN_REQUIRED' }, 410)
       }
       if (path.length === 4 && path[3] === 'queue' && request.method === 'GET') {
         return deps.json({ entries: await store.listQueueEntries(ownerId, id) })
@@ -427,10 +447,13 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
             try {
               entry = await store.updateQueueEntry(ownerId, id, clientId, 'steering')
               if (!entry) return deps.json({ error: 'Queue entry not found' }, 404)
-              await deps.sendRpc(id, { type: 'steer', message: entry.content, id: entry.clientId }, ownedRecord)
+              entry = await store.updateQueueEntry(ownerId, id, clientId, 'failed', 'DURABLE_RUN_REQUIRED')
             } catch (error) {
-              entry = await store.updateQueueEntry(ownerId, id, clientId, 'failed', error instanceof Error ? error.message : 'Steering failed')
+              if (error instanceof deps.QueueEntryTransitionError) return deps.json({ error: error.message, code: error.code }, 409)
+              throw error
             }
+            deps.broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
+            return deps.json({ entry, code: 'DURABLE_RUN_REQUIRED' }, 410)
           }
           deps.broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
           return entry ? deps.json({ entry }) : deps.json({ error: 'Queue entry not found' }, 404)
@@ -471,6 +494,7 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
             ? deps.routeFirstSessionRequest(ownershipClient, ownerId, ownedRecord.project, claimedDelivery.content)
             : Promise.resolve(null)
           const shouldGenerateTitle = ownedRecord.title === 'Untitled session'
+            || (typeof deps.provisionalSessionTitle === 'function' && deps.provisionalSessionTitle(claimedDelivery.content) === ownedRecord.title)
           const title = shouldGenerateTitle && typeof deps.generateFirstSessionTitle === 'function'
             ? deps.generateFirstSessionTitle(ownershipClient, ownerId, claimedDelivery.content).catch((error: unknown) => {
                 console.warn(`Session title generation failed: ${deps.redactedDiagnostic(error)}`)
@@ -516,18 +540,17 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
           // object remains only the transient execution/streaming fast path.
           const routedProject = await deps.ownedSessionProject(ownershipClient, ownerId, ownedRecord)
           if (!routedProject) throw new Error('Session project is unavailable')
-          const runtimeResult = typeof deps.runStatelessPrompt === 'function'
-            ? await deps.runStatelessPrompt({
-                ownerId,
-                sessionId: id,
-                runId: claimedDelivery.messageId,
-                requestId: typeof metadata.requestId === 'string' && metadata.requestId.trim() ? metadata.requestId : claimedDelivery.messageId,
-                prompt: claimedDelivery.content,
-                metadata: {
-                  ...(Array.isArray(metadata.capabilities) ? { capabilities: metadata.capabilities.filter((value: unknown): value is string => typeof value === 'string').join(',') } : {}),
-                },
-              }, ownedRecord, routedProject)
-            : await deps.sendRpc(id, { type: 'prompt', message: claimedDelivery.content }, ownedRecord)
+          if (typeof deps.runStatelessPrompt !== 'function') throw new Error('Pi Durable execution is unavailable')
+          const runtimeResult = await deps.runStatelessPrompt({
+            ownerId,
+            sessionId: id,
+            runId: claimedDelivery.messageId,
+            requestId: typeof metadata.requestId === 'string' && metadata.requestId.trim() ? metadata.requestId : claimedDelivery.messageId,
+            prompt: claimedDelivery.content,
+            metadata: {
+              ...(Array.isArray(metadata.capabilities) ? { capabilities: metadata.capabilities.filter((value: unknown): value is string => typeof value === 'string').join(',') } : {}),
+            },
+          }, ownedRecord, routedProject)
           const response = runtimeResult && typeof runtimeResult === 'object' && 'state' in runtimeResult
             ? runtimeResult.state === 'completed'
               ? runtimeResult.output
@@ -535,6 +558,11 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
             : runtimeResult
           await store.completeMessageDelivery(claimedDelivery, response)
           await store.updateRuntimeRun(ownerId, id, claimedDelivery.messageId, 'completed')
+          if (typeof deps.deliverNextQueuedFollowUp === 'function') {
+            void deps.deliverNextQueuedFollowUp(ownerId, id).catch((error: unknown) => {
+              console.warn(`Queued follow-up delivery failed: ${deps.redactedDiagnostic(error)}`)
+            })
+          }
           return deps.json(deps.withDeliveryMetadata(response, deps.messageDeliveryResponse({ ...claimedDelivery, state: 'completed' })))
         } catch (error) {
           await store.interruptMessageDelivery(claimedDelivery)
@@ -548,14 +576,18 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       if (path.length === 4 && path[3] === 'rpc' && request.method === 'POST') {
         const input = await deps.body(request)
         if (typeof input.type !== 'string') return deps.json({ error: 'RPC type is required' }, 400)
+        if (['prompt', 'steer', 'follow_up', 'compact'].includes(input.type)) {
+          return deps.json({ error: 'This command requires a Durable run', code: 'DURABLE_RUN_REQUIRED' }, 410)
+        }
         return deps.json(await deps.sendRpc(id, input as any, ownedRecord))
       }
       if (path.length === 4 && path[3] === 'prompt' && request.method === 'POST') {
-        const input = await deps.body(request)
-        if (typeof input.message !== 'string' || !input.message.trim()) return deps.json({ error: 'Prompt message is required' }, 400)
-        return deps.json(await deps.sendRpc(id, { type: 'prompt', message: input.message, ...(typeof input.streamingBehavior === 'string' ? { streamingBehavior: input.streamingBehavior } : {}) }, ownedRecord))
+        return deps.json({ error: 'Prompt compatibility route is disabled; create a Durable run instead', code: 'DURABLE_RUN_REQUIRED' }, 410)
       }
-      if (path.length === 4 && path[3] === 'abort' && request.method === 'POST') return deps.json(await deps.sendRpc(id, { type: 'abort' }, ownedRecord))
+      if (path.length === 4 && path[3] === 'abort' && request.method === 'POST') {
+        deps.abortActiveDurableSession(ownerId, id)
+        return deps.json(await deps.sendRpc(id, { type: 'abort' }, ownedRecord))
+      }
       return deps.json({ error: 'Not found' }, 404)
     } catch (error) {
       console.warn(`Session request failed: ${deps.redactedDiagnostic(error)}`)

@@ -5,9 +5,10 @@ import { useUserBash } from '@/stores/userBashStore'
 import { useSessionStatusForSession } from '@/stores/sessionStatusStore'
 import { usePermissions, useQuestions } from '@/contexts/EventContext'
 import { detectFileReferences } from '@/lib/fileReferences'
-import { Brain, ChevronDown, Code2, ExternalLink, FileText, Globe2, Loader2, Pencil, Search, Terminal, Wrench, Check, X } from 'lucide-react'
+import { Brain, ChevronDown, Code2, ExternalLink, FileText, Globe2, Loader2, Pencil, Search, Terminal, Wrench, X, Database, Mail, Calendar, MapPin, Image, Link, type LucideIcon } from 'lucide-react'
 import { Marker, MarkerContent, MarkerIcon } from '@/components/ui/marker'
 import { CopyButton } from '@/components/ui/copy-button'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getToolSpecificRender } from './FileToolRender'
 
 type ToolPart = components['schemas']['ToolPart']
@@ -65,6 +66,64 @@ function ClickableJson({ json, onFileClick }: { json: unknown; onFileClick?: (fi
   }
 
   return <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-words">{parts}</pre>
+}
+
+const configuredToolIcons: Record<string, LucideIcon> = {
+  brain: Brain, calendar: Calendar, code: Code2, database: Database, file: FileText,
+  globe: Globe2, image: Image, link: Link, mail: Mail, map: MapPin, search: Search,
+  terminal: Terminal, wrench: Wrench,
+}
+
+function friendlyToolName(tool: string, metadata?: Record<string, unknown>, stateMetadata?: Record<string, unknown>): string {
+  const configuredName = [metadata?.displayName, metadata?.friendlyName, metadata?.name, stateMetadata?.displayName]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  if (configuredName) return configuredName.trim()
+
+  const knownNames: Record<string, string> = {
+    apply_patch: 'patch files', bash: 'command', edit: 'file edit', glob: 'file search',
+    grep: 'file search', list: 'file listing', read: 'file read', task: 'sub-agent task',
+    web_search: 'web search', webfetch: 'web fetch', write: 'file write',
+    'subpolar-tools': 'tool', 'skill-load': 'skill load', 'skill-discover': 'skill discovery',
+  }
+  return knownNames[tool] ?? tool.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').toLowerCase()
+}
+
+function ToolRequestResponse({
+  request, response, error, running, waiting,
+  onFileClick,
+}: {
+  request: unknown
+  response?: string
+  error?: string
+  running?: boolean
+  waiting?: string
+  onFileClick?: (filePath: string) => void
+}) {
+  return (
+    <Tabs defaultValue="request" className="space-y-2">
+      <TabsList className="h-7 gap-0.5 rounded-md bg-transparent p-0">
+        <TabsTrigger value="request" className="h-7 rounded px-2 text-xs data-[state=active]:bg-accent data-[state=active]:shadow-none">Request</TabsTrigger>
+        <TabsTrigger value="response" className="h-7 rounded px-2 text-xs data-[state=active]:bg-accent data-[state=active]:shadow-none">Response</TabsTrigger>
+      </TabsList>
+      <TabsContent value="request" className="mt-0 px-0">
+        <ClickableJson json={request ?? {}} onFileClick={onFileClick} />
+      </TabsContent>
+      <TabsContent value="response" className="mt-0 px-0">
+        {error ? (
+          <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-words text-red-600 dark:text-red-300">{error}</pre>
+        ) : response !== undefined ? (
+          <div className="relative">
+            <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-words">{response}</pre>
+            <CopyButton content={response} title="Copy response" className="absolute top-1 right-1" iconSize="sm" />
+          </div>
+        ) : running ? (
+          <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />{waiting ?? 'Waiting for response...'}
+          </div>
+        ) : <p className="py-2 text-xs text-muted-foreground">No response available.</p>}
+      </TabsContent>
+    </Tabs>
+  )
 }
 
 export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCallPartProps) {
@@ -139,7 +198,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
   const getStatusIcon = () => {
     switch (part.state.status) {
       case 'completed':
-        return <span>✓</span>
+        return null
       case 'error':
         return <span>✗</span>
       case 'running':
@@ -153,6 +212,11 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
 
   const getToolIcon = () => {
     const className = "h-4 w-4 shrink-0 text-muted-foreground"
+    const stateMetadata = part.state.status === 'pending' ? undefined : part.state.metadata
+    const iconName = [part.metadata?.icon, part.metadata?.toolIcon, stateMetadata?.icon, stateMetadata?.toolIcon]
+      .find((value): value is string => typeof value === 'string')
+    const ConfiguredIcon = iconName ? configuredToolIcons[iconName.toLowerCase().replace(/[^a-z]/g, '')] : undefined
+    if (ConfiguredIcon) return <ConfiguredIcon className={className} />
 
     switch (part.tool) {
       case 'grep':
@@ -160,6 +224,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
       case 'list':
         return <Search className={className} />
       case 'webfetch':
+      case 'web_search':
         return <Globe2 className={className} />
       case 'read':
         return <FileText className={className} />
@@ -198,11 +263,17 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
         return (input.path as string) || '.'
       case 'task':
         return (input.description as string) || null
+      case 'web_search':
+        return (input.query as string) || (input.search_query as string) || (input.searchQuery as string) || (input.q as string) || null
       case 'todowrite':
       case 'todoread':
         return null
-      default:
-        return null
+      default: {
+        const primary = ['query', 'search_query', 'searchQuery', 'url', 'path', 'filePath', 'name', 'description', 'prompt']
+          .map((key) => input[key])
+          .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        return primary ?? null
+      }
     }
   }
 
@@ -213,19 +284,11 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
   const isSkillTool = part.tool === 'skill-load' || part.tool === 'skill-discover'
 
   const getCompactToolLabel = () => {
-    if (!isCompactTool) return part.tool
-
-    if (part.tool === 'read') {
-      if (part.state.status === 'running') return 'Reading file...'
-      if (part.state.status === 'completed') return 'Read file'
-      if (part.state.status === 'error') return 'Read file failed'
-      return 'Preparing read...'
-    }
-
-    if (part.state.status === 'running') return part.tool === 'glob' ? 'Running search...' : 'Running command...'
-    if (part.state.status === 'completed') return part.tool === 'glob' ? 'Searched files' : 'Ran command'
-    if (part.state.status === 'error') return part.tool === 'glob' ? 'Search failed' : 'Command failed'
-    return part.tool === 'glob' ? 'Preparing search...' : 'Preparing command...'
+    const toolName = friendlyToolName(part.tool, part.metadata, part.state.status === 'pending' ? undefined : part.state.metadata)
+    if (part.state.status === 'running') return `Running ${toolName}`
+    if (part.state.status === 'completed') return `Ran ${toolName}`
+    if (part.state.status === 'error') return `Failed running ${toolName}`
+    return `Preparing ${toolName}`
   }
 
   if (part.tool === 'task') {
@@ -238,14 +301,15 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
     const isCompleted = status === 'completed' || (status === 'running' && !!sessionId && taskSessionStatus.type === 'idle')
     const isError = status === 'error'
 
+    const taskLabel = isRunning ? 'Running sub-agent task' : isCompleted ? 'Ran sub-agent task' : isError ? 'Failed running sub-agent task' : 'Preparing sub-agent task'
     const content = (
       <div className="flex min-w-0 items-center gap-2">
         <Brain className="h-4 w-4 shrink-0 text-muted-foreground" />
         {isPending && <span className="inline-block h-2 w-2 rounded-full bg-current text-muted-foreground animate-pulse" />}
         {isRunning && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-yellow-600 dark:text-yellow-400" />}
-        {isCompleted && <span className="text-green-600 text-sm font-medium">✓</span>}
         {isError && <span className="text-red-600 text-sm font-medium">✗</span>}
-        <span className={isPending || isRunning ? 'reasoning-text-trail font-medium truncate' : 'font-medium text-muted-foreground truncate'}>{description}</span>
+        <span className={isPending || isRunning ? 'reasoning-text-trail font-medium truncate' : 'font-medium text-muted-foreground truncate'}>{taskLabel}</span>
+        <span className="min-w-0 truncate text-xs text-muted-foreground">{description}</span>
         <span className="shrink-0 text-[11px] font-medium text-orange-600 dark:text-orange-400">sub-agent</span>
         {sessionId && <ExternalLink className="w-3 h-3 shrink-0 text-blue-600 dark:text-blue-400" />}
       </div>
@@ -292,7 +356,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
       : part.state.status === 'completed'
         ? isSkillDiscoverTool ? 'Discovered Skills' : `Loaded skill${skillName ? ` ${skillName}` : ''}`
         : part.state.status === 'error'
-          ? isSkillDiscoverTool ? 'Skill discovery failed' : `Skill load failed${skillName ? ` ${skillName}` : ''}`
+          ? isSkillDiscoverTool ? 'Failed running skill discovery' : `Failed running skill load${skillName ? ` ${skillName}` : ''}`
           : isSkillDiscoverTool ? 'Preparing skill discovery' : 'Preparing skill load'
 
     return (
@@ -304,28 +368,14 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
           <span className={part.state.status === 'running' ? 'reasoning-text-trail font-medium' : 'font-medium text-muted-foreground'}>{label}</span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
         </summary>
-        <div className="space-y-2 pl-6 pt-1 text-muted-foreground animate-disclosure-down">
-          {part.state.status === 'running' && (
-            <div className="text-sm">
-              <div className="text-muted-foreground mb-1">Input:</div>
-              <ClickableJson json={part.state.input} onFileClick={onFileClick} />
-            </div>
-          )}
-          {part.state.status === 'completed' && (
-            <div className="text-sm">
-              <div className="text-muted-foreground mb-1">Output:</div>
-              <div className="relative">
-                <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-all">{part.state.output}</pre>
-                <CopyButton content={part.state.output} title="Copy output" className="absolute top-1 right-1" iconSize="sm" />
-              </div>
-            </div>
-          )}
-          {part.state.status === 'error' && (
-            <div className="text-sm">
-              <div className="text-red-600 dark:text-red-400 mb-1">Error:</div>
-              <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-words text-red-600 dark:text-red-300">{part.state.error}</pre>
-            </div>
-          )}
+        <div className="pl-6 pt-1 text-muted-foreground animate-disclosure-down">
+          <ToolRequestResponse
+            request={part.state.input}
+            response={part.state.status === 'completed' ? part.state.output : undefined}
+            error={part.state.status === 'error' ? part.state.error : undefined}
+            running={part.state.status === 'running' || part.state.status === 'pending'}
+            onFileClick={onFileClick}
+          />
         </div>
       </details>
     )
@@ -334,20 +384,31 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
   // Tool calls are timeline markers rather than full chat bubbles. The details
   // remain available on demand, while the transcript stays easy to scan.
   if (['bash', 'read', 'write', 'edit', 'glob', 'grep', 'list', 'apply_patch'].includes(part.tool)) {
-    const icon = part.state.status === 'running' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : part.state.status === 'completed' ? <Check className="h-3.5 w-3.5 text-green-600" /> : part.state.status === 'error' ? <X className="h-3.5 w-3.5 text-red-600" /> : getToolIcon()
-    const label = part.tool === 'edit' || part.tool === 'write'
-      ? part.state.status === 'running' ? 'Editing file...' : part.state.status === 'completed' ? `Edited file${previewText ? ` ${previewText}` : ''}` : part.state.status === 'error' ? 'Edit failed' : 'Preparing edit...'
-      : getCompactToolLabel()
+    const statusIcon = part.state.status === 'running'
+      ? <Loader2 className="h-3.5 w-3.5 animate-spin text-yellow-600 dark:text-yellow-400" />
+      : part.state.status === 'error'
+          ? <X className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
+          : <span className="inline-block h-2 w-2 rounded-full bg-current text-muted-foreground animate-pulse" />
     return (
       <details className="group my-1 text-sm" open={part.state.status === 'running'} onToggle={(event) => setExpanded(event.currentTarget.open)}>
         <summary className="list-none cursor-pointer [&::-webkit-details-marker]:hidden">
-          <Marker><MarkerIcon>{icon}</MarkerIcon><MarkerContent>{label}</MarkerContent>{previewText && part.tool !== 'bash' && <MarkerContent className="text-xs">{previewText}</MarkerContent>}<ChevronDown className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180" /></Marker>
+          <Marker className="min-w-0">
+            <MarkerIcon>{getToolIcon()}</MarkerIcon>
+            {part.state.status !== 'completed' && <span className="flex h-4 w-4 shrink-0 items-center justify-center">{statusIcon}</span>}
+            <MarkerContent className={isActiveToolStep ? 'reasoning-text-trail font-medium' : 'font-medium'}>{getCompactToolLabel()}</MarkerContent>
+            {previewText && <MarkerContent className="ml-auto max-w-[45%] text-xs text-muted-foreground">{previewText}</MarkerContent>}
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180" />
+          </Marker>
         </summary>
         <div className="space-y-2 pl-6 pt-1 text-muted-foreground">
-          {previewText && <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-all">{previewText}</pre>}
-          {part.state.status === 'running' && <span className="reasoning-text-trail">Running...</span>}
-          {part.state.status === 'completed' && (lazyDetails?.output || ('output' in part.state && part.state.output)) && <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-words">{lazyDetails?.output || ('output' in part.state ? part.state.output : '')}</pre>}
-          {part.state.status === 'error' && <pre className="text-red-600 text-xs whitespace-pre-wrap">{lazyDetails?.error || part.state.error}</pre>}
+          <ToolRequestResponse
+            request={part.state.status === 'pending' ? part.state.input : part.state.input}
+            response={part.state.status === 'completed' ? (lazyDetails?.output ?? part.state.output) : undefined}
+            error={part.state.status === 'error' ? (lazyDetails?.error ?? part.state.error) : undefined}
+            running={part.state.status === 'running' || part.state.status === 'pending'}
+            waiting={part.state.status === 'running' && isWaitingPermission ? 'Waiting for permission...' : undefined}
+            onFileClick={onFileClick}
+          />
           {expanded && detailsUrl && !lazyDetails && <span className="text-xs text-muted-foreground">Loading details...</span>}
           {lazyDetails?.failed && (
             <div className="text-xs text-muted-foreground">
@@ -398,9 +459,8 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
         className="flex w-full min-w-0 items-center gap-2 rounded-md py-1 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
       >
         {getToolIcon()}
-        {!isCompactTool && <span className={getStatusColor()}>{getStatusIcon()}</span>}
-        <span className={isActiveToolStep ? 'reasoning-text-trail font-medium' : 'font-medium text-muted-foreground'}>{getCompactToolLabel()}</span>
-        {isCompactTool && <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />}
+        {part.state.status !== 'completed' && <span className={`flex h-4 w-4 shrink-0 items-center justify-center ${getStatusColor()}`}>{getStatusIcon()}</span>}
+        <span className={`${isActiveToolStep ? 'reasoning-text-trail' : 'text-muted-foreground'} min-w-0 truncate font-medium`}>{getCompactToolLabel()}</span>
 
         {previewText && isFileTool && !isCompactTool ? (
           <span
@@ -415,8 +475,8 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
           >
             {previewText}
           </span>
-        ) : previewText && !isCompactTool ? (
-          <span className="text-muted-foreground text-xs truncate">{previewText}</span>
+        ) : previewText ? (
+          <span className="ml-auto max-w-[45%] text-muted-foreground text-xs truncate">{previewText}</span>
         ) : null}
 
         {part.tool === 'task' && (() => {
@@ -435,83 +495,23 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
             </span>
           ) : null
         })()}
-         {!isCompactTool && <span className="ml-auto text-xs text-muted-foreground">{isWaitingPermission ? 'awaiting permission' : isWaitingQuestion ? 'awaiting answer' : part.state.status}</span>}
-         {!isCompactTool && <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />}
+         {(isWaitingPermission || isWaitingQuestion) && <span className="text-xs text-muted-foreground">{isWaitingPermission ? 'awaiting permission' : 'awaiting answer'}</span>}
+         <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
       </button>
 
       {expanded && (
         <div className="space-y-2 pl-6 pt-1 text-muted-foreground animate-disclosure-down">
-          {part.state.status === 'pending' && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <div className="flex gap-0.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '300ms' }} />
-              </div>
-              <span>Preparing tool call...</span>
-            </div>
-          )}
-
-          {isCompactTool && previewText && (
-            <div className="text-sm">
-              <div className="text-muted-foreground mb-1">{part.tool === 'glob' ? 'Pattern:' : part.tool === 'read' ? 'File:' : 'Command:'}</div>
-              <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-all">{previewText}</pre>
-            </div>
-          )}
-
-          {part.state.status === 'running' && (
-            <>
-              {isCompactTool ? (
-                <div className={`flex items-center gap-2 text-xs ${isWaitingPermission ? 'text-orange-600 dark:text-orange-400' : 'text-yellow-600 dark:text-yellow-400'}`}>
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  <span>{isWaitingPermission ? 'Waiting for permission...' : 'Running...'}</span>
-                </div>
-              ) : (
-                <div className="text-sm">
-                  <div className="text-muted-foreground mb-1">Input:</div>
-                  <ClickableJson json={part.state.input} onFileClick={onFileClick} />
-                  <div className={`flex items-center gap-2 mt-2 text-xs ${isWaitingPermission ? 'text-orange-600 dark:text-orange-400' : 'text-yellow-600 dark:text-yellow-400'}`}>
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    <span>{isWaitingPermission ? 'Waiting for permission...' : 'Running...'}</span>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {part.state.status === 'completed' && (
-            <>
-              {!isCompactTool && (
-                <div className="text-sm">
-                  <div className="text-muted-foreground mb-1">Input:</div>
-                  <ClickableJson json={part.state.input} onFileClick={onFileClick} />
-                </div>
-              )}
-              {part.tool !== 'bash' || part.state.output.trim() ? (
-                <div className="text-sm">
-                  <div className="text-muted-foreground mb-1">Output:</div>
-                  <div className="relative">
-                    <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-all">
-                      {part.state.status === 'completed' ? part.state.output : ''}
-                    </pre>
-                    <CopyButton content={part.state.output} title="Copy output" className="absolute top-1 right-1" iconSize="sm" />
-                  </div>
-                </div>
-              ) : null}
-              {part.state.time && (
-                <div className="text-xs text-muted-foreground">
-                  Duration: {((part.state.time.end - part.state.time.start) / 1000).toFixed(2)}s
-                </div>
-              )}
-            </>
-          )}
-
-          {part.state.status === 'error' && (
-            <div className="text-sm">
-              <div className="text-red-600 dark:text-red-400 mb-1">Error:</div>
-              <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-words text-red-600 dark:text-red-300">
-                {part.state.error}
-              </pre>
+          <ToolRequestResponse
+            request={part.state.input}
+            response={part.state.status === 'completed' ? part.state.output : undefined}
+            error={part.state.status === 'error' ? part.state.error : undefined}
+            running={part.state.status === 'running' || part.state.status === 'pending'}
+            waiting={isWaitingPermission ? 'Waiting for permission...' : isWaitingQuestion ? 'Waiting for an answer...' : undefined}
+            onFileClick={onFileClick}
+          />
+          {part.state.status === 'completed' && part.state.time && (
+            <div className="text-xs text-muted-foreground">
+              Duration: {((part.state.time.end - part.state.time.start) / 1000).toFixed(2)}s
             </div>
           )}
         </div>

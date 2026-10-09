@@ -14,6 +14,19 @@ export type AuthConfig = {
   adminConfigured: boolean
 }
 
+export function devAdminTokenEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env.NODE_ENV === 'development' && env.SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED !== 'false'
+}
+
+export function createOneShotTokenIssuer(issue: () => Promise<string>): () => Promise<string> {
+  let issued = false
+  return async () => {
+    if (issued) throw new Error('Development admin token has already been issued for this process')
+    issued = true
+    return issue()
+  }
+}
+
 export async function signIn(email: string, password: string): Promise<{ user: PocketBaseUser; cookie: string; token: string }> {
   const client = newPocketBaseClient()
   const result = await client.collection('users').authWithPassword(email, password)

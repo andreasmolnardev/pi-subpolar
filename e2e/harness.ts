@@ -118,7 +118,6 @@ export async function startHarness(options: { keep?: boolean } = {}): Promise<Ha
     })
     await waitFor(`http://127.0.0.1:${webPort}/`, 'Subpolar Agent')
     console.log(`isolated harness ready: http://127.0.0.1:${webPort}`)
-    console.log(`credentials: ${credentials.email} / ${credentials.password}`)
     const cleanup = async () => {
       if (cleaned) return
       cleaned = true

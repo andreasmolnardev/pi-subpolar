@@ -6,6 +6,19 @@ export async function handleAuthRoute(context: BridgeRequestContext): Promise<Re
   const { request, url, path, correlationId, deps, gatewayCredential, internalRequest } = context
   let authenticatedUser = context.authenticatedUser
   if (path[0] === 'api' && path[1] === 'auth') {
+    if (path[2] === 'dev-admin-token') {
+      if (request.method !== 'POST') return deps.json({ error: 'Method not allowed' }, 405)
+      if (!deps.devAdminTokenEnabled()) return deps.json({ error: 'Not found' }, 404)
+      try {
+        const token = await deps.issueDevAdminApiToken()
+        console.warn(`DEV ONLY: application-admin user API token (normal user-scoped token; do not share logs): ${token}`)
+        return deps.json({ ok: true, message: 'Development token written to Subpolar Agent logs' })
+      } catch (error) {
+        const alreadyIssued = error instanceof Error && error.message.includes('already been issued')
+        const missingCredentials = error instanceof Error && error.message.includes('credentials are not configured')
+        return deps.json({ error: alreadyIssued ? 'Development token already issued for this process' : missingCredentials ? 'Development application-admin credentials are not configured' : 'Unable to issue development token' }, alreadyIssued ? 409 : missingCredentials ? 503 : 500)
+      }
+    }
     if (path[2] === 'session' && request.method === 'GET') {
       authenticatedUser = await deps.authenticateRequest(request)
       return deps.json({ user: authenticatedUser, token: null })

@@ -19,6 +19,7 @@ function profileInputError(input: unknown): string | undefined {
   }
   if (input.policies !== undefined && !validPolicies(input.policies)) return 'Invalid policies'
   if (input.permission !== undefined && !isRecord(input.permission)) return 'Invalid permission'
+  if (input.preferences !== undefined && (!isRecord(input.preferences) || (input.preferences.simpleChatMode !== undefined && input.preferences.simpleChatMode !== null && typeof input.preferences.simpleChatMode !== 'boolean'))) return 'Invalid preferences'
   if (input.tool_context_modes !== undefined && !validModes(input.tool_context_modes, toolModes)) return 'Invalid tool_context_modes'
   if (input.skill_context_modes !== undefined && !validModes(input.skill_context_modes, skillModes)) return 'Invalid skill_context_modes'
   if (input.project_overrides !== undefined && (!isRecord(input.project_overrides) || !Object.entries(input.project_overrides).every(([id, value]) => id.trim() && isRecord(value) && Object.entries(value).every(([key, setting]) =>
@@ -71,7 +72,8 @@ export async function handleAgentsRoute(context: BridgeRequestContext): Promise<
            ...(input.project_overrides && typeof input.project_overrides === 'object' ? { project_overrides: input.project_overrides } : {}),
            ...(input.tool_context_modes && typeof input.tool_context_modes === 'object' ? { tool_context_modes: input.tool_context_modes } : {}),
            ...(input.skill_context_modes && typeof input.skill_context_modes === 'object' ? { skill_context_modes: input.skill_context_modes } : {}),
-           created_at: now,
+          ...(input.preferences && typeof input.preferences === 'object' ? { preferences: input.preferences } : {}),
+          created_at: now,
           updated_at: now,
         })
         return deps.json({ ...record, systemPrompt: record.systemPrompt }, 201)
@@ -105,6 +107,7 @@ export async function handleAgentsRoute(context: BridgeRequestContext): Promise<
            ...(input.project_overrides && typeof input.project_overrides === 'object' ? { project_overrides: input.project_overrides } : {}),
            ...(input.tool_context_modes && typeof input.tool_context_modes === 'object' ? { tool_context_modes: input.tool_context_modes } : {}),
            ...(input.skill_context_modes && typeof input.skill_context_modes === 'object' ? { skill_context_modes: input.skill_context_modes } : {}),
+           ...(input.preferences && typeof input.preferences === 'object' ? { preferences: input.preferences } : {}),
            updated_at: Date.now(),
         }
         const record = await client.collection('agents').update(id, update)

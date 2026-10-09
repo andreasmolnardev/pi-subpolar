@@ -4,7 +4,18 @@ import { getDailyUsage } from '@/api/usage'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
-const number = (value: number) => Math.round(value).toLocaleString()
+const USAGE_UNITS = [
+  { value: 1_000_000_000_000, suffix: 'T' },
+  { value: 1_000_000_000, suffix: 'B' },
+  { value: 1_000_000, suffix: 'M' },
+  { value: 1_000, suffix: 'K' },
+] as const
+
+const number = (value: number) => {
+  const unit = USAGE_UNITS.find(({ value: threshold }) => Math.abs(value) >= threshold)
+  if (!unit) return Math.round(value).toLocaleString()
+  return `${(value / unit.value).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}${unit.suffix}`
+}
 
 export function UsageSettings() {
   const { data, isLoading, error, refetch, isFetching } = useQuery({

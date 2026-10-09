@@ -2,13 +2,13 @@ import { useMemo, useState } from "react";
 import { useParams, useNavigate, Navigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getProject, hasProjectId, listProjects } from "@/api/projects";
+import { listStoredSessions } from "@/api/sessions";
 import { MessageThread } from "@/components/message/MessageThread";
-import { ChatInputBar, type ChatInputBarHandle } from "@/components/chat/ChatInputBar";
+import { ChatInputBar, type ChatInputBarHandle, type NewSessionRouteState } from "@/components/chat/ChatInputBar";
 import { SessionWorkspaceChanges } from '@/components/workspace';
 import { CreateWorktreeDialog } from '@/components/worktree/CreateWorktreeDialog';
-import { ChevronDown, CornerUpLeft } from "lucide-react";
+import { CornerUpLeft, PanelRightOpen } from "lucide-react";
 import { Header } from "@/components/ui/header";
-import { SessionList } from "@/components/session/SessionList";
 import { ProjectNotFoundDialog } from "@/components/project/ProjectNotFoundDialog";
 import { getSessionListPath } from '@/lib/navigation'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
@@ -22,9 +22,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ContextUsageIndicator } from "@/components/session/ContextUsageIndicator";
-import { useSession, useAbortSession, useSendPrompt, useSessionQueue, useRemoveQueueEntry, useRetryQueueEntry, useReorderQueueEntry, useClearQueue } from "@/hooks/usePiHarness";
+import { useSession, useAbortSession, useSendPrompt, useSessionQueue, useRemoveQueueEntry, useRetryQueueEntry, useReorderQueueEntry, useClearQueue } from "@/hooks/usePiDurableHarness";
 import { useProjectActivity } from "@/hooks/useProjectActivity";
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { useSSE } from "@/hooks/useSSE";
@@ -48,6 +47,7 @@ import { QuestionPrompt } from "@/components/session/QuestionPrompt";
 import { MinimizedQuestionIndicator } from "@/components/session/MinimizedQuestionIndicator";
 import { PermissionRequestDialog } from "@/components/session/PermissionRequestDialog";
 import { PendingActionsGroup } from "@/components/notifications/PendingActionsGroup";
+import { openSessionSearch } from "@/components/navigation/SessionSearchCommand";
 import { SessionSendErrorBanner } from "@/components/session/SessionSendErrorBanner";
 import { SessionTodoDisplay } from "@/components/message/SessionTodoDisplay";
 import { useSidebarAction } from "@/hooks/useSidebarAction";
@@ -61,6 +61,7 @@ import {
 import { newSessionPath } from "@/lib/new-session-route";
 import { downloadTranscript, exportTranscript, type TranscriptExportFormat } from "@/lib/transcriptExport";
 import { useCompletionSuggestions } from "@/hooks/useCompletionSuggestions";
+import type { Message, MessageWithParts } from "@/api/types";
 
 const compareMessageIds = (id1: string, id2: string): number => {
   const num1 = parseInt(id1, 10)
@@ -72,7 +73,7 @@ const compareMessageIds = (id1: string, id2: string): number => {
 const PENDING_ACTION_SYNC_INTERVAL_MS = 30000
 const PROMPT_OVERLAY_CLEARANCE_PX = 16
 
-type PendingPromptLocationState = {
+type PendingPromptLocationState = Partial<NewSessionRouteState> & {
   pendingPrompt?: StoredPendingSessionPrompt
 }
 
@@ -111,14 +112,23 @@ export function SessionDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const repoId = Number(id) || 0;
+  const isGeneralChatProject = repoId === GENERAL_CHAT_PROJECT_ID;
   const messageContainerRef = useRef<HTMLDivElement>(null);
   const prependAnchorRef = useRef<{ height: number; top: number; count: number } | null>(null);
   const promptInputRef = useRef<ChatInputBarHandle>(null);
   const consumedPendingPromptRef = useRef<string | null>(null);
   const [, setPendingPromptVersion] = useState(0);
-  const [sessionsPopoverOpen, setSessionsPopoverOpen] = useState(false);
   const [minimizedQuestion, setMinimizedQuestion] = useState<QuestionRequest | null>(null);
   const [exportingFormat, setExportingFormat] = useState<TranscriptExportFormat | null>(null);
+  const [firstMessageHandoff, setFirstMessageHandoff] = useState(() => {
+    const state = location.state as PendingPromptLocationState | null;
+    return state?.optimisticMessage ?? null;
+  });
+  const [provisionalTitle, setProvisionalTitle] = useState(() => (
+    (location.state as PendingPromptLocationState | null)?.provisionalTitle
+  ));
+  const [workspaceOpenRequest, setWorkspaceOpenRequest] = useState(0);
+  const workspaceTriggerRef = useRef<HTMLButtonElement>(null);
 
   const isMobile = useMobile();
   const { keyboardHeight } = useVisualViewport();
@@ -165,7 +175,7 @@ export function SessionDetail() {
   const repoDirectory = repo?.fullPath;
   const sessionRouteSuffix = '';
 
-  const { isConnected, isReconnecting } = useSSE(apiUrl, repoDirectory, sessionId);
+  const { isConnected, isReconnecting, reconnectInSeconds = 0 } = useSSE(apiUrl, repoDirectory, sessionId);
 
   const transcript = useSessionTranscript(apiUrl, sessionId, repoDirectory);
   const rawMessages = transcript.messages;
@@ -175,14 +185,53 @@ export function SessionDetail() {
     sessionId,
     repoDirectory,
   );
-  const workspaceMissing = (session as { workspaceAvailable?: boolean } | undefined)?.workspaceAvailable === false;
+  const { data: storedSessions = [] } = useQuery({
+    queryKey: ["stored-sessions"],
+    queryFn: listStoredSessions,
+  });
+  const isArchived = storedSessions.some((storedSession) => storedSession.id === sessionId && storedSession.archived);
+  const workspaceMissing = !isGeneralChatProject && (session as { workspaceAvailable?: boolean } | undefined)?.workspaceAvailable === false;
 
   const messages = useMemo(() => {
-    if (!rawMessages) return undefined
+    const availableMessages = rawMessages ?? []
     const revertMessageID = session?.revert?.messageID
-    if (!revertMessageID) return rawMessages
-    return rawMessages.filter(msgWithParts => compareMessageIds(msgWithParts.info.id, revertMessageID) < 0)
-  }, [rawMessages, session?.revert?.messageID]);
+    const visibleMessages = revertMessageID
+      ? availableMessages.filter(msgWithParts => compareMessageIds(msgWithParts.info.id, revertMessageID) < 0)
+      : availableMessages
+    if (!firstMessageHandoff) return visibleMessages
+    if (visibleMessages.some(message => message.info.id === firstMessageHandoff.id)) return visibleMessages
+
+    const optimisticMessage: MessageWithParts = {
+      info: {
+        id: firstMessageHandoff.id,
+        sessionID: sessionId ?? '',
+        role: 'user',
+        time: { created: Date.now() },
+        agent: '__default__',
+        model: { providerID: '', modelID: '' },
+      } as Message,
+      parts: [{
+        id: `${firstMessageHandoff.id}_text`,
+        sessionID: sessionId ?? '',
+        messageID: firstMessageHandoff.id,
+        type: 'text',
+        text: firstMessageHandoff.text,
+      }],
+    }
+    return [...visibleMessages, optimisticMessage]
+  }, [firstMessageHandoff, rawMessages, session?.revert?.messageID, sessionId]);
+
+  useEffect(() => {
+    const routeState = location.state as PendingPromptLocationState | null
+    if (routeState?.optimisticMessage) setFirstMessageHandoff(routeState.optimisticMessage)
+    if (routeState?.provisionalTitle) setProvisionalTitle(routeState.provisionalTitle)
+  }, [location.state]);
+
+  useEffect(() => {
+    if (firstMessageHandoff && rawMessages?.some(message => message.info.id === firstMessageHandoff.id)) {
+      setFirstMessageHandoff(null)
+    }
+  }, [firstMessageHandoff, rawMessages]);
 
   const messagesContentVersion = useMemo(() => getMessagesContentVersion(messages), [messages]);
 
@@ -291,11 +340,11 @@ export function SessionDetail() {
   }, [inFlightPrompt, messages]);
 
   useEffect(() => {
-    if (!inFlightPrompt || !sessionId || sendPendingPrompt.isPending || !hasCompletedPromptResponse) return;
+    if (isArchived || !inFlightPrompt || !sessionId || sendPendingPrompt.isPending || !hasCompletedPromptResponse) return;
 
     clearPendingSessionPrompt(sessionId);
     setPendingPromptVersion((version) => version + 1);
-  }, [hasCompletedPromptResponse, inFlightPrompt, sendPendingPrompt.isPending, sessionId]);
+  }, [hasCompletedPromptResponse, inFlightPrompt, isArchived, sendPendingPrompt.isPending, sessionId]);
 
   const submitPendingPrompt = useCallback((prompt: StoredPendingSessionPrompt) => {
     if (!sessionId) return;
@@ -352,7 +401,7 @@ export function SessionDetail() {
   }, [sendPendingPrompt, sessionId]);
 
   useEffect(() => {
-    if (!pendingPrompt || !notYetSentPrompt || !sessionId || !isConnected || messagesLoading) return
+    if (!pendingPrompt || !notYetSentPrompt || !sessionId || repoLoading || sessionLoading || !repoDirectory || workspaceMissing || messagesLoading) return
 
     const pendingPromptKey = `${sessionId}:${pendingPrompt.messageID}`
     if (consumedPendingPromptRef.current === pendingPromptKey) return
@@ -361,11 +410,14 @@ export function SessionDetail() {
 
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
   }, [
-    isConnected,
     location.pathname,
     location.search,
     messagesLoading,
     navigate,
+    repoDirectory,
+    repoLoading,
+    sessionLoading,
+    workspaceMissing,
     notYetSentPrompt,
     pendingPrompt,
     sessionId,
@@ -373,7 +425,7 @@ export function SessionDetail() {
   ])
 
   const handleRetryInterruptedPrompt = useCallback(() => {
-    if (!interruptedPrompt || !sessionId || !isConnected) return
+    if (!interruptedPrompt || !sessionId) return
 
     const retryPrompt: StoredPendingSessionPrompt = {
       ...interruptedPrompt,
@@ -383,7 +435,7 @@ export function SessionDetail() {
     savePendingSessionPrompt(sessionId, retryPrompt)
     setPendingPromptVersion((version) => version + 1)
     submitPendingPrompt(retryPrompt)
-  }, [interruptedPrompt, isConnected, sessionId, submitPendingPrompt])
+  }, [interruptedPrompt, sessionId, submitPendingPrompt]);
 
   const handleDiscardInterruptedPrompt = useCallback(() => {
     if (!interruptedPrompt || !sessionId) return
@@ -494,12 +546,12 @@ export function SessionDetail() {
   }, [navigate, repoId, location.search])
 
   const { leaderActive } = useKeyboardShortcuts({
-    openSessions: () => setSessionsPopoverOpen(true),
+    openSessions: openSessionSearch,
     newSession: handleNewSession,
     closeSession: handleCloseSession,
-    compact: handleCompact,
-    undo: handleUndo,
-    redo: handleRedo,
+    compact: isArchived ? undefined : handleCompact,
+    undo: isArchived ? undefined : handleUndo,
+    redo: isArchived ? undefined : handleRedo,
     fork: handleFork,
     toggleSidebar: () => {},
     toggleMode: () => {
@@ -508,13 +560,13 @@ export function SessionDetail() {
       ) as HTMLButtonElement;
       modeButton?.click();
     },
-    submitPrompt: () => {
+    submitPrompt: isArchived ? undefined : () => {
       const submitButton = document.querySelector(
         "[data-submit-prompt]",
       ) as HTMLButtonElement;
       submitButton?.click();
     },
-    abortSession: () => {
+    abortSession: isArchived ? undefined : () => {
       if (sessionId) {
         abortSession.mutate(sessionId);
       }
@@ -559,13 +611,14 @@ export function SessionDetail() {
     return <Navigate to="/" replace />;
   }
 
-  if (repoError || !repo) {
+  if (!isGeneralChatProject && (repoError || !repo)) {
     return <ProjectNotFoundDialog projectId={id} />
   }
 
   const workspaceDisplayName = repo?.name || repo?.directory.split('/').pop() || repo?.directory || 'Workspace';
-  const isGeneralChatProject = repoId === GENERAL_CHAT_PROJECT_ID;
-  const sessionTitle = session?.title || "Untitled Session";
+  const sessionTitle = (session?.title && session.title.toLowerCase() !== 'untitled session'
+    ? session.title
+    : provisionalTitle) || session?.title || "Untitled Session";
   const tabFromUrl = new URLSearchParams(location.search).get('projectTab') ?? undefined;
   const sessionBackPath = getSessionListPath(repoId, tabFromUrl);
 
@@ -628,52 +681,35 @@ export function SessionDetail() {
                     <span className="text-muted-foreground">/</span>
                   </>
                 )}
-                <Popover open={sessionsPopoverOpen} onOpenChange={setSessionsPopoverOpen}>
-                  <PopoverTrigger asChild>
-                     <button
-                       aria-label={`Switch session: ${sessionTitle}`}
-                      className="flex min-w-0 items-center gap-1 rounded px-1 -mx-1 transition-colors hover:bg-accent"
-                      title="Switch session"
-                    >
-                      <span className="truncate bg-gradient-to-r from-foreground to-muted-foreground bg-clip-text text-transparent">{sessionTitle}</span>
-                      <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="h-[min(70vh,34rem)] w-[min(92vw,34rem)] p-0">
-                    {apiUrl && (
-                      <SessionList
-                        apiUrl={apiUrl}
-                        directory={repoDirectory}
-                        activeSessionID={sessionId || undefined}
-                        onSelectSession={(selectedSessionID) => {
-                          navigate(`/projects/${repoId}/sessions/${selectedSessionID}${sessionRouteSuffix}`)
-                          setSessionsPopoverOpen(false)
-                        }}
-                        onNewSession={() => {
-                          handleNewSession()
-                          setSessionsPopoverOpen(false)
-                        }}
-                      />
-                    )}
-                  </PopoverContent>
-                </Popover>
+                <span className="min-w-0 truncate bg-gradient-to-r from-foreground to-muted-foreground bg-clip-text text-transparent">
+                  {sessionTitle}
+                </span>
               </div>
             </div>
           </div>
           <Header.Actions className="gap-2 sm:gap-4">
             <div className="flex items-center gap-1">
-              <PendingActionsGroup />
+              <PendingActionsGroup showNotifications={false} />
             </div>
-             <ContextUsageIndicator
+            <ContextUsageIndicator
               apiUrl={apiUrl}
               sessionID={sessionId}
               directory={repoDirectory}
-               isConnected={isConnected}
-               isReconnecting={isReconnecting}
-               messages={messages}
-               onDownloadTranscript={(format) => void handleExport(format)}
-               isDownloadingTranscript={exportingFormat !== null}
-             />
+              messages={messages}
+              onDownloadTranscript={(format) => void handleExport(format)}
+              isDownloadingTranscript={exportingFormat !== null}
+            />
+            <Button
+              ref={workspaceTriggerRef}
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Open session side panel"
+              title="Open session side panel"
+              onClick={() => setWorkspaceOpenRequest(request => request + 1)}
+            >
+              <PanelRightOpen className="h-4 w-4" />
+            </Button>
             <SessionMoreButton />
           </Header.Actions>
         </Header>
@@ -685,9 +721,9 @@ export function SessionDetail() {
 
       <div className="relative flex-1 overflow-hidden flex flex-col">
         <div key={sessionId} ref={messageContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,black_16px,black)]" style={{ paddingBottom: promptOverlayHeight + inputBottomOffset + PROMPT_OVERLAY_CLEARANCE_PX }}>
-          {repoLoading || sessionLoading || messagesLoading ? (
+          {(repoLoading || sessionLoading || messagesLoading) && !firstMessageHandoff ? (
             <MessageSkeleton />
-          ) : apiUrl && repoDirectory ? (
+          ) : apiUrl && (repoDirectory || firstMessageHandoff) ? (
             <MessageThread 
               apiUrl={apiUrl} 
               sessionID={sessionId} 
@@ -697,7 +733,9 @@ export function SessionDetail() {
               sessionStartedAt={session?.time?.created}
               model={modelString || undefined}
               suggestionsByAssistantId={suggestionsByAssistantId}
-              onSuggestionSelect={handleSuggestionSelect}
+              onSuggestionSelect={isArchived ? undefined : handleSuggestionSelect}
+              agentPreferences={sessionAgent.preferences}
+              readOnly={isArchived}
             />
           ) : null}
         </div>
@@ -715,14 +753,14 @@ export function SessionDetail() {
                   <span className="text-sm font-medium">Waiting for shortcut key...</span>
                 </div>
               )}
-              {minimizedQuestion && minimizedQuestion.sessionID === sessionId && (
+              {!isArchived && minimizedQuestion && minimizedQuestion.sessionID === sessionId && (
                 <MinimizedQuestionIndicator
                   question={minimizedQuestion}
                   onRestore={handleRestoreQuestion}
                   onDismiss={() => rejectQuestion(minimizedQuestion.id)}
                 />
               )}
-              {!minimizedQuestion && currentQuestion && currentQuestion.sessionID === sessionId && (
+              {!isArchived && !minimizedQuestion && currentQuestion && currentQuestion.sessionID === sessionId && (
                 <QuestionPrompt
                   key={currentQuestion.id}
                   question={currentQuestion}
@@ -731,7 +769,7 @@ export function SessionDetail() {
                   onMinimize={() => handleMinimizeQuestion(currentQuestion)}
                 />
               )}
-              {activePermission && (
+              {!isArchived && activePermission && (
                 <PermissionRequestDialog
                   key={activePermission.id}
                   permission={activePermission}
@@ -743,7 +781,7 @@ export function SessionDetail() {
                 />
               )}
               <SessionSendErrorBanner sessionId={sessionId} />
-              {interruptedPrompt && (
+              {interruptedPrompt && !isArchived && (
                 <div
                   role="alert"
                   data-testid="interrupted-prompt-state"
@@ -759,7 +797,7 @@ export function SessionDetail() {
                       type="button"
                       size="sm"
                       onClick={handleRetryInterruptedPrompt}
-                      disabled={!isConnected || sendPendingPrompt.isPending}
+                      disabled={sendPendingPrompt.isPending}
                     >
                       Retry
                     </Button>
@@ -778,24 +816,36 @@ export function SessionDetail() {
                 <div className="mb-2 rounded-xl border border-border bg-muted/60 px-3 py-2" data-testid="enqueued-card">
                   <div className="mb-2 flex items-center justify-between">
                     <span className="text-sm font-medium">Enqueued</span>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => clearQueue.mutate({ sessionID: sessionId! })}>Clear</Button>
+                    {!isArchived && <Button type="button" variant="ghost" size="sm" onClick={() => clearQueue.mutate({ sessionID: sessionId! })}>Clear</Button>}
                   </div>
                   <div className="space-y-1">
                     {queuedEntries.map((entry, index) => (
                       <div key={entry.clientId} className="flex items-center gap-2 rounded-lg bg-background/60 px-2 py-1.5 text-sm">
                         <span className="min-w-0 flex-1 truncate">{entry.content}</span>
-                        {entry.state === 'failed' && <Button type="button" variant="ghost" size="sm" onClick={() => retryQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId })}>Retry</Button>}
-                        <Button type="button" variant="ghost" size="sm" aria-label="Move queued message up" disabled={index === 0} onClick={() => reorderQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId, position: index - 1 })}>Up</Button>
-                        <Button type="button" variant="ghost" size="sm" aria-label="Move queued message down" disabled={index === queuedEntries.length - 1} onClick={() => reorderQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId, position: index + 1 })}>Down</Button>
-                        <Button type="button" variant="ghost" size="sm" onClick={() => removeQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId })}>Remove</Button>
+                        {!isArchived && entry.state === 'failed' && <Button type="button" variant="ghost" size="sm" onClick={() => retryQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId })}>Retry</Button>}
+                        {!isArchived && <>
+                          <Button type="button" variant="ghost" size="sm" aria-label="Move queued message up" disabled={index === 0} onClick={() => reorderQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId, position: index - 1 })}>Up</Button>
+                          <Button type="button" variant="ghost" size="sm" aria-label="Move queued message down" disabled={index === queuedEntries.length - 1} onClick={() => reorderQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId, position: index + 1 })}>Down</Button>
+                          <Button type="button" variant="ghost" size="sm" onClick={() => removeQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId })}>Remove</Button>
+                        </>}
                       </div>
                     ))}
                   </div>
                 </div>
               )}
-              {!workspaceMissing && sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} projectRouteId={repoId > 0 ? String(repoId) : undefined} />}
+              {!workspaceMissing && sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} projectRouteId={repoId > 0 ? String(repoId) : undefined} openRequest={workspaceOpenRequest} openButtonRef={workspaceTriggerRef} />}
               {!workspaceMissing && sessionId && !isGeneralChatProject && <div className="pb-2"><CreateWorktreeDialog key={sessionId} sessionId={sessionId} agent={sessionAgent.agent} /></div>}
-              <ChatInputBar
+              {isReconnecting && !isConnected && (
+                <div role="status" aria-live="polite" className="mx-auto mb-2 flex w-full max-w-3xl items-center justify-between gap-3 rounded-full border border-border bg-muted/70 px-3 py-2 text-xs">
+                  <span className="font-medium text-foreground">Connection interrupted</span>
+                  <span className="whitespace-nowrap text-muted-foreground">Attempting to reconnect in {reconnectInSeconds} s</span>
+                </div>
+              )}
+              {isArchived ? (
+                <div role="status" className="mx-auto mb-2 w-full rounded-xl border border-border bg-muted/70 px-4 py-3 text-center text-sm text-muted-foreground">
+                  Archived session · read-only
+                </div>
+              ) : <ChatInputBar
                 ref={promptInputRef}
                 directory={repoDirectory}
                 defaultProjectId={repoId.toString()}
@@ -806,7 +856,7 @@ export function SessionDetail() {
                 disabled={!isConnected}
                 isSessionActive={isStreamingResponse}
                 onScrollToBottom={scrollToBottom}
-              />
+              />}
             </div>
           </div>
         )}

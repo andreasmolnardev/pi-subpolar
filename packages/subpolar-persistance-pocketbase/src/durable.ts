@@ -22,7 +22,7 @@ import type {
   ToolDefinitionRepository,
   ToolPolicyRecord,
   ToolPolicyRepository,
-} from "../../subpolar-contracts/src/index.ts";
+} from "@subpolar/contracts";
 export type {
   ApprovalClaim,
   ApprovalClaimRepository,
@@ -43,7 +43,7 @@ export type {
   ToolPolicyInput,
   ToolPolicyRecord,
   ToolPolicyRepository,
-} from "../../subpolar-contracts/src/index.ts";
+} from "@subpolar/contracts";
 
 import type {
   PocketBaseAtomicClaimPort,

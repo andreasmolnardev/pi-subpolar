@@ -1,4 +1,6 @@
-import { fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
+import { fetchWrapper, fetchWrapperVoid, fetchForSubpolarClient } from './fetchWrapper'
+import { assertAuthGeneration, getAuthGeneration } from '@/stores/authIdentityStore'
+import { SubpolarClient } from '@subpolar/client'
 import { API_BASE_URL } from '@/config'
 import type { GeneralChatStatus, GeneralChatInitRequest } from '@subpolar/shared/types'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
@@ -23,9 +25,20 @@ export function hasProjectId(project: Project): project is Project & { id: numbe
   return typeof project.id === 'number' && Number.isFinite(project.id)
 }
 
+const sharedApiClient = new SubpolarClient({
+  baseUrl: API_BASE_URL || globalThis.location?.origin || 'http://localhost',
+  fetch: fetchForSubpolarClient,
+})
+
 export async function listProjects(): Promise<Project[]> {
-  const res = await fetchWrapper<{ projects: Project[] }>(`${API_BASE_URL}/api/projects`)
-  return res.projects
+  return await sharedApiClient.listProjects() as unknown as Project[]
+}
+
+export async function fetchProjectRepository(projectId: string): Promise<Record<string, unknown>> {
+  const generation = getAuthGeneration()
+  const repository = await sharedApiClient.repository(projectId)
+  assertAuthGeneration(generation)
+  return repository
 }
 
 export async function getProject(id: number): Promise<Project> {
@@ -43,8 +56,7 @@ export async function getProject(id: number): Promise<Project> {
     }
   }
 
-  const res = await fetchWrapper<{ project: Project }>(`${API_BASE_URL}/api/projects/${id}`)
-  return res.project
+  return await sharedApiClient.getProject(id) as unknown as Project
 }
 
 export async function createProject(data: {
@@ -53,22 +65,28 @@ export async function createProject(data: {
   piConfigName?: string
   agentNames?: string[]
 }): Promise<Project> {
-  return fetchWrapper(`${API_BASE_URL}/api/projects`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
+  if (data.piConfigName !== undefined) {
+    return fetchWrapper(`${API_BASE_URL}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  }
+  return await sharedApiClient.createProject(data) as unknown as Project
 }
 
 export async function updateProject(
   id: number,
   data: { name?: string; directory?: string; piConfigName?: string; agentNames?: string[] },
 ): Promise<Project> {
-  return fetchWrapper(`${API_BASE_URL}/api/projects/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
+  if (data.piConfigName !== undefined) {
+    return fetchWrapper(`${API_BASE_URL}/api/projects/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  }
+  return await sharedApiClient.updateProject(id, data) as unknown as Project
 }
 
 export async function getDefaultProjectDirectory(projectName: string, userId?: string): Promise<string> {
@@ -105,9 +123,7 @@ export async function loadMentionContext(directory: string, mentions: MentionCon
 }
 
 export async function deleteProject(id: number): Promise<void> {
-  return fetchWrapperVoid(`${API_BASE_URL}/api/projects/${id}`, {
-    method: 'DELETE',
-  })
+  await sharedApiClient.deleteProject(id)
 }
 
 export async function touchProjectActivity(id: number): Promise<void> {

@@ -60,6 +60,7 @@ export const DEFAULT_USER_PREFERENCES = {
   expandToolCalls: false,
   showReasoning: false,
   simpleChatMode: false,
+  generateSessionEmoji: false,
   defaultModels: {},
   hiddenSidebarAgents: ['auto', 'compaction', 'summary', 'title'],
   hiddenChatInputAgents: ['compaction', 'summary', 'title'],

@@ -11,6 +11,7 @@ import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, For
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Plus, Trash2 } from 'lucide-react'
 import type { AgentSkillAccess, SkillDiscoveryMode, SkillFileInfo } from '@subpolar/shared'
 import { buildAgentPromptPreview } from '@/lib/agentPromptPreview'
@@ -44,6 +45,7 @@ const agentFormSchema = z.object({
   thinking: z.enum(['off', 'minimal', 'low', 'medium', 'high']),
   approval_mode: z.enum(['auto', 'ask', 'deny']),
   developmentWorkflow: z.boolean(),
+  simpleChatMode: z.enum(['inherit', 'on', 'off']),
 })
 
 type AgentFormValues = z.infer<typeof agentFormSchema>
@@ -76,6 +78,7 @@ interface Agent {
   thinking?: 'off' | 'minimal' | 'low' | 'medium' | 'high'
   approval_mode?: 'auto' | 'ask' | 'deny'
   skill_context_modes?: Record<string, 'always-loaded' | 'discoverable' | 'explicit-only' | 'disabled'>
+  preferences?: Record<string, unknown>
   [key: string]: unknown
 }
 
@@ -156,6 +159,7 @@ interface AgentDialogProps {
 export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availableSkills = [] }: AgentDialogProps) {
   const [selectedToolIndex, setSelectedToolIndex] = useState(0)
   const [selectedSkillIndex, setSelectedSkillIndex] = useState(0)
+  const [activeTab, setActiveTab] = useState<'profile' | 'preferences'>('profile')
 
   const { data: subpolarToolsResponse } = useQuery({
     queryKey: ['subpolar-tools'],
@@ -200,6 +204,9 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
       thinking: agent?.agent.thinking || 'medium',
       approval_mode: agent?.agent.approval_mode || 'ask',
       developmentWorkflow: agent?.agent.skill_context_modes?.['development-workflow'] === 'explicit-only',
+      simpleChatMode: agent?.agent.preferences?.simpleChatMode === true
+        ? 'on'
+        : agent?.agent.preferences?.simpleChatMode === false ? 'off' : 'inherit',
     }
   }, [policies])
 
@@ -214,6 +221,7 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
       form.reset(getDefaultValues(editingAgent))
       setSelectedToolIndex(0)
       setSelectedSkillIndex(0)
+      setActiveTab('profile')
     }
   }, [open, editingAgent, form, getDefaultValues])
 
@@ -315,6 +323,10 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
       ,skill_context_modes: {
         ...(editingAgent?.agent.skill_context_modes ?? {}),
         'development-workflow': values.developmentWorkflow ? 'explicit-only' : 'disabled',
+      },
+      preferences: {
+        ...(editingAgent?.agent.preferences ?? {}),
+        simpleChatMode: values.simpleChatMode === 'inherit' ? null : values.simpleChatMode === 'on',
       }
     }
 
@@ -405,6 +417,12 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
 
         <div className="flex-1 overflow-y-auto p-2 sm:p-4">
           <Form {...form}>
+            <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'profile' | 'preferences')} className="flex flex-col gap-4">
+              <TabsList className="justify-start">
+                <TabsTrigger value="profile">Agent Profile</TabsTrigger>
+                <TabsTrigger value="preferences">Agent Preferences</TabsTrigger>
+              </TabsList>
+              <TabsContent value="profile" className="mt-0 px-0">
             <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
             <div className="min-w-0 space-y-4">
               <div className="grid grid-cols-[minmax(3.25rem,auto)_1fr] gap-3 items-start">
@@ -714,6 +732,36 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
               <pre className="whitespace-pre-wrap break-words text-xs font-mono text-muted-foreground">{systemPromptValue.trim() || promptPreview}</pre>
             </div>
             </div>
+              </TabsContent>
+              <TabsContent value="preferences" className="mt-0 px-0">
+                <div className="max-w-3xl space-y-4">
+                  <div>
+                    <h3 className="text-base font-semibold">Chat display</h3>
+                    <p className="text-sm text-muted-foreground">Override chat presentation for sessions using this agent.</p>
+                  </div>
+                  <FormField
+                    control={form.control}
+                    name="simpleChatMode"
+                    render={({ field }) => (
+                      <FormItem className="flex flex-row items-center justify-between gap-4 rounded-lg border p-4">
+                        <div className="space-y-0.5">
+                          <FormLabel className="text-base">Simple chat mode</FormLabel>
+                          <FormDescription>Hide tool calls, reasoning, diffs, and agent details in this agent’s chats.</FormDescription>
+                        </div>
+                        <Select value={field.value} onValueChange={field.onChange}>
+                          <FormControl><SelectTrigger className="w-44"><SelectValue /></SelectTrigger></FormControl>
+                          <SelectContent>
+                            <SelectItem value="inherit">Use global setting</SelectItem>
+                            <SelectItem value="on">On</SelectItem>
+                            <SelectItem value="off">Off</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              </TabsContent>
+            </Tabs>
           </Form>
         </div>
 

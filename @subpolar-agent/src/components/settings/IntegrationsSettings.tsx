@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Github, Loader2, Network, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import { Github, GripVertical, Loader2, Network, Pencil, Plus, Search, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -47,7 +47,7 @@ type IntegrationConfig =
     })
   | (IntegrationBase & {
       type: 'web-search'
-      providers: Array<'exa' | 'firecrawl'>
+      providers: Array<'exa' | 'duckduckgo' | 'firecrawl' | 'parallel'>
     })
 
 type IntegrationType = IntegrationConfig['type']
@@ -55,7 +55,7 @@ type IntegrationType = IntegrationConfig['type']
 const integrationTypes: Record<IntegrationType, { label: string; description: string }> = {
   mcp: { label: 'MCP', description: 'Model Context Protocol server access for agent tools' },
   openapi: { label: 'OpenAPI', description: 'OpenAPI JSON operations exposed as agent tools' },
-  'web-search': { label: 'Web Search', description: 'Keyless Exa and Firecrawl MCP providers for the web.search agent tool' },
+  'web-search': { label: 'Web Search', description: 'Exa, DuckDuckGo, and Firecrawl providers for the web.search agent tool' },
 }
 
 function createIntegration(type: IntegrationType): IntegrationConfig {
@@ -135,12 +135,24 @@ function IntegrationDialog({ open, initialType, integration, isSaving, onOpenCha
   const [commandText, setCommandText] = useState('[]')
   const [discoveredTools, setDiscoveredTools] = useState<Array<{ toolId: string; method: string; path: string; description: string }>>([])
   const [isDiscoveringOpenApi, setIsDiscoveringOpenApi] = useState(false)
+  const [apiKeyDrafts, setApiKeyDrafts] = useState<Partial<Record<'exa' | 'firecrawl' | 'parallel', string>>>({})
+  const [showApiKey, setShowApiKey] = useState<Partial<Record<'exa' | 'firecrawl' | 'parallel', boolean>>>({})
+  const [deleteApiKey, setDeleteApiKey] = useState<Partial<Record<'exa' | 'firecrawl' | 'parallel', boolean>>>({})
+  const [draggingProvider, setDraggingProvider] = useState<string | null>(null)
+  const credentialStatus = useQuery({
+    queryKey: ['web-search-credential-status'],
+    queryFn: settingsApi.getWebSearchCredentialStatus,
+    enabled: open && formData.type === 'web-search',
+  })
 
   useEffect(() => {
     if (!open) return
     setFormData(integration ?? createIntegration(initialType))
     setCommandText(formatMcpCommand(integration?.type === 'mcp' ? integration.command : []))
     setDiscoveredTools([])
+    setApiKeyDrafts({})
+    setShowApiKey({})
+    setDeleteApiKey({})
   }, [open, initialType, integration])
 
   const updateField = (field: string, value: string | number | boolean | string[] | Record<string, string> | undefined) => {
@@ -179,8 +191,20 @@ function IntegrationDialog({ open, initialType, integration, isSaving, onOpenCha
       return
     }
 
-    await onSave(integrationToSave)
-    onOpenChange(false)
+    try {
+      await onSave(integrationToSave)
+      if (formData.type === 'web-search') {
+        const drafts = Object.fromEntries(Object.entries(apiKeyDrafts).filter(([provider, value]) => value?.trim() && !deleteApiKey[provider as 'exa' | 'firecrawl' | 'parallel'])) as Partial<Record<'exa' | 'firecrawl' | 'parallel', string>>
+        if (Object.keys(drafts).length) await settingsApi.saveWebSearchCredentials(drafts)
+        for (const provider of Object.keys(deleteApiKey) as Array<'exa' | 'firecrawl' | 'parallel'>) {
+          if (deleteApiKey[provider]) await settingsApi.deleteWebSearchCredential(provider)
+        }
+        if (Object.keys(drafts).length || Object.values(deleteApiKey).some(Boolean)) await credentialStatus.refetch()
+      }
+      onOpenChange(false)
+    } catch {
+      showToast.error('Failed to save web search credentials')
+    }
   }
 
   const discoverOpenApi = async () => {
@@ -194,6 +218,10 @@ function IntegrationDialog({ open, initialType, integration, isSaving, onOpenCha
       showToast.error(error instanceof Error ? error.message : 'OpenAPI discovery failed')
     } finally { setIsDiscoveringOpenApi(false) }
   }
+
+  const webSearchProviderOrder = formData.type === 'web-search'
+    ? [...formData.providers, ...(['exa', 'duckduckgo', 'firecrawl', 'parallel'] as const).filter((provider) => !formData.providers.includes(provider))]
+    : []
 
 
   return (
@@ -234,24 +262,63 @@ function IntegrationDialog({ open, initialType, integration, isSaving, onOpenCha
 
             {formData.type === 'web-search' && (
               <div className="space-y-3 rounded-lg border border-border p-3">
-                <p className="text-sm text-muted-foreground">Keyless hosted MCP servers. Agents call providers in order and fall back when one is unavailable.</p>
-                {(['exa', 'firecrawl'] as const).map((provider) => {
+                <p className="text-sm text-muted-foreground">Enabled providers are tried in order and the next provider is used if one is unavailable. Drag providers to change priority. DuckDuckGo scrapes public results and does not use an API key.</p>
+                {webSearchProviderOrder.map((provider) => {
                   const enabled = formData.providers.includes(provider)
-                  const name = provider === 'exa' ? 'Exa' : 'Firecrawl'
+                  const name = provider === 'exa' ? 'Exa' : provider === 'duckduckgo' ? 'DuckDuckGo' : provider === 'firecrawl' ? 'Firecrawl' : 'Parallel'
+                  const supportsKey = provider !== 'duckduckgo'
+                  const configured = provider === 'duckduckgo' ? false : credentialStatus.data?.configured[provider]
                   return (
-                    <div key={provider} className="flex items-center justify-between gap-3">
-                      <div>
-                        <Label htmlFor={`web-search-${provider}`}>{name} MCP</Label>
-                        <p className="text-xs text-muted-foreground">Free, rate-limited access</p>
+                    <div key={provider} className="space-y-2">
+                      <div
+                        className={`flex items-center justify-between gap-3 rounded-md px-1 py-1 ${draggingProvider === provider ? 'opacity-50' : ''}`}
+                        draggable={enabled && !isSaving}
+                        onDragStart={() => setDraggingProvider(provider)}
+                        onDragEnd={() => setDraggingProvider(null)}
+                        onDragOver={(event) => { if (draggingProvider && enabled) event.preventDefault() }}
+                        onDrop={(event) => {
+                          event.preventDefault()
+                          if (!draggingProvider || !enabled || draggingProvider === provider) return
+                          const next = [...formData.providers]
+                          const from = next.indexOf(draggingProvider as typeof provider)
+                          const to = next.indexOf(provider)
+                          if (from >= 0 && to >= 0) {
+                            const [moved] = next.splice(from, 1)
+                            next.splice(to, 0, moved!)
+                            updateField('providers', next)
+                          }
+                          setDraggingProvider(null)
+                        }}
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <GripVertical className={`h-4 w-4 shrink-0 ${enabled ? 'cursor-grab text-muted-foreground' : 'text-muted-foreground/40'}`} aria-label={enabled ? `Drag ${name} to change priority` : undefined} />
+                          <div className="min-w-0">
+                            <Label htmlFor={`web-search-${provider}`}>{name}{provider === 'duckduckgo' ? '' : ' MCP'}</Label>
+                            <p className="text-xs text-muted-foreground">{provider === 'duckduckgo' ? 'Keyless HTML scraping; experimental' : configured ? 'API key saved' : 'Optional API key; free tier available'}</p>
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {supportsKey && (
+                            <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label={`${configured ? 'Replace' : 'Add'} ${name} API key`} onClick={() => setShowApiKey((current) => ({ ...current, [provider]: !current[provider] }))} disabled={isSaving}>
+                              <Plus className="h-4 w-4" />
+                            </Button>
+                          )}
+                          <Switch
+                            id={`web-search-${provider}`}
+                            checked={enabled}
+                            onCheckedChange={(checked) => updateField('providers', checked
+                              ? [...formData.providers.filter((item) => item !== provider), provider]
+                              : formData.providers.filter((item) => item !== provider))}
+                            disabled={isSaving || !formData.enabled}
+                          />
+                        </div>
                       </div>
-                      <Switch
-                        id={`web-search-${provider}`}
-                        checked={enabled}
-                        onCheckedChange={(checked) => updateField('providers', checked
-                          ? [...formData.providers.filter((item) => item !== provider), provider]
-                          : formData.providers.filter((item) => item !== provider))}
-                        disabled={isSaving || !formData.enabled}
-                      />
+                      {supportsKey && showApiKey[provider] && (
+                        <div className="ml-6 flex items-center gap-2">
+                          <Input type="password" autoComplete="new-password" value={apiKeyDrafts[provider] ?? ''} onChange={(event) => setApiKeyDrafts((current) => ({ ...current, [provider]: event.target.value }))} placeholder={configured ? 'Enter a new key to replace the saved key' : `${name} API key`} disabled={isSaving} />
+                          {configured && <Button type="button" variant={deleteApiKey[provider] ? 'destructive' : 'outline'} size="icon" className="h-9 w-9 shrink-0" aria-label={deleteApiKey[provider] ? `Keep ${name} API key` : `Remove ${name} API key`} onClick={() => setDeleteApiKey((current) => ({ ...current, [provider]: !current[provider] }))} disabled={isSaving}><X className="h-4 w-4" /></Button>}
+                        </div>
+                      )}
                     </div>
                   )
                 })}

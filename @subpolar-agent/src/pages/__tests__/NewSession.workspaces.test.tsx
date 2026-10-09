@@ -17,7 +17,7 @@ vi.mock('@/api/new-session', () => ({ resolveNewSessionContext: mocks.resolveCon
 vi.mock('@/api/git', () => ({ fetchRepositoryBranches: mocks.fetchBranches, fetchRepositoryWorktrees: mocks.fetchWorktrees }))
 vi.mock('@/api/worktrees', () => ({ worktreesApi: { create: mocks.createWorktree } }))
 vi.mock('@/api/providers', () => ({ getProviders: mocks.getProviders }))
-vi.mock('@/hooks/usePiHarness', () => ({ useAgents: () => ({ data: [] }) }))
+vi.mock('@/hooks/usePiDurableHarness', () => ({ useAgents: () => ({ data: [] }) }))
 vi.mock('@/hooks/useSettings', () => ({ useSettings: () => ({ preferences: {} }) }))
 vi.mock('@/hooks/useSidebarAction', () => ({ useSidebarAction: vi.fn() }))
 vi.mock('@/components/chat/ChatInputBar', () => ({

@@ -1,9 +1,19 @@
 import type { paths } from './opencode-types'
-import { FetchError, fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
+import { SubpolarClient as SharedSubpolarClient } from '@subpolar/client'
+import { API_BASE_URL } from '@/config'
+import { FetchError, fetchForSubpolarClient, fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
+
+const sharedApiClient = new SharedSubpolarClient({
+  baseUrl: API_BASE_URL || globalThis.location?.origin || 'http://localhost',
+  fetch: fetchForSubpolarClient,
+})
 
 type SessionListResponse = paths['/session']['get']['responses']['200']['content']['application/json']
 type SessionResponse = paths['/session/{sessionID}']['get']['responses']['200']['content']['application/json']
 type SessionListParams = NonNullable<paths['/session']['get']['parameters']['query']> & {
+  project?: string
+  order?: 'asc' | 'desc'
+  cursor?: string
   roots?: boolean
 }
 type CreateSessionRequest = NonNullable<paths['/session']['post']['requestBody']>['content']['application/json']
@@ -111,47 +121,50 @@ export class SubpolarClient {
   }
 
   async listSessions(params?: SessionListParams) {
-    const response = await fetchWrapper<{ sessions: Array<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }> }>(`${this.baseURL}/sessions`, { params: this.getParams(params) })
-    return response.sessions.map(session => this.toLegacySession(session)) as SessionListResponse
+    const directory = this.directory || params?.directory
+    const response = await sharedApiClient.listSessions({
+      ...(params?.project !== undefined && { project: String(params.project) }),
+      ...(directory !== undefined && { directory }),
+      ...(params?.search !== undefined && { search: params.search }),
+      ...(params?.order !== undefined && { order: params.order }),
+      ...(params?.limit !== undefined && { limit: params.limit }),
+      ...(params?.cursor !== undefined && { cursor: params.cursor }),
+    })
+    return response.sessions.map(session => this.toLegacySession(session as Parameters<typeof this.toLegacySession>[0])) as SessionListResponse
   }
 
   async listSessionsPage(params?: SessionPageParams): Promise<SessionPage> {
-    const isCursorRequest = params?.cursor !== undefined
-    const queryParams = isCursorRequest
-      ? this.getParams({ cursor: params.cursor })
-      : this.getParams({
-          ...(params?.limit !== undefined && { limit: params.limit }),
-          ...(params?.order !== undefined && { order: params.order }),
-          ...(params?.search !== undefined && { search: params.search }),
-        })
-    const response = await fetchWrapper<{ sessions: Array<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }>; nextCursor?: string; page?: SessionPage['page'] }>(`${this.baseURL}/sessions`, { params: queryParams })
+    const response = await sharedApiClient.listSessions({
+      ...(this.directory && { directory: this.directory }),
+      ...(params?.cursor !== undefined
+        ? { cursor: params.cursor }
+        : {
+            ...(params?.limit !== undefined && { limit: params.limit }),
+            ...(params?.order !== undefined && { order: params.order }),
+            ...(params?.search !== undefined && { search: params.search }),
+          }),
+    })
     return {
-      items: response.sessions.map((item) => this.toLegacySession(item)),
+      items: response.sessions.map((item) => this.toLegacySession(item as Parameters<typeof this.toLegacySession>[0])),
       nextCursor: response.nextCursor ?? response.page?.nextCursor,
       page: response.page,
     }
   }
 
   async getSession(sessionID: string): Promise<LegacySession> {
-    const session = await fetchWrapper<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all'; workspaceAvailable?: boolean; revert?: SessionResponse['revert'] }>(`${this.baseURL}/sessions/${sessionID}`, { params: this.getParams() })
-    return this.toLegacySession(session)
+    const session = await sharedApiClient.getSession(sessionID, {
+      ...(this.directory && { directory: this.directory }),
+    })
+    return this.toLegacySession(session as Parameters<typeof this.toLegacySession>[0])
   }
 
   async createSession(data: NewSessionCreateRequest): Promise<LegacySession> {
-    const response = await fetchWrapper<{ session: { id: string; runtime: string; runtimeSessionId: string | null; title?: string; directory?: string; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all' } }>(`${this.baseURL}/sessions`, {
-      method: 'POST',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...data, directory: this.directory, runtime: 'pi' }),
-    })
-    return this.toLegacySession({ ...response.session, title: response.session.title ?? 'Untitled Session', directory: response.session.directory ?? this.directory })
+    const session = await sharedApiClient.createSession({ ...data, directory: this.directory })
+    return this.toLegacySession({ ...session, title: session.title ?? 'Untitled Session', directory: session.directory ?? this.directory })
   }
 
   async deleteSession(sessionID: string) {
-    return fetchWrapperVoid(`${this.baseURL}/sessions/${sessionID}`, {
-      method: 'DELETE',
-      params: this.getParams(),
-    })
+    await sharedApiClient.deleteSession(sessionID, { directory: this.directory })
   }
 
   async deleteWorkspace(workspaceID: string) {
@@ -162,21 +175,13 @@ export class SubpolarClient {
   }
 
   async archiveSession(sessionID: string, archived: boolean) {
-    return fetchWrapper(`${this.baseURL}/sessions/${sessionID}`, {
-      method: 'PATCH',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ archived }),
-    })
+    const session = await sharedApiClient.updateSession(sessionID, { archived }, { directory: this.directory })
+    return { session }
   }
 
   async updateSession(sessionID: string, data: { title?: string }) {
-    return fetchWrapper(`${this.baseURL}/sessions/${sessionID}`, {
-      method: 'PATCH',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    })
+    const session = await sharedApiClient.updateSession(sessionID, data, { directory: this.directory })
+    return { session }
   }
 
   async forkSession(sessionID: string, messageID?: string) {
@@ -189,18 +194,15 @@ export class SubpolarClient {
   }
 
   async abortSession(sessionID: string) {
-    return fetchWrapper(`${this.baseURL}/runs/${sessionID}/cancel`, {
-      method: 'POST',
-      params: this.getParams(),
-    })
+    return sharedApiClient.abortRun(sessionID)
   }
 
-  async listMessages(sessionID: string) {
-    const response = await fetchWrapper<{ messages: Array<{ id?: string; role?: string; content?: string; createdAt?: number; metadata?: Record<string, unknown>; info?: MessageListResponse[number]['info']; parts?: MessageListResponse[number]['parts'] }> }>(`${this.baseURL}/sessions/${sessionID}/messages`, { params: this.getParams() })
-    if (response.messages.every((message) => message.info && Array.isArray(message.parts))) {
-      return response.messages.map((message) => ({ info: message.info!, parts: message.parts! })) as MessageListResponse
+  async listMessages(sessionID: string): Promise<MessageListResponse> {
+    const messages = await sharedApiClient.messages(sessionID)
+    if (messages.every((message) => message.info && Array.isArray(message.parts))) {
+      return messages.map((message) => ({ info: message.info!, parts: message.parts! })) as MessageListResponse
     }
-    return response.messages.map(message => {
+    return messages.map(message => {
       const userMetadata = message.role === 'user' ? getUserMessageMetadata(message.metadata) : {}
       const reasoning = typeof message.metadata?.reasoning === 'string' ? message.metadata.reasoning : ''
       const completedAt = typeof message.metadata?.completedAt === 'number' ? message.metadata.completedAt : undefined
@@ -355,7 +357,6 @@ export class SubpolarClient {
   }
 
   private async createNativeMessageAndRun(sessionID: string, data: SendPromptRequest | SendPromptAsyncRequest): Promise<{ messageID: string; state: string }> {
-    const requestedAt = Date.now()
     const prompt = typeof data === 'object' && data && 'parts' in data && Array.isArray(data.parts)
       ? data.parts.map((part) => 'text' in part && typeof part.text === 'string' ? part.text : '').join('\n')
       : typeof data === 'object' && data && 'text' in data
@@ -366,42 +367,22 @@ export class SubpolarClient {
     const permission = typeof data === 'object' && data && 'permission' in data ? data.permission : undefined
     const routing = typeof data === 'object' && data && 'routing' in data && data.routing === true
     const messageID = typeof data === 'object' && data && 'messageID' in data ? data.messageID : undefined
-    const message = await fetchWrapper<{ messageID?: string; state?: string }>(`${this.baseURL}/sessions/${sessionID}/messages`, {
-      method: 'POST',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        role: 'user',
-        content: prompt,
-        createdAt: requestedAt,
-        ...(messageID ? { messageID } : {}),
-        metadata: {
-          ...(agent ? { agent } : {}),
-          ...(model ? { model } : {}),
-          ...(permission ? { permission } : {}),
-          ...(routing ? { routing: true } : {}),
-        },
-      }),
-      timeout: 0,
-    })
-    const serverMessageID = message.messageID ?? (typeof data === 'object' && data && 'messageID' in data && typeof data.messageID === 'string' ? data.messageID : undefined)
-    const deliveryMessageID = serverMessageID ?? `native_${Date.now()}_${Math.random()}`
-    const delivery = await fetchWrapper<Record<string, unknown>>(`${this.baseURL}/sessions/${sessionID}/runs`, {
-      method: 'POST',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        runtime: 'pi',
-        agentId: agent ?? 'default',
-        model,
-        permissionOverride: permission,
-        messageID: deliveryMessageID,
-        requestedAt,
-      }),
-      timeout: 0,
+    const delivery = await sharedApiClient.run(sessionID, prompt, {
+      ...(typeof messageID === 'string' && messageID ? { messageID } : {}),
+      metadata: {
+        ...(agent ? { agent } : {}),
+        ...(model ? { model } : {}),
+        ...(permission ? { permission } : {}),
+        ...(routing ? { routing: true } : {}),
+      },
     })
     const metadata = isRecord(delivery.delivery) ? delivery.delivery : delivery
     const state = typeof metadata.state === 'string' ? metadata.state : 'completed'
+    const deliveryMessageID = typeof metadata.messageID === 'string'
+      ? metadata.messageID
+      : typeof messageID === 'string' && messageID
+      ? messageID
+      : `native_${Date.now()}_${Math.random()}`
     if (state === 'interrupted' || state === 'unknown') {
       const error = isRecord(metadata.error) ? metadata.error : {}
       const message = typeof error.message === 'string'
@@ -415,7 +396,7 @@ export class SubpolarClient {
         { delivery: metadata, recoverable: true },
       )
     }
-    return { messageID: typeof metadata.messageID === 'string' ? metadata.messageID : deliveryMessageID, state }
+    return { messageID: deliveryMessageID, state }
   }
 
   async summarizeSession(sessionID: string, providerID: string, modelID: string) {
@@ -428,10 +409,7 @@ export class SubpolarClient {
   }
 
   async getConfig() {
-    const response = await fetchWrapper<{ preferences?: Record<string, unknown> }>(`${this.baseURL}/settings`, {
-      params: this.getParams(),
-    })
-    const preferences = response.preferences ?? {}
+    const { preferences } = await sharedApiClient.getSettings()
     return {
       model: typeof preferences.defaultModel === 'string' ? preferences.defaultModel : undefined,
       default_agent: typeof preferences.defaultAgent === 'string' ? preferences.defaultAgent : 'master',
@@ -446,13 +424,8 @@ export class SubpolarClient {
   }
 
   async updateConfig(config: Partial<ConfigResponse>) {
-    const response = await fetchWrapper<{ preferences?: Record<string, unknown> }>(`${this.baseURL}/settings`, {
-      method: 'PATCH',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ preferences: config }),
-    })
-    return response.preferences as ConfigResponse
+    const { preferences } = await sharedApiClient.updateSettings(config as Record<string, unknown>)
+    return preferences as ConfigResponse
   }
 
   async getProviders() {
@@ -493,18 +466,15 @@ export class SubpolarClient {
   }
 
   async respondToPermission(sessionID: string, permissionID: string, response: 'once' | 'always' | 'reject') {
-    return fetchWrapper(`${this.baseURL}/session/${sessionID}/permissions/${permissionID}`, {
-      method: 'POST',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ response }),
+    return sharedApiClient.respondToApproval(sessionID, permissionID, response, {
+      ...(this.directory === undefined ? {} : { directory: this.directory }),
     })
   }
 
   async listPendingPermissions() {
-    return fetchWrapper<PermissionListResponse>(`${this.baseURL}/permission`, {
-      params: this.getParams(),
-    })
+    return await sharedApiClient.approvals(undefined, {
+      ...(this.directory === undefined ? {} : { directory: this.directory }),
+    }) as PermissionListResponse
   }
 
   async replyToQuestion(requestID: string, answers: string[][]) {
@@ -536,10 +506,10 @@ export class SubpolarClient {
     }
   }
 
-  async listAgents() {
-    return fetchWrapper<AgentListResponse>(`${this.baseURL}/agents`, {
-      params: this.getParams(),
-    })
+  async listAgents(): Promise<AgentListResponse> {
+    const directory = this.getParams()?.directory
+    const agents = await sharedApiClient.listAgents({ directory: typeof directory === 'string' ? directory : undefined })
+    return agents as unknown as AgentListResponse
   }
 
   async revertMessage(sessionID: string, data: { messageID: string, partID?: string }) {

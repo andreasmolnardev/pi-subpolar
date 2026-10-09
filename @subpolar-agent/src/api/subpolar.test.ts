@@ -13,6 +13,60 @@ describe('SubpolarClient', () => {
     vi.unstubAllGlobals()
   })
 
+  it('lists sessions through the shared client with supported filters and legacy adaptation', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      sessions: [{ id: 'ses_1', title: 'General Chat session', projectId: 0, directory: '/selected', createdAt: 10, updatedAt: 20 }],
+    }), { status: 200 }))
+
+    const client = new SubpolarClient('/api', '/selected')
+    const sessions = await client.listSessions({
+      directory: '/other', project: 'General Chat', search: 'chat', order: 'asc', limit: 7, roots: true,
+    })
+
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]))
+    expect(url.pathname).toBe('/api/sessions')
+    expect(url.searchParams.get('directory')).toBe('/selected')
+    expect(url.searchParams.get('project')).toBe('General Chat')
+    expect(url.searchParams.get('search')).toBe('chat')
+    expect(url.searchParams.get('order')).toBe('asc')
+    expect(url.searchParams.get('limit')).toBe('7')
+    expect(url.searchParams.has('roots')).toBe(false)
+    expect(sessions[0]).toMatchObject({
+      id: 'ses_1', projectID: 'default', directory: '/selected', title: 'General Chat session',
+      version: 'pi', time: { created: 10, updated: 20 },
+    })
+  })
+
+  it('reads sessions through the shared client with directory routing and legacy adaptation', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      id: 'ses/a', title: 'Read session', projectId: 4, directory: '/repo', createdAt: 100, updatedAt: 200,
+      profile: 'assistant', model: 'openai/gpt-4.1', permissionOverride: 'ask', workspaceAvailable: true,
+    }), { status: 200 }))
+
+    const session = await new SubpolarClient('/api', '/repo').getSession('ses/a')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/sessions/ses%2Fa?directory=%2Frepo',
+      expect.any(Object),
+    )
+    expect(session).toMatchObject({
+      id: 'ses/a', projectID: '4', directory: '/repo', title: 'Read session',
+      version: 'pi', time: { created: 100, updated: 200 }, profile: 'assistant',
+      model: 'openai/gpt-4.1', permissionOverride: 'ask', workspaceAvailable: true,
+    })
+  })
+
+  it('aborts sessions through the authenticated shared API route', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+
+    await expect(new SubpolarClient('/api', '/repo').abortSession('ses/a')).resolves.toEqual({ success: true })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/sessions/ses%2Fa/abort',
+      expect.objectContaining({ method: 'POST', credentials: 'include', cache: 'no-store' }),
+    )
+  })
+
   it('treats empty successful session deletes as success', async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
 
@@ -51,9 +105,28 @@ describe('SubpolarClient', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost/api/settings?directory=%2Frepo',
+      'http://localhost/api/settings',
       expect.any(Object),
     )
+  })
+
+  it('updates user settings through the shared client with the preferences envelope', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      preferences: { defaultModel: 'openai/gpt-4.1', defaultAgent: 'assistant' },
+      updatedAt: 123,
+    }), { status: 200 }))
+
+    const config = { model: 'openai/gpt-4.1', default_agent: 'assistant' }
+    await expect(new SubpolarClient('/api', '/repo').updateConfig(config)).resolves.toMatchObject({
+      defaultModel: 'openai/gpt-4.1',
+      defaultAgent: 'assistant',
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/settings',
+      expect.objectContaining({ method: 'PATCH' }),
+    )
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ preferences: config })
   })
 
   it('does not query the removed command route', async () => {
@@ -61,34 +134,62 @@ describe('SubpolarClient', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('sends the selected permission when creating the first session', async () => {
+  it('creates through the shared route with routing and execution fields, without a runtime bypass', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({
       session: {
-        id: 'ses_1',
-        runtime: 'pi',
-        runtimeSessionId: null,
-        profile: 'assistant',
-        permissionOverride: 'ask',
+        id: 'ses_1', title: 'Created', directory: '/repo', projectId: 'project-1',
+        profile: 'assistant', model: 'openai/gpt-4.1:high', permissionOverride: 'ask', worktreeId: 'owned-worktree',
+        createdAt: 10, updatedAt: 20,
       },
     }), { status: 201 }))
 
-    await new SubpolarClient('/api', '/repo').createSession({
+    const session = await new SubpolarClient('/api', '/repo').createSession({
+      project: 'General Chat',
+      title: 'Created',
       agent: 'assistant',
       model: 'openai/gpt-4.1',
+      thinking: 'high',
       permission: 'ask',
       repositoryId: 'linked-repository',
       worktreeId: 'owned-worktree',
     })
 
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost/api/sessions', expect.any(Object))
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      project: 'General Chat',
+      title: 'Created',
       agent: 'assistant',
       model: 'openai/gpt-4.1',
+      thinking: 'high',
       permission: 'ask',
       repositoryId: 'linked-repository',
       worktreeId: 'owned-worktree',
-      runtime: 'pi',
       directory: '/repo',
     })
+    expect(session).toMatchObject({
+      id: 'ses_1', directory: '/repo', profile: 'assistant', model: 'openai/gpt-4.1:high',
+      permissionOverride: 'ask', version: 'pi', time: { created: 10, updated: 20 },
+    })
+  })
+
+  it('updates and archives through the shared client, retaining directory and envelope semantics', async () => {
+    const response = () => new Response(JSON.stringify({ session: { id: 'ses/1', title: 'Renamed', updatedAt: 20 } }), { status: 200 })
+    fetchMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(response())
+    const client = new SubpolarClient('/api', '/repo')
+
+    await expect(client.updateSession('ses/1', { title: 'Renamed' })).resolves.toMatchObject({
+      session: { id: 'ses/1', title: 'Renamed' },
+    })
+    await expect(client.archiveSession('ses/1', true)).resolves.toMatchObject({
+      session: { id: 'ses/1', title: 'Renamed' },
+    })
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://localhost/api/sessions/ses%2F1?directory=%2Frepo',
+      'http://localhost/api/sessions/ses%2F1?directory=%2Frepo',
+    ])
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ title: 'Renamed' })
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ archived: true })
   })
 
   it('deletes workspaces with directory routing', async () => {
@@ -111,6 +212,26 @@ describe('SubpolarClient', () => {
   })
 
   describe('listSessionsPage', () => {
+    it('uses the shared client and retains cursor-only pagination with directory routing', async () => {
+      fetchMock.mockResolvedValue(new Response(JSON.stringify({
+        sessions: [{ id: 'ses_2', title: 'Next page', updatedAt: 42 }],
+        nextCursor: 'cursor_next',
+        page: { limit: 3, order: 'desc', hasNext: true, nextCursor: 'cursor_next' },
+      }), { status: 200 }))
+
+      const result = await new SubpolarClient('/api', '/repo').listSessionsPage({
+        cursor: 'cursor_current', limit: 99, order: 'asc', search: 'ignored-after-cursor',
+      })
+
+      const url = new URL(String(fetchMock.mock.calls[0]?.[0]))
+      expect(url.pathname).toBe('/api/sessions')
+      expect([...url.searchParams.entries()]).toEqual([['directory', '/repo'], ['cursor', 'cursor_current']])
+      expect(result).toMatchObject({
+        items: [{ id: 'ses_2', directory: '/repo', title: 'Next page', version: 'pi' }],
+        nextCursor: 'cursor_next',
+        page: { limit: 3, order: 'desc', hasNext: true },
+      })
+    })
     it('returns adapted sessions from the native API response', async () => {
       fetchMock.mockResolvedValue(
         new Response(
@@ -169,7 +290,7 @@ describe('SubpolarClient', () => {
       })
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost/api/sessions?limit=25&order=desc&search=deploy&directory=%2Frepo',
+        'http://localhost/api/sessions?directory=%2Frepo&limit=25&order=desc&search=deploy',
         expect.any(Object),
       )
       expect(result.items).toHaveLength(1)
@@ -196,7 +317,7 @@ describe('SubpolarClient', () => {
       await new SubpolarClient('/api', '/repo').listSessionsPage({ cursor: 'cursor_123' })
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost/api/sessions?cursor=cursor_123&directory=%2Frepo',
+        'http://localhost/api/sessions?directory=%2Frepo&cursor=cursor_123',
         expect.any(Object),
       )
     })
@@ -266,52 +387,52 @@ describe('SubpolarClient', () => {
     })
   })
 
-  it('queues prompts through native message and run endpoints', async () => {
+  it('queues prompts through the shared canonical message and run operation', async () => {
     fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ messageID: 'msg_hello', state: 'pending' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, messageID: 'msg_hello', state: 'completed' }), { status: 200 }))
 
     await expect(
       new SubpolarClient('/api', '/repo').sendPromptAsync('ses_1', {
         parts: [{ type: 'text', text: 'Hello Pi' }],
         agent: 'build',
         model: { providerID: 'openai', modelID: 'gpt-4.1' },
+        permission: 'allow_all',
+        routing: true,
       }),
     ).resolves.toBeUndefined()
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      'http://localhost/api/sessions/ses_1/messages?directory=%2Frepo',
+      'http://localhost/api/sessions/ses_1/messages',
       expect.objectContaining({
         method: 'POST',
       }),
     )
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
-      role: 'user',
       content: 'Hello Pi',
       metadata: {
         agent: 'build',
         model: { providerID: 'openai', modelID: 'gpt-4.1' },
+        permission: 'allow_all',
+        routing: true,
       },
     })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).not.toHaveProperty('runtime')
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      'http://localhost/api/sessions/ses_1/runs?directory=%2Frepo',
+      'http://localhost/api/sessions/ses_1/runs',
       expect.objectContaining({
         method: 'POST',
       }),
     )
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
-      runtime: 'pi',
-      agentId: 'build',
-      model: { providerID: 'openai', modelID: 'gpt-4.1' },
-    })
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ messageID: 'msg_hello' })
   })
 
   it('sends immediate prompts through the same native endpoints with the client message ID', async () => {
     fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ messageID: 'optimistic_user_immediate', state: 'pending' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, messageID: 'optimistic_user_immediate', state: 'completed' }), { status: 200 }))
 
     await expect(
       new SubpolarClient('/api', '/repo').sendPrompt('ses_1', {
@@ -326,15 +447,37 @@ describe('SubpolarClient', () => {
     })
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      'http://localhost/api/sessions/ses_1/runs?directory=%2Frepo',
+      'http://localhost/api/sessions/ses_1/runs',
       expect.objectContaining({ method: 'POST' }),
+    )
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      messageID: 'optimistic_user_immediate',
+      metadata: {},
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ messageID: 'optimistic_user_immediate' })
+  })
+
+  it('lists pending permissions through the shared approval route with the OpenCode response shape', async () => {
+    const permissions = [{
+      id: 'approval_1', sessionID: 'ses_1', permission: 'builtin/write', patterns: ['builtin/write'],
+      metadata: { toolId: 'builtin/write', input: { path: '/repo/file' }, reason: 'Approval required' }, always: [],
+    }]
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(permissions), { status: 200 }))
+
+    await expect(new SubpolarClient('/api', '/repo').listPendingPermissions()).resolves.toEqual(permissions)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/permission?directory=%2Frepo',
+      expect.any(Object),
     )
   })
 
-  it('responds to permissions through the native approval route', async () => {
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+  it('responds to permissions through the shared approval route with directory routing', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true, approval: { id: 'approval_1', status: 'approved' } }), { status: 200 }))
 
-    await new SubpolarClient('/api', '/repo').respondToPermission('ses_1', 'approval_1', 'once')
+    await expect(new SubpolarClient('/api', '/repo').respondToPermission('ses_1', 'approval_1', 'once')).resolves.toEqual({
+      ok: true, approval: { id: 'approval_1', status: 'approved' },
+    })
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost/api/session/ses_1/permissions/approval_1?directory=%2Frepo',
@@ -459,5 +602,25 @@ describe('SubpolarClient', () => {
     expect(result[0].parts[2]).toMatchObject({ type: 'reasoning', text: 'Second thought' })
     expect(result[0].parts[3]).toMatchObject({ type: 'text', text: 'Final answer' })
     expect(result[0].parts[4]).toMatchObject({ type: 'step-finish' })
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/sessions/ses_1/messages',
+      expect.objectContaining({ credentials: 'include', cache: 'no-store' }),
+    )
+  })
+
+  it('preserves server-projected UI messages returned by the shared client', async () => {
+    const projected = {
+      info: { id: 'msg_projected', sessionID: 'ses_1', role: 'assistant' },
+      parts: [{ id: 'part_1', sessionID: 'ses_1', messageID: 'msg_projected', type: 'text', text: 'Projected reply' }],
+    }
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ messages: [projected] }), { status: 200 }))
+
+    const result = await new SubpolarClient('/api', '/ignored-directory').listMessages('ses_1')
+
+    expect(result).toEqual([projected])
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/sessions/ses_1/messages',
+      expect.objectContaining({ credentials: 'include', cache: 'no-store' }),
+    )
   })
 })

@@ -6,6 +6,7 @@ export interface EventStreamHealthState {
   isHealthy: boolean
   lastEventAt: number | null
   isStalled: boolean
+  reconnectAt?: number | null
 }
 
 export interface EventStreamConnection {

@@ -178,7 +178,7 @@ export class AutomationRepository {
     const capability = capabilityFromClient(client)
     this.options = { serializationScope: capability?.scope ?? options.serializationScope, serialize: options.serialize ?? capability?.serialize, transaction: options.transaction ?? capability?.transaction }
     this.inbox = options.inbox ?? new InboxRepository(client)
-    this.notifications = new NotificationRepository(client)
+    this.notifications = new NotificationRepository(client, { scope: this.options.serializationScope, serialize: this.options.serialize, transaction: this.options.transaction })
     this.notificationAdapter = options.notificationAdapter ?? capability?.notificationAdapter
   }
 
@@ -216,7 +216,13 @@ export class AutomationRepository {
           : state === 'cancelled'
             ? 'The automation run was cancelled.'
             : 'The automation completed successfully.',
-      deep_link: { path: `/runs/${encodeURIComponent(runRecord.id)}`, runId: runRecord.id, automationId: definition.id },
+      deep_link: {
+        path: definition.project_id
+          ? `/projects/${encodeURIComponent(definition.project_id)}/automations`
+          : '/projects',
+        runId: runRecord.id,
+        automationId: definition.id,
+      },
       underlying_state: state,
       metadata: { automation_id: definition.id, run_id: runRecord.id, state },
       reopen: true,

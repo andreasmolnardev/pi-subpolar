@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useConfig, useMessages, useSession } from './usePiHarness'
+import { useConfig, useMessages, useSession } from './usePiDurableHarness'
 import { useQuery } from '@tanstack/react-query'
 import { getProviders, type ProvidersResult } from '@/api/providers'
 

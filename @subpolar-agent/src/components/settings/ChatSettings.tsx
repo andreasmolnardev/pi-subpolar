@@ -1,18 +1,7 @@
 import { useSettings } from '@/hooks/useSettings'
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
-import { DEFAULT_USER_PREFERENCES } from '@/api/types/settings'
-import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -27,74 +16,11 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { getProviders } from '@/api/providers'
 import { SUBPOLAR_API_BASE_URL } from '@/config'
-import { useAgents, useConfig } from '@/hooks/usePiHarness'
-
-type AgentOption = { name: string }
-
-function AgentVisibilityDialog({
-  title,
-  description,
-  open,
-  onOpenChange,
-  agents,
-  hiddenAgents,
-  onChange,
-}: {
-  title: string
-  description: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  agents: AgentOption[]
-  hiddenAgents: string[]
-  onChange: (hiddenAgents: string[]) => void
-}) {
-  const hiddenAgentNames = useMemo(() => new Set(hiddenAgents.map((name) => name.toLowerCase())), [hiddenAgents])
-
-  const handleCheckedChange = (agentName: string, checked: boolean) => {
-    if (checked) {
-      onChange(hiddenAgents.filter((name) => name.toLowerCase() !== agentName.toLowerCase()))
-      return
-    }
-
-    if (hiddenAgentNames.has(agentName.toLowerCase())) return
-    onChange([...hiddenAgents, agentName])
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
-        <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1">
-          {agents.map((agent) => {
-            const checked = !hiddenAgentNames.has(agent.name.toLowerCase())
-            return (
-              <label key={agent.name} className="flex cursor-pointer items-center gap-3 rounded-md border border-border p-3">
-                <Checkbox checked={checked} onCheckedChange={(value) => handleCheckedChange(agent.name, value === true)} />
-                <span className="text-sm font-medium">{agent.name}</span>
-              </label>
-            )
-          })}
-        </div>
-        <DialogFooter>
-          <Button type="button" onClick={() => onOpenChange(false)}>Done</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
+import { useConfig } from '@/hooks/usePiDurableHarness'
 
 export function ChatSettings() {
   const { preferences, isLoading, updateSettings, isUpdating } = useSettings()
   const { data: config } = useConfig(SUBPOLAR_API_BASE_URL)
-  const { data: agents = [] } = useAgents(SUBPOLAR_API_BASE_URL)
-  const [isSidebarAgentsOpen, setIsSidebarAgentsOpen] = useState(false)
-  const [isChatInputAgentsOpen, setIsChatInputAgentsOpen] = useState(false)
-
-  const hiddenSidebarAgents = preferences?.hiddenSidebarAgents ?? DEFAULT_USER_PREFERENCES.hiddenSidebarAgents
-  const hiddenChatInputAgents = preferences?.hiddenChatInputAgents ?? DEFAULT_USER_PREFERENCES.hiddenChatInputAgents
 
   const { data: providersData } = useQuery({
     queryKey: ['subpolar', 'providers', SUBPOLAR_API_BASE_URL],
@@ -189,26 +115,16 @@ export function ChatSettings() {
 
         <div className="flex flex-row items-center justify-between gap-4 rounded-lg border border-border p-4">
           <div className="space-y-0.5">
-            <Label className="text-base">Configure Hidden Agents (sidebar)</Label>
+            <Label htmlFor="generateSessionEmoji" className="text-base">Add an emoji to session titles</Label>
             <p className="text-sm text-muted-foreground">
-              Deselect agents to hide them from the sidebar agents list.
+              Ask the session naming model to choose a relevant emoji along with each new session title.
             </p>
           </div>
-          <Button type="button" variant="outline" onClick={() => setIsSidebarAgentsOpen(true)}>
-            Configure
-          </Button>
-        </div>
-
-        <div className="flex flex-row items-center justify-between gap-4 rounded-lg border border-border p-4">
-          <div className="space-y-0.5">
-            <Label className="text-base">Configure Hidden Agents (new chat)</Label>
-            <p className="text-sm text-muted-foreground">
-              Deselect agents to hide them from the new chat agent selector.
-            </p>
-          </div>
-          <Button type="button" variant="outline" onClick={() => setIsChatInputAgentsOpen(true)}>
-            Configure
-          </Button>
+          <Switch
+            id="generateSessionEmoji"
+            checked={preferences?.generateSessionEmoji ?? false}
+            onCheckedChange={(checked) => updateSettings({ generateSessionEmoji: checked })}
+          />
         </div>
 
         <div className="flex flex-row items-center justify-between rounded-lg border border-border p-4">
@@ -293,24 +209,6 @@ export function ChatSettings() {
         )}
       </div>
 
-      <AgentVisibilityDialog
-        title="Hidden Sidebar Agents"
-        description="Checked agents appear in the sidebar. Deselect an agent to hide it."
-        open={isSidebarAgentsOpen}
-        onOpenChange={setIsSidebarAgentsOpen}
-        agents={agents}
-        hiddenAgents={hiddenSidebarAgents}
-        onChange={(hiddenAgents) => updateSettings({ hiddenSidebarAgents: hiddenAgents })}
-      />
-      <AgentVisibilityDialog
-        title="Hidden New Chat Agents"
-        description="Checked agents appear in the new chat selector. Deselect an agent to hide it."
-        open={isChatInputAgentsOpen}
-        onOpenChange={setIsChatInputAgentsOpen}
-        agents={agents}
-        hiddenAgents={hiddenChatInputAgents}
-        onChange={(hiddenAgents) => updateSettings({ hiddenChatInputAgents: hiddenAgents })}
-      />
     </div>
   )
 }

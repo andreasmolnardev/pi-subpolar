@@ -16,8 +16,6 @@ interface ContextUsageIndicatorProps {
   apiUrl: string | null
   sessionID: string | undefined
   directory?: string
-  isConnected: boolean
-  isReconnecting?: boolean
   messages?: MessageWithParts[]
   onDownloadTranscript: (format: 'markdown' | 'text' | 'json') => void
   isDownloadingTranscript: boolean
@@ -49,7 +47,7 @@ const getConversationHistory = (messages: MessageWithParts[] = []) => {
     .join('\n\n---\n\n')
 }
 
-export function ContextUsageIndicator({ apiUrl, sessionID, directory, isConnected, isReconnecting, messages, onDownloadTranscript, isDownloadingTranscript }: ContextUsageIndicatorProps) {
+export function ContextUsageIndicator({ apiUrl, sessionID, directory, messages, onDownloadTranscript, isDownloadingTranscript }: ContextUsageIndicatorProps) {
   const { totalTokens, contextLimit, usagePercentage, currentModel, modelName, pricing, isLoading } = useContextUsage(apiUrl, sessionID, directory)
 
   if (isLoading) {
@@ -58,14 +56,6 @@ export function ContextUsageIndicator({ apiUrl, sessionID, directory, isConnecte
         <span className="text-xs text-muted-foreground">Loading...</span>
       </div>
     )
-  }
-
-  if (isReconnecting) {
-    return <span className="text-xs text-yellow-700 dark:text-yellow-400 font-medium">Reconnecting...</span>
-  }
-
-  if (!isConnected) {
-    return <span className="text-xs text-muted-foreground font-medium">Disconnected</span>
   }
 
   const tokenText = contextLimit
