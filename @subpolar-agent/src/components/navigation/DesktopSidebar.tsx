@@ -138,10 +138,10 @@ function SidebarNavItem({
       {sessionID && status.type !== "idle" && (
         <Spinner className="h-3.5 w-3.5 flex-shrink-0 text-primary" />
       )}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
       {sessionID && status.type === "idle" && completedUnread && (
         <span className="h-2 w-2 flex-shrink-0 rounded-full bg-primary" aria-label="New message" />
       )}
-      <span className="truncate">{label}</span>
     </button>
   );
 }

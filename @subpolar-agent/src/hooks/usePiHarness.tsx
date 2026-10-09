@@ -565,6 +565,18 @@ export const useSendPrompt = (apiUrl: string | null | undefined, directory?: str
 
       useSendErrorStore.getState().clearError(sessionID);
 
+      if (
+        !data.queued &&
+        response &&
+        typeof response === "object" &&
+        "state" in response &&
+        response.state === "completed"
+      ) {
+        const sessionStatus = useSessionStatus.getState();
+        sessionStatus.clearStatus(sessionID);
+        sessionStatus.markCompleted(sessionID);
+      }
+
       if (data.queued || !response) {
         queryClient.invalidateQueries({ queryKey });
         return;
