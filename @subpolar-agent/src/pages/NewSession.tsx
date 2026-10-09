@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { CircleChevronDown } from 'lucide-react'
+import { CircleChevronDown, History } from 'lucide-react'
 
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { listProjects, type Project } from '@/api/projects'
@@ -17,6 +17,9 @@ import { resolveNewSessionContext } from '@/api/new-session'
 import { FetchError } from '@/api/fetchWrapper'
 import { newSessionPath, parseNewSessionRoute } from '@/lib/new-session-route'
 import { useSidebarAction } from '@/hooks/useSidebarAction'
+import { listStoredSessionsPage, type StoredSession } from '@/api/sessions'
+import { formatDistanceToNow } from 'date-fns'
+import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
 
 const MOTIVATIONAL_MESSAGES = [
   'Ready to dive in',
@@ -146,6 +149,15 @@ export function NewSession() {
   const visibleAgents = (agentsQuery.data ?? []).filter((agent) =>
     !selectedProject?.hasAgentOverride || selectedProject.agentNames?.includes(agent.name),
   )
+  const previousSessionsQuery = useQuery({
+    queryKey: ['agent-previous-sessions', agentName],
+    queryFn: () => listStoredSessionsPage({ limit: 100 }),
+    enabled: Boolean(agentName),
+    staleTime: 30_000,
+  })
+  const previousAgentSessions = (previousSessionsQuery.data?.sessions ?? [])
+    .filter((session: StoredSession) => session.profile === agentName && !session.archived)
+    .slice(0, 3)
   const projectOptions = contextQuery.data
     ? Array.from(new Map([contextQuery.data.project, ...(projectsQuery.data ?? [])].map((project) => [String(project.id), project])).values())
     : []
@@ -423,6 +435,27 @@ export function NewSession() {
             routingEnabled={!customized}
             hideModelSelect
           />
+          {agentName && previousAgentSessions.length > 0 && (
+            <section className="w-full space-y-2" aria-label={`Previous sessions with ${agentName}`}>
+              <h2 className="flex items-center gap-2 px-1 text-xs font-medium text-muted-foreground">
+                <History className="h-3.5 w-3.5" />
+                Previous sessions with {agentName}
+              </h2>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {previousAgentSessions.map((session) => (
+                  <button
+                    key={session.id}
+                    type="button"
+                    onClick={() => navigate(`/projects/${session.projectId ?? GENERAL_CHAT_PROJECT_ID}/sessions/${encodeURIComponent(session.id)}`)}
+                    className="min-w-0 rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <span className="block truncate text-sm font-medium">{session.title?.trim() || 'Untitled session'}</span>
+                    <span className="mt-1 block text-xs text-muted-foreground">Updated {formatDistanceToNow(new Date(session.updatedAt), { addSuffix: true })}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
           <Dialog open={newWorktreeOpen} onOpenChange={setNewWorktreeOpen}>
             <DialogContent>
               <DialogTitle>Create a new worktree</DialogTitle>

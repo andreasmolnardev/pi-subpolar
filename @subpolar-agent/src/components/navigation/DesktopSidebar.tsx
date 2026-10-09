@@ -44,6 +44,7 @@ import { showToast } from "@/lib/toast";
 import { NotificationsSheet } from "@/components/navigation/NotificationsSheet";
 import { SessionSearchButton } from "@/components/navigation/SessionSearchCommand";
 import { DeleteSessionDialog } from "@/components/session/DeleteSessionDialog";
+import { newSessionPath } from "@/lib/new-session-route";
 
 const NEW_PROJECT_VALUE = "__new_project__";
 
@@ -644,7 +645,10 @@ export function DesktopSidebar() {
                    key={name}
                    label={name}
                    active={isAgentActive(name)}
-                   onClick={() => navigate(`/agents/${encodeURIComponent(name)}`)}
+                   onClick={() => navigate(newSessionPath({
+                     ...(selectedSidebarProject?.name && selectedSidebarProject.name !== 'General Chat' ? { projectName: selectedSidebarProject.name } : {}),
+                     agentName: name,
+                   }))}
                    onEdit={() => setEditingAgent({ name, agent: editableAgent })}
                    onDelete={() => handleDeleteAgent(name)}
                  />
