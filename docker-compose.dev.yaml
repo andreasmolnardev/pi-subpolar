@@ -29,7 +29,7 @@ services:
       - .env
     environment:
       NODE_ENV: development
-      SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED: ${SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED:-false}
+      SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED: ${SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED:-true}
       POCKETBASE_URL: http://pocketbase:8090
       SUBPOLAR_AGENT_PORT: 4173
       SUBPOLAR_AGENT_HOST: 0.0.0.0

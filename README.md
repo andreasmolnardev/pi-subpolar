@@ -129,10 +129,11 @@ application container, not a per-tenant sandbox.
 The PocketBase data is persisted in `pocketbase/pb_data`. Stop the stack with
 `Ctrl-C`, or run `docker compose -f docker-compose.dev.yaml down` from another terminal.
 
-For local CLI debugging only, set `SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED=true` in `.env`, then
-`POST /api/auth/dev-admin-token` at the Docker-published API. The endpoint is disabled by
-default, requires development mode, and logs a one-time **normal application-admin user
-bearer token** without returning it in the HTTP response. Read it from the `subpolar-agent`
-container logs and treat those logs as secret. This is not a PocketBase superuser token or
-the bridge internal token; use it only as a user token with `subpolar-test-cli`. The dev
-Compose API and WebUI ports bind to loopback.
+For local CLI debugging, the dev Compose setup enables `POST /api/auth/dev-admin-token`
+automatically (set `SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED=false` to opt out). The route is
+hard-gated on `NODE_ENV=development`, so it remains disabled in production even if the
+flag is set. It logs a one-time **normal application-admin user bearer token** without
+returning it in the HTTP response. Read it from the `subpolar-agent` container logs and
+treat those logs as secret. This is not a PocketBase superuser token or the bridge internal
+token; use it only as a user token with `subpolar-test-cli`. The dev Compose API and WebUI
+ports bind to loopback.

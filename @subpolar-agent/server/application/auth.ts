@@ -15,7 +15,7 @@ export type AuthConfig = {
 }
 
 export function devAdminTokenEnabled(env: Record<string, string | undefined> = process.env): boolean {
-  return env.NODE_ENV === 'development' && env.SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED === 'true'
+  return env.NODE_ENV === 'development' && env.SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED !== 'false'
 }
 
 export function createOneShotTokenIssuer(issue: () => Promise<string>): () => Promise<string> {

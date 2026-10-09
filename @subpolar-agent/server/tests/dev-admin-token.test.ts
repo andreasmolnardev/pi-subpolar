@@ -25,10 +25,11 @@ function routeContext(method: string, enabled: boolean, issueToken: () => Promis
 describe('development application-admin token endpoint', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('is opt-in and only enabled in explicit development mode', () => {
+  it('defaults on in development, supports an explicit opt-out, and is always disabled outside development', () => {
+    expect(devAdminTokenEnabled({ NODE_ENV: 'development' })).toBe(true)
     expect(devAdminTokenEnabled({ NODE_ENV: 'development', SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED: 'true' })).toBe(true)
-    expect(devAdminTokenEnabled({ NODE_ENV: 'production', SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED: 'true' })).toBe(false)
     expect(devAdminTokenEnabled({ NODE_ENV: 'development', SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED: 'false' })).toBe(false)
+    expect(devAdminTokenEnabled({ NODE_ENV: 'production', SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED: 'true' })).toBe(false)
     expect(devAdminTokenEnabled({ SUBPOLAR_DEV_ADMIN_TOKEN_ENABLED: 'true' })).toBe(false)
   })
 
