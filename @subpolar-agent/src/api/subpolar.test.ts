@@ -105,9 +105,28 @@ describe('SubpolarClient', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost/api/settings?directory=%2Frepo',
+      'http://localhost/api/settings',
       expect.any(Object),
     )
+  })
+
+  it('updates user settings through the shared client with the preferences envelope', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      preferences: { defaultModel: 'openai/gpt-4.1', defaultAgent: 'assistant' },
+      updatedAt: 123,
+    }), { status: 200 }))
+
+    const config = { model: 'openai/gpt-4.1', default_agent: 'assistant' }
+    await expect(new SubpolarClient('/api', '/repo').updateConfig(config)).resolves.toMatchObject({
+      defaultModel: 'openai/gpt-4.1',
+      defaultAgent: 'assistant',
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/settings',
+      expect.objectContaining({ method: 'PATCH' }),
+    )
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ preferences: config })
   })
 
   it('does not query the removed command route', async () => {

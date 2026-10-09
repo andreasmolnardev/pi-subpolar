@@ -409,10 +409,7 @@ export class SubpolarClient {
   }
 
   async getConfig() {
-    const response = await fetchWrapper<{ preferences?: Record<string, unknown> }>(`${this.baseURL}/settings`, {
-      params: this.getParams(),
-    })
-    const preferences = response.preferences ?? {}
+    const { preferences } = await sharedApiClient.getSettings()
     return {
       model: typeof preferences.defaultModel === 'string' ? preferences.defaultModel : undefined,
       default_agent: typeof preferences.defaultAgent === 'string' ? preferences.defaultAgent : 'master',
@@ -427,13 +424,8 @@ export class SubpolarClient {
   }
 
   async updateConfig(config: Partial<ConfigResponse>) {
-    const response = await fetchWrapper<{ preferences?: Record<string, unknown> }>(`${this.baseURL}/settings`, {
-      method: 'PATCH',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ preferences: config }),
-    })
-    return response.preferences as ConfigResponse
+    const { preferences } = await sharedApiClient.updateSettings(config as Record<string, unknown>)
+    return preferences as ConfigResponse
   }
 
   async getProviders() {
