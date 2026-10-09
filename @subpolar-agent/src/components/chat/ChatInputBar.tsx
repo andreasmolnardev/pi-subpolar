@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select";
 import { useAgents, useAbortSession, useConfig, useCreateSession, useSendPrompt, useSteer, useEnqueueFollowUp } from "@/hooks/usePiHarness";
 import { getProviders } from "@/api/providers";
-import { DEFAULT_USER_PREFERENCES } from "@/api/types/settings";
+import { getHiddenAgents } from "@/lib/agentVisibility";
 import { getProject, listProjectMentions, listProjects, loadMentionContext, type MentionContextItem, type Project } from "@/api/projects";
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { useSettings } from "@/hooks/useSettings";
@@ -203,8 +203,8 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
 
   const { data: agents = [] } = useAgents(apiUrl, selectedDirectory);
   const hiddenChatInputAgents = useMemo(
-    () => new Set((preferences?.hiddenChatInputAgents ?? DEFAULT_USER_PREFERENCES.hiddenChatInputAgents).map((name) => name.toLowerCase())),
-    [preferences?.hiddenChatInputAgents],
+    () => new Set(getHiddenAgents(preferences).map((name) => name.toLowerCase())),
+    [preferences?.hiddenAgents, preferences?.hiddenSidebarAgents, preferences?.hiddenChatInputAgents],
   );
   const visibleAgents = useMemo(
     () => {

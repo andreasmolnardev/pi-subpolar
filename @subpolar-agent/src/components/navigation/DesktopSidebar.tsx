@@ -7,7 +7,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { createProject, getProject, hasProjectId, listProjects } from "@/api/projects";
 import { listStoredSessions, updateStoredSession, type StoredSession } from "@/api/sessions";
 import { settingsApi, type AgentToolPolicyEffect } from "@/api/settings";
-import { DEFAULT_USER_PREFERENCES } from "@/api/types/settings";
+import { getHiddenAgents } from "@/lib/agentVisibility";
 import { useAgents, useDeleteSession } from "@/hooks/usePiHarness";
 import { useSettings } from "@/hooks/useSettings";
 import { useSettingsDialog } from "@/hooks/useSettingsDialog";
@@ -341,8 +341,8 @@ export function DesktopSidebar() {
   });
 
   const hiddenSidebarAgents = useMemo(
-    () => new Set((preferences?.hiddenSidebarAgents ?? DEFAULT_USER_PREFERENCES.hiddenSidebarAgents).map((name) => name.toLowerCase())),
-    [preferences?.hiddenSidebarAgents],
+    () => new Set(getHiddenAgents(preferences).map((name) => name.toLowerCase())),
+    [preferences?.hiddenAgents, preferences?.hiddenSidebarAgents, preferences?.hiddenChatInputAgents],
   );
   const navigableProjects = useMemo(
     () => projects?.filter((project) => hasProjectId(project) && project.id !== GENERAL_CHAT_PROJECT_ID) ?? [],
