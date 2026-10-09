@@ -340,11 +340,19 @@ export class SubpolarClient {
     if (options.directory !== undefined) query.set('directory', options.directory)
     return this.request(`/api/sessions/${encodeURIComponent(id)}${query.size ? `?${query}` : ''}`)
   }
-  async updateSession(id: string, input: { title?: string; archived?: boolean; tags?: string[]; model?: string }): Promise<Session> {
-    const result = await this.request<{ session: Session }>(`/api/sessions/${encodeURIComponent(id)}`, this.json('PATCH', input))
+  async updateSession(id: string, input: { title?: string; archived?: boolean; tags?: string[]; model?: string }, options: { directory?: string } = {}): Promise<Session> {
+    const query = new URLSearchParams()
+    if (options.directory !== undefined) query.set('directory', options.directory)
+    const suffix = query.size ? `?${query}` : ''
+    const result = await this.request<{ session: Session }>(`/api/sessions/${encodeURIComponent(id)}${suffix}`, this.json('PATCH', input))
     return result.session
   }
-  deleteSession(id: string): Promise<{ ok: boolean }> { return this.request(`/api/sessions/${encodeURIComponent(id)}`, this.json('DELETE')) }
+  deleteSession(id: string, options: { directory?: string } = {}): Promise<{ ok: boolean }> {
+    const query = new URLSearchParams()
+    if (options.directory !== undefined) query.set('directory', options.directory)
+    const suffix = query.size ? `?${query}` : ''
+    return this.request(`/api/sessions/${encodeURIComponent(id)}${suffix}`, this.json('DELETE'))
+  }
   async messages(id: string): Promise<SessionMessage[]> {
     return (await this.request<{ messages: SessionMessage[] }>(`/api/sessions/${encodeURIComponent(id)}/messages`)).messages
   }

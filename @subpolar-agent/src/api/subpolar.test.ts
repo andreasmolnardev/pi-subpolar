@@ -104,34 +104,62 @@ describe('SubpolarClient', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('sends the selected permission when creating the first session', async () => {
+  it('creates through the shared route with routing and execution fields, without a runtime bypass', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({
       session: {
-        id: 'ses_1',
-        runtime: 'pi',
-        runtimeSessionId: null,
-        profile: 'assistant',
-        permissionOverride: 'ask',
+        id: 'ses_1', title: 'Created', directory: '/repo', projectId: 'project-1',
+        profile: 'assistant', model: 'openai/gpt-4.1:high', permissionOverride: 'ask', worktreeId: 'owned-worktree',
+        createdAt: 10, updatedAt: 20,
       },
     }), { status: 201 }))
 
-    await new SubpolarClient('/api', '/repo').createSession({
+    const session = await new SubpolarClient('/api', '/repo').createSession({
+      project: 'General Chat',
+      title: 'Created',
       agent: 'assistant',
       model: 'openai/gpt-4.1',
+      thinking: 'high',
       permission: 'ask',
       repositoryId: 'linked-repository',
       worktreeId: 'owned-worktree',
     })
 
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost/api/sessions', expect.any(Object))
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      project: 'General Chat',
+      title: 'Created',
       agent: 'assistant',
       model: 'openai/gpt-4.1',
+      thinking: 'high',
       permission: 'ask',
       repositoryId: 'linked-repository',
       worktreeId: 'owned-worktree',
-      runtime: 'pi',
       directory: '/repo',
     })
+    expect(session).toMatchObject({
+      id: 'ses_1', directory: '/repo', profile: 'assistant', model: 'openai/gpt-4.1:high',
+      permissionOverride: 'ask', version: 'pi', time: { created: 10, updated: 20 },
+    })
+  })
+
+  it('updates and archives through the shared client, retaining directory and envelope semantics', async () => {
+    const response = () => new Response(JSON.stringify({ session: { id: 'ses/1', title: 'Renamed', updatedAt: 20 } }), { status: 200 })
+    fetchMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(response())
+    const client = new SubpolarClient('/api', '/repo')
+
+    await expect(client.updateSession('ses/1', { title: 'Renamed' })).resolves.toMatchObject({
+      session: { id: 'ses/1', title: 'Renamed' },
+    })
+    await expect(client.archiveSession('ses/1', true)).resolves.toMatchObject({
+      session: { id: 'ses/1', title: 'Renamed' },
+    })
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://localhost/api/sessions/ses%2F1?directory=%2Frepo',
+      'http://localhost/api/sessions/ses%2F1?directory=%2Frepo',
+    ])
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ title: 'Renamed' })
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ archived: true })
   })
 
   it('deletes workspaces with directory routing', async () => {

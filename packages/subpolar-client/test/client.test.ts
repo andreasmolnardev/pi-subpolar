@@ -96,16 +96,28 @@ describe('SubpolarClient', () => {
     expect(await calls[1]?.json()).toEqual({ response: 'once' })
   })
 
-  test('updates sessions and reads messages through owner-scoped session routes', async () => {
-    const { client, calls } = mockClient((request) => new URL(request.url).pathname.endsWith('/messages')
-      ? Response.json({ messages: [{ id: 'm1', role: 'user', content: 'hello' }] })
-      : Response.json({ session: { id: 's-1', title: 'new', updatedAt: 2 } }))
-    await client.updateSession('session/one', { title: 'new' })
+  test('updates and deletes sessions with optional directory routing', async () => {
+    const { client, calls } = mockClient((request) => request.method === 'DELETE'
+      ? Response.json({ ok: true })
+      : Response.json({ session: { id: 'session/one', title: 'new', updatedAt: 2 } }))
+    await client.updateSession('session/one', { title: 'new', archived: true }, { directory: '/workspace/one & two' })
+    await client.deleteSession('session/one', { directory: '/workspace/one & two' })
+
+    expect(calls.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      'PATCH /api/sessions/session%2Fone', 'DELETE /api/sessions/session%2Fone',
+    ])
+    expect(calls.map((request) => new URL(request.url).searchParams.get('directory'))).toEqual([
+      '/workspace/one & two', '/workspace/one & two',
+    ])
+    expect(await calls[0]?.json()).toEqual({ title: 'new', archived: true })
+  })
+
+  test('reads messages through owner-scoped session routes', async () => {
+    const { client, calls } = mockClient(() => Response.json({ messages: [{ id: 'm1', role: 'user', content: 'hello' }] }))
     expect(await client.messages('session/one')).toEqual([{ id: 'm1', role: 'user', content: 'hello' }])
     expect(calls.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
-      'PATCH /api/sessions/session%2Fone', 'GET /api/sessions/session%2Fone/messages',
+      'GET /api/sessions/session%2Fone/messages',
     ])
-    expect(await calls[0]?.json()).toEqual({ title: 'new' })
   })
 
   test('reads projected UI message entries through the authenticated owner-scoped route', async () => {

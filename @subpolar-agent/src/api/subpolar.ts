@@ -159,20 +159,12 @@ export class SubpolarClient {
   }
 
   async createSession(data: NewSessionCreateRequest): Promise<LegacySession> {
-    const response = await fetchWrapper<{ session: { id: string; runtime: string; runtimeSessionId: string | null; title?: string; directory?: string; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all' } }>(`${this.baseURL}/sessions`, {
-      method: 'POST',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...data, directory: this.directory, runtime: 'pi' }),
-    })
-    return this.toLegacySession({ ...response.session, title: response.session.title ?? 'Untitled Session', directory: response.session.directory ?? this.directory })
+    const session = await sharedApiClient.createSession({ ...data, directory: this.directory })
+    return this.toLegacySession({ ...session, title: session.title ?? 'Untitled Session', directory: session.directory ?? this.directory })
   }
 
   async deleteSession(sessionID: string) {
-    return fetchWrapperVoid(`${this.baseURL}/sessions/${sessionID}`, {
-      method: 'DELETE',
-      params: this.getParams(),
-    })
+    await sharedApiClient.deleteSession(sessionID, { directory: this.directory })
   }
 
   async deleteWorkspace(workspaceID: string) {
@@ -183,21 +175,13 @@ export class SubpolarClient {
   }
 
   async archiveSession(sessionID: string, archived: boolean) {
-    return fetchWrapper(`${this.baseURL}/sessions/${sessionID}`, {
-      method: 'PATCH',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ archived }),
-    })
+    const session = await sharedApiClient.updateSession(sessionID, { archived }, { directory: this.directory })
+    return { session }
   }
 
   async updateSession(sessionID: string, data: { title?: string }) {
-    return fetchWrapper(`${this.baseURL}/sessions/${sessionID}`, {
-      method: 'PATCH',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    })
+    const session = await sharedApiClient.updateSession(sessionID, data, { directory: this.directory })
+    return { session }
   }
 
   async forkSession(sessionID: string, messageID?: string) {
