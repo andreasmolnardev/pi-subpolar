@@ -143,6 +143,41 @@ export interface ProviderCatalog {
   accounts: readonly JsonRecord[]
   models: readonly ProviderCatalogModel[]
 }
+
+export type ProviderAccountAuthMethod = 'api_key' | 'oauth' | 'subscription'
+export type ProviderAccountAuthState = 'authenticated' | 'expired' | 'unconfigured' | 'error' | 'unknown'
+export interface ProviderAccountAuthStatus {
+  state: ProviderAccountAuthState
+  configured: boolean
+  method?: ProviderAccountAuthMethod
+  source?: string
+  label?: string
+}
+
+/** Sanitized provider account metadata returned by account read routes; never contains credentials. */
+export interface ProviderAccount {
+  id: string
+  instanceId: string
+  providerId: string
+  label: string
+  email?: string
+  source: 'runtime' | 'pocketbase'
+  authMethod?: ProviderAccountAuthMethod
+  status: ProviderAccountAuthStatus
+}
+
+/** Sanitized status projection. Credential payloads, keys, tokens, and secret envelopes are excluded. */
+export interface ProviderAccountStatus {
+  instanceId: string
+  providerType: string
+  authType: 'api_key' | 'oauth'
+  status: 'active' | 'disabled'
+  hasCredential: boolean
+  credentialExpiresAt?: number
+  lastUsedAt?: number
+  configured: boolean
+  expired: boolean
+}
 export interface Tool extends JsonRecord {
   tool_id: string
   namespace: string
@@ -297,6 +332,22 @@ export class SubpolarClient {
     return [...(await this.getProviderCatalog()).models]
   }
   getModelState(): Promise<ProviderModelState> { return this.request('/api/providers/model-state') }
+  async listProviderAccounts(): Promise<ProviderAccount[]> {
+    const result = await this.request<{ accounts: ProviderAccount[] } | ProviderAccount[]>('/api/providers/accounts')
+    return Array.isArray(result) ? result : result.accounts
+  }
+  async getProviderAccount(instanceId: string): Promise<ProviderAccount | null> {
+    const result = await this.request<{ account?: ProviderAccount | null } | ProviderAccount>(
+      `/api/providers/accounts/${encodeURIComponent(instanceId)}`,
+    )
+    return 'instanceId' in result ? result : result.account ?? null
+  }
+  async getProviderAccountStatus(instanceId: string): Promise<ProviderAccountStatus | null> {
+    const result = await this.request<{ status?: ProviderAccountStatus | null } | ProviderAccountStatus>(
+      `/api/providers/accounts/${encodeURIComponent(instanceId)}/status`,
+    )
+    return 'instanceId' in result ? result : result.status ?? null
+  }
   updateModelState(input: { recent?: ProviderModelSelection; removeRecent?: ProviderModelSelection; favorite?: ProviderModelSelection }): Promise<ProviderModelState> {
     return this.request('/api/providers/model-state', this.json('POST', input))
   }

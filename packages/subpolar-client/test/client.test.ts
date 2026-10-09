@@ -56,6 +56,52 @@ describe('SubpolarClient', () => {
     await expect(bareCatalogClient.getProviderCatalog()).resolves.toEqual(catalog)
   })
 
+  test('reads sanitized provider account metadata and status through the public GET routes', async () => {
+    const account = {
+      id: 'openai:account/1', instanceId: 'openai:account/1', providerId: 'openai', label: 'Work',
+      source: 'pocketbase' as const, authMethod: 'api_key' as const,
+      status: { state: 'authenticated' as const, configured: true, method: 'api_key' as const },
+    }
+    const status = {
+      instanceId: account.instanceId, providerType: 'openai', authType: 'api_key' as const,
+      status: 'active' as const, hasCredential: true, configured: true, expired: false,
+    }
+    const { client, calls } = mockClient((request) => {
+      const path = new URL(request.url).pathname
+      if (path === '/api/providers/accounts') return Response.json({ accounts: [account] })
+      if (path.endsWith('/status')) return Response.json({ status })
+      return Response.json({ account })
+    })
+
+    await expect(client.listProviderAccounts()).resolves.toEqual([account])
+    await expect(client.getProviderAccount('openai:account/1')).resolves.toEqual(account)
+    await expect(client.getProviderAccountStatus('openai:account/1')).resolves.toEqual(status)
+    expect(calls.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      'GET /api/providers/accounts',
+      'GET /api/providers/accounts/openai%3Aaccount%2F1',
+      'GET /api/providers/accounts/openai%3Aaccount%2F1/status',
+    ])
+    expect(calls.every((request) => request.headers.get('authorization') === 'Bearer test-token')).toBe(true)
+    for (const value of [account, status]) {
+      expect(value).not.toHaveProperty('credential')
+      expect(value).not.toHaveProperty('credentialPayload')
+      expect(value).not.toHaveProperty('token')
+      expect(value).not.toHaveProperty('secret')
+    }
+  })
+
+  test('supports bare account read responses and null status envelope', async () => {
+    const account = {
+      id: 'p1:a1', instanceId: 'p1:a1', providerId: 'p1', label: 'Personal', source: 'pocketbase' as const,
+      status: { state: 'unconfigured' as const, configured: false },
+    }
+    const { client } = mockClient((request) => new URL(request.url).pathname.endsWith('/status')
+      ? Response.json({ status: null })
+      : Response.json(account))
+    await expect(client.getProviderAccount('p1:a1')).resolves.toEqual(account)
+    await expect(client.getProviderAccountStatus('p1:a1')).resolves.toBeNull()
+  })
+
   test('uses current provider, model-state, settings, tool, and policy route shapes', async () => {
     const { client, calls } = mockClient(async (request) => {
       const path = new URL(request.url).pathname

@@ -373,22 +373,15 @@ export interface ProviderAccountStatus {
 /** Account-instance operations. These endpoints return sanitized metadata only. */
 export const providerAccountsApi = {
   list: async (): Promise<ProviderInstance[]> => {
-    const response = await fetchWrapper<ProviderInstance[] | { accounts: ProviderInstance[] }>(`${API_BASE_URL}/api/providers/accounts`);
-    return Array.isArray(response) ? response : response.accounts;
+    return await providerCatalogClient.listProviderAccounts() as ProviderInstance[];
   },
 
   get: async (instanceId: string): Promise<ProviderInstance | null> => {
-    const response = await fetchWrapper<ProviderInstance | { account?: ProviderInstance }>(
-      `${API_BASE_URL}/api/providers/accounts/${encodeURIComponent(instanceId)}`,
-    );
-    return 'account' in response ? response.account ?? null : response as ProviderInstance;
+    return await providerCatalogClient.getProviderAccount(instanceId) as ProviderInstance | null;
   },
 
   status: async (instanceId: string): Promise<ProviderAccountStatus | null> => {
-    const response = await fetchWrapper<ProviderAccountStatus | { status?: ProviderAccountStatus }>(
-      `${API_BASE_URL}/api/providers/accounts/${encodeURIComponent(instanceId)}/status`,
-    );
-    return 'status' in response && typeof response.status === 'object' ? response.status ?? null : response as ProviderAccountStatus;
+    return await providerCatalogClient.getProviderAccountStatus(instanceId) as ProviderAccountStatus | null;
   },
 
   update: async (instanceId: string, input: ProviderAccountUpdate): Promise<ProviderInstance> => {
