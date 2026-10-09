@@ -275,8 +275,11 @@ export class SubpolarClient {
     return this.request('/api/auth/change-password', this.json('PUT', { currentPassword, newPassword }))
   }
 
-  async listAgents(): Promise<Agent[]> {
-    const result = await this.request<{ agents: Agent[] } | Agent[]>('/api/agents')
+  async listAgents(options: { directory?: string } = {}): Promise<Agent[]> {
+    const query = new URLSearchParams()
+    if (options.directory !== undefined) query.set('directory', options.directory)
+    const suffix = query.size ? `?${query}` : ''
+    const result = await this.request<{ agents: Agent[] } | Agent[]>(`/api/agents${suffix}`)
     return Array.isArray(result) ? result : result.agents
   }
   async getProviderCatalog(options: { directory?: string; refresh?: boolean; force?: boolean } = {}): Promise<ProviderCatalog> {

@@ -1,5 +1,12 @@
 import type { paths } from './opencode-types'
-import { FetchError, fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
+import { SubpolarClient as SharedSubpolarClient } from '@subpolar/client'
+import { API_BASE_URL } from '@/config'
+import { FetchError, fetchForSubpolarClient, fetchWrapper, fetchWrapperVoid } from './fetchWrapper'
+
+const sharedApiClient = new SharedSubpolarClient({
+  baseUrl: API_BASE_URL || globalThis.location?.origin || 'http://localhost',
+  fetch: fetchForSubpolarClient,
+})
 
 type SessionListResponse = paths['/session']['get']['responses']['200']['content']['application/json']
 type SessionResponse = paths['/session/{sessionID}']['get']['responses']['200']['content']['application/json']
@@ -536,10 +543,10 @@ export class SubpolarClient {
     }
   }
 
-  async listAgents() {
-    return fetchWrapper<AgentListResponse>(`${this.baseURL}/agents`, {
-      params: this.getParams(),
-    })
+  async listAgents(): Promise<AgentListResponse> {
+    const directory = this.getParams()?.directory
+    const agents = await sharedApiClient.listAgents({ directory: typeof directory === 'string' ? directory : undefined })
+    return agents as unknown as AgentListResponse
   }
 
   async revertMessage(sessionID: string, data: { messageID: string, partID?: string }) {

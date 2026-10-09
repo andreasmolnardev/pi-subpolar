@@ -30,13 +30,15 @@ describe('SubpolarClient', () => {
     expect(calls[0]?.headers.get('authorization')).toBe('Bearer test-token')
   })
 
-  test('lists agents and model catalog from owner-scoped API routes', async () => {
+  test('lists agents with optional directory query and model catalog from owner-scoped API routes', async () => {
     const { client, calls } = mockClient((request) => new URL(request.url).pathname === '/api/agents'
       ? Response.json([{ id: 'a1', name: 'helper' }])
       : Response.json({ catalog: { providers: [{ id: 'p1', models: [{ id: 'm1' }] }], models: [{ id: 'm1', instanceId: 'p1', providerId: 'p1', modelId: 'm1', name: 'Model 1' }] } }))
-    expect(await client.listAgents()).toEqual([{ id: 'a1', name: 'helper' }])
+    expect(await client.listAgents({ directory: '/workspace/one & two' })).toEqual([{ id: 'a1', name: 'helper' }])
     expect(await client.listModels()).toEqual([{ id: 'm1', instanceId: 'p1', providerId: 'p1', modelId: 'm1', name: 'Model 1' }])
     expect(calls.map((request) => new URL(request.url).pathname)).toEqual(['/api/agents', '/api/providers/catalog'])
+    expect(new URL(calls[0]!.url).searchParams.get('directory')).toBe('/workspace/one & two')
+    expect(new URL(calls[1]!.url).searchParams.has('directory')).toBe(false)
   })
 
   test('passes the provider catalog directory while preserving envelope handling and default refresh behavior', async () => {
