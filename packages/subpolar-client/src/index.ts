@@ -349,7 +349,7 @@ export class SubpolarClient {
   }
 
   sendMessage(id: string, content: string, options: { messageID?: string; metadata?: JsonRecord } = {}): Promise<MessageDelivery> {
-    return this.request(`/api/sessions/${encodeURIComponent(id)}/messages`, this.json('POST', { content, ...options }))
+    return this.request(`/api/sessions/${encodeURIComponent(id)}/messages`, this.json('POST', { content, messageID: options.messageID, metadata: options.metadata }))
   }
   run(id: string, content: string, options: { messageID?: string; metadata?: JsonRecord } = {}): Promise<RunResult> {
     return this.sendMessage(id, content, options).then((delivery) =>

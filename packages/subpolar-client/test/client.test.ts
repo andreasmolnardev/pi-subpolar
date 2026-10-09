@@ -188,6 +188,7 @@ describe('SubpolarClient', () => {
     await client.run('session/one', 'hello', { metadata: { requestId: 'r1' } })
     expect(new URL(calls[0]!.url).pathname).toBe('/api/sessions/session%2Fone/messages')
     expect(new URL(calls[1]!.url).pathname).toBe('/api/sessions/session%2Fone/runs')
+    expect(await calls[0]?.json()).toEqual({ content: 'hello', metadata: { requestId: 'r1' } })
     expect(await calls[1]?.json()).toEqual({ messageID: 'msg-1' })
   })
 

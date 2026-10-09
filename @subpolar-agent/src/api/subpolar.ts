@@ -362,7 +362,6 @@ export class SubpolarClient {
   }
 
   private async createNativeMessageAndRun(sessionID: string, data: SendPromptRequest | SendPromptAsyncRequest): Promise<{ messageID: string; state: string }> {
-    const requestedAt = Date.now()
     const prompt = typeof data === 'object' && data && 'parts' in data && Array.isArray(data.parts)
       ? data.parts.map((part) => 'text' in part && typeof part.text === 'string' ? part.text : '').join('\n')
       : typeof data === 'object' && data && 'text' in data
@@ -373,42 +372,22 @@ export class SubpolarClient {
     const permission = typeof data === 'object' && data && 'permission' in data ? data.permission : undefined
     const routing = typeof data === 'object' && data && 'routing' in data && data.routing === true
     const messageID = typeof data === 'object' && data && 'messageID' in data ? data.messageID : undefined
-    const message = await fetchWrapper<{ messageID?: string; state?: string }>(`${this.baseURL}/sessions/${sessionID}/messages`, {
-      method: 'POST',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        role: 'user',
-        content: prompt,
-        createdAt: requestedAt,
-        ...(messageID ? { messageID } : {}),
-        metadata: {
-          ...(agent ? { agent } : {}),
-          ...(model ? { model } : {}),
-          ...(permission ? { permission } : {}),
-          ...(routing ? { routing: true } : {}),
-        },
-      }),
-      timeout: 0,
-    })
-    const serverMessageID = message.messageID ?? (typeof data === 'object' && data && 'messageID' in data && typeof data.messageID === 'string' ? data.messageID : undefined)
-    const deliveryMessageID = serverMessageID ?? `native_${Date.now()}_${Math.random()}`
-    const delivery = await fetchWrapper<Record<string, unknown>>(`${this.baseURL}/sessions/${sessionID}/runs`, {
-      method: 'POST',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        runtime: 'pi',
-        agentId: agent ?? 'default',
-        model,
-        permissionOverride: permission,
-        messageID: deliveryMessageID,
-        requestedAt,
-      }),
-      timeout: 0,
+    const delivery = await sharedApiClient.run(sessionID, prompt, {
+      ...(typeof messageID === 'string' && messageID ? { messageID } : {}),
+      metadata: {
+        ...(agent ? { agent } : {}),
+        ...(model ? { model } : {}),
+        ...(permission ? { permission } : {}),
+        ...(routing ? { routing: true } : {}),
+      },
     })
     const metadata = isRecord(delivery.delivery) ? delivery.delivery : delivery
     const state = typeof metadata.state === 'string' ? metadata.state : 'completed'
+    const deliveryMessageID = typeof metadata.messageID === 'string'
+      ? metadata.messageID
+      : typeof messageID === 'string' && messageID
+      ? messageID
+      : `native_${Date.now()}_${Math.random()}`
     if (state === 'interrupted' || state === 'unknown') {
       const error = isRecord(metadata.error) ? metadata.error : {}
       const message = typeof error.message === 'string'
@@ -422,7 +401,7 @@ export class SubpolarClient {
         { delivery: metadata, recoverable: true },
       )
     }
-    return { messageID: typeof metadata.messageID === 'string' ? metadata.messageID : deliveryMessageID, state }
+    return { messageID: deliveryMessageID, state }
   }
 
   async summarizeSession(sessionID: string, providerID: string, modelID: string) {

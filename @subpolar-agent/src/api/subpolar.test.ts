@@ -266,52 +266,52 @@ describe('SubpolarClient', () => {
     })
   })
 
-  it('queues prompts through native message and run endpoints', async () => {
+  it('queues prompts through the shared canonical message and run operation', async () => {
     fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ messageID: 'msg_hello', state: 'pending' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, messageID: 'msg_hello', state: 'completed' }), { status: 200 }))
 
     await expect(
       new SubpolarClient('/api', '/repo').sendPromptAsync('ses_1', {
         parts: [{ type: 'text', text: 'Hello Pi' }],
         agent: 'build',
         model: { providerID: 'openai', modelID: 'gpt-4.1' },
+        permission: 'allow_all',
+        routing: true,
       }),
     ).resolves.toBeUndefined()
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      'http://localhost/api/sessions/ses_1/messages?directory=%2Frepo',
+      'http://localhost/api/sessions/ses_1/messages',
       expect.objectContaining({
         method: 'POST',
       }),
     )
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
-      role: 'user',
       content: 'Hello Pi',
       metadata: {
         agent: 'build',
         model: { providerID: 'openai', modelID: 'gpt-4.1' },
+        permission: 'allow_all',
+        routing: true,
       },
     })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).not.toHaveProperty('runtime')
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      'http://localhost/api/sessions/ses_1/runs?directory=%2Frepo',
+      'http://localhost/api/sessions/ses_1/runs',
       expect.objectContaining({
         method: 'POST',
       }),
     )
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
-      runtime: 'pi',
-      agentId: 'build',
-      model: { providerID: 'openai', modelID: 'gpt-4.1' },
-    })
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ messageID: 'msg_hello' })
   })
 
   it('sends immediate prompts through the same native endpoints with the client message ID', async () => {
     fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ messageID: 'optimistic_user_immediate', state: 'pending' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, messageID: 'optimistic_user_immediate', state: 'completed' }), { status: 200 }))
 
     await expect(
       new SubpolarClient('/api', '/repo').sendPrompt('ses_1', {
@@ -326,9 +326,14 @@ describe('SubpolarClient', () => {
     })
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      'http://localhost/api/sessions/ses_1/runs?directory=%2Frepo',
+      'http://localhost/api/sessions/ses_1/runs',
       expect.objectContaining({ method: 'POST' }),
     )
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      messageID: 'optimistic_user_immediate',
+      metadata: {},
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ messageID: 'optimistic_user_immediate' })
   })
 
   it('responds to permissions through the native approval route', async () => {
