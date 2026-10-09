@@ -153,7 +153,7 @@ export function useSessionTranscript(apiUrl: string | null | undefined, sessionI
           const value = block.type === 'text' ? block.text : block.type === 'thinking' ? block.thinking : ''
           const next: any = block.type === 'toolCall'
             ? { id, sessionID: session, messageID: messageId, type: 'tool', callID: block.id ?? id, tool: block.name ?? 'unknown', state: { status: 'pending', input: typeof block.arguments === 'string' ? (() => { try { return JSON.parse(block.arguments) } catch { return {} } })() : block.arguments, raw: typeof block.arguments === 'string' ? block.arguments : JSON.stringify(block.arguments) } }
-             : { ...(existingIndex >= 0 ? parts[existingIndex] : {}), id, sessionID: session, messageID: messageId, type: block.type === 'thinking' ? 'reasoning' : 'text', text: value, ...(block.type === 'thinking' ? { time: { start: (existingIndex >= 0 && 'time' in parts[existingIndex] ? (parts[existingIndex] as any).time?.start : undefined) ?? Date.now(), end: Date.now() } } : {}) }
+             : { ...(existingIndex >= 0 ? parts[existingIndex] : {}), id, sessionID: session, messageID: messageId, type: block.type === 'thinking' ? 'reasoning' : 'text', text: value, ...(block.type === 'thinking' ? { time: (existingIndex >= 0 ? (parts[existingIndex] as any).time : undefined) ?? { start: Date.now() } } : {}) }
           if (existingIndex >= 0) parts[existingIndex] = next
           else parts.push(next)
         })
