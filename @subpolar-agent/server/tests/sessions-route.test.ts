@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { handleSessionsRoute } from '../routes/sessions.ts'
 import { resolveNewSessionRoute, NewSessionRouteError } from '../application/new-session-route.ts'
 
-function context(validateModelSelection: () => Promise<void>) {
+function context(validateModelSelection: (ownerId: string, selection: { value?: string }) => Promise<void>, input: Record<string, unknown> = { model: 'provider~account/model', permission: 'ask' }, agents: Array<{ id: string; name: string; enabled: boolean; model?: string; thinking?: 'off' | 'minimal' | 'low' | 'medium' | 'high' }> = [{ id: 'master-id', name: 'master', enabled: true }]) {
   const url = new URL('http://localhost/api/sessions')
   return {
-    request: new Request(url.href, { method: 'POST', body: JSON.stringify({ model: 'provider~account/model', permission: 'ask' }) }),
+    request: new Request(url.href, { method: 'POST', body: JSON.stringify(input) }),
     url,
     path: ['api', 'sessions'],
     correlationId: 'test-request',
@@ -13,16 +13,16 @@ function context(validateModelSelection: () => Promise<void>) {
     gatewayCredential: null,
     internalRequest: false,
     deps: {
-      body: async () => ({ model: 'provider~account/model', permission: 'ask' }),
+      body: async () => input,
       applicationDatabase: async () => ({}),
       createProjectSessionRepository: () => ({ listProjects: async () => [] }),
-      listAgents: async () => [{ id: 'master-id', name: 'master', enabled: true }],
+      listAgents: async () => agents,
       generalChatProject: () => ({ id: 0, name: 'General Chat', path: '/workspace/general-chat' }),
       resolveNewSessionRoute,
       NewSessionRouteError,
       getUserPreferences: async () => null,
       preferenceModel: () => undefined,
-      modelSelection: () => ({ providerID: 'provider~account', modelID: 'model' }),
+      modelSelection: (value: string) => ({ providerID: 'provider~account', modelID: 'model', value }),
       validateModelSelection,
       json: (body: unknown, status = 200) => Response.json(body, { status }),
     },
@@ -30,6 +30,40 @@ function context(validateModelSelection: () => Promise<void>) {
 }
 
 describe('handleSessionsRoute', () => {
+  it('checks General Chat availability against its managed root, not a stale per-session directory', async () => {
+    const record = { id: 'session-general', userId: 'owner-a', project: 'General Chat', directory: '/missing/session-workspace' }
+    const url = new URL('http://localhost/api/sessions/session-general')
+    const checkedPaths: string[] = []
+    const routeContext = {
+      request: new Request(url.href),
+      url,
+      path: ['api', 'sessions', 'session-general'],
+      correlationId: 'test-request',
+      authenticatedUser: { id: 'owner-a' },
+      gatewayCredential: null,
+      internalRequest: false,
+      deps: {
+        applicationDatabase: async () => ({}),
+        ownedSessionRecord: async () => record,
+        createProjectSessionRepository: () => ({ listProjects: async () => [], getSession: async () => record }),
+        ownedSessionProject: async () => ({ name: 'General Chat', path: '/managed/general-chat' }),
+        runtimeStore: async () => ({}),
+        statSync: (path: string) => {
+          checkedPaths.push(path)
+          if (path === '/missing/session-workspace') throw new Error('ENOENT')
+          return { isDirectory: () => true }
+        },
+        storedSessionResponse: (value: unknown) => value,
+        json: (body: unknown, status = 200) => Response.json(body, { status }),
+      },
+    } as never
+
+    const response = await handleSessionsRoute(routeContext)
+
+    expect(checkedPaths).toEqual(['/missing/session-workspace', '/managed/general-chat'])
+    await expect(response?.json()).resolves.toMatchObject({ workspaceAvailable: true })
+  })
+
   it('correlates tool results with the assistant tool-call arguments', async () => {
     const ownerId = 'owner-a'
     const callID = 'call-1'
@@ -162,6 +196,35 @@ describe('handleSessionsRoute', () => {
     await expect(response?.json()).resolves.toEqual(delivery)
   })
 
+  it('returns DURABLE_RUN_REQUIRED from the unsupported steer route without calling legacy RPC', async () => {
+    const record = { id: 'session-1', userId: 'owner-a', directory: '/workspace', project: 'General Chat' }
+    const url = new URL('http://localhost/api/sessions/session-1/steer')
+    let sent = false
+    const routeContext = {
+      request: new Request(url.href, { method: 'POST', body: JSON.stringify({ content: 'follow this up' }) }),
+      url,
+      path: ['api', 'sessions', 'session-1', 'steer'],
+      correlationId: 'test-request',
+      authenticatedUser: { id: 'owner-a' },
+      gatewayCredential: null,
+      internalRequest: false,
+      deps: {
+        applicationDatabase: async () => ({}),
+        ownedSessionRecord: async () => record,
+        runtimeStore: async () => ({}),
+        sendRpc: async () => { sent = true },
+        json: (body: unknown, status = 200) => Response.json(body, { status }),
+        redactedDiagnostic: () => 'redacted',
+      },
+    } as never
+
+    const response = await handleSessionsRoute(routeContext)
+
+    expect(response?.status).toBe(410)
+    await expect(response?.json()).resolves.toMatchObject({ code: 'DURABLE_RUN_REQUIRED' })
+    expect(sent).toBe(false)
+  })
+
   it('rejects legacy prompt RPC commands with DURABLE_RUN_REQUIRED before sending RPC', async () => {
     for (const command of ['prompt', 'steer', 'follow_up', 'compact']) {
       const record = { id: 'session-1', userId: 'owner-a', directory: '/workspace', project: 'General Chat' }
@@ -267,5 +330,27 @@ describe('handleSessionsRoute', () => {
       error: 'Unknown or unavailable model: provider~account/model',
       code: 'MODEL_UNAVAILABLE',
     })
+  })
+
+  it('uses the selected agent model when session and user preference models are absent', async () => {
+    let selected: string | undefined
+    const response = await handleSessionsRoute(context(async (_ownerId, model) => {
+      selected = model.value
+      throw Object.assign(new Error('model selected for assertion'), { code: 'MODEL_UNAVAILABLE' })
+    }, { agent: 'research' }, [{ id: 'research-id', name: 'research', enabled: true, model: 'provider~account/research-model', thinking: 'low' }]))
+
+    expect(selected).toBe('provider~account/research-model:low')
+    expect(response?.status).toBe(409)
+  })
+
+  it('lets a configured model thinking suffix override the agent thinking default', async () => {
+    let selected: string | undefined
+    const response = await handleSessionsRoute(context(async (_ownerId, model) => {
+      selected = model.value
+      throw Object.assign(new Error('model selected for assertion'), { code: 'MODEL_UNAVAILABLE' })
+    }, { model: 'provider~account/research-model:minimal', agent: 'research' }, [{ id: 'research-id', name: 'research', enabled: true, model: 'provider~account/research-model', thinking: 'high' }]))
+
+    expect(selected).toBe('provider~account/research-model:minimal')
+    expect(response?.status).toBe(409)
   })
 })

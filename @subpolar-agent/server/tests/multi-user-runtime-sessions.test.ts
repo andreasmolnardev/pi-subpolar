@@ -99,6 +99,19 @@ describe('multi-user transient Pi sessions (dependency stubbed)', () => {
     session.close()
   })
 
+  it('uses the managed General Chat root when a session-specific workspace has disappeared', async () => {
+    const { host, record } = fixture()
+    host.isWorkspaceAvailable = (cwd) => cwd === '/managed/general-chat'
+    const generalChatRecord = { ...record('alice'), project: 'General Chat', directory: '/missing/session-workspace' }
+    const session = new PiSdkSession(generalChatRecord, { name: 'General Chat', path: '/managed/general-chat' }, { host })
+
+    await session.readyPromise
+    expect(session.isWorkspaceAvailable).toBe(true)
+    expect(sdk.loaders.at(-1)).toMatchObject({ cwd: '/managed/general-chat' })
+    await expect(session.send({ type: 'prompt', message: 'continue this conversation' })).resolves.toMatchObject({ success: true })
+    session.close()
+  })
+
   it('cannot retarget a live session through the supplied mutable record', async () => {
     const { create, record, writes } = fixture()
     const supplied = record('alice')

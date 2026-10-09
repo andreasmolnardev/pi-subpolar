@@ -125,7 +125,7 @@ import {
   parseRoutingModelSelection,
   type SessionRoutingCandidate,
 } from './server/application/runtime/session-routing.ts'
-import { generateSessionTitle } from './server/application/runtime/session-title.ts'
+import { generateSessionTitle, provisionalSessionTitle } from './server/application/runtime/session-title.ts'
 import {
   assertSafeBrowserMutation,
   isAllowedOrigin,
@@ -221,6 +221,7 @@ let automationWorker: ReturnType<typeof createAutomationWorker> | undefined
 let automationScheduler: ReturnType<typeof setInterval> | undefined
 let automationMaintenanceInitialized = false
 const durableRunQueues = new Map<string, Promise<void>>()
+const queuedFollowUpQueues = new Map<string, Promise<void>>()
 const activeDurableRunControllers = new Map<string, Set<AbortController>>()
 let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccountService>> | undefined
 let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
@@ -842,7 +843,8 @@ function rpcData(value: unknown): unknown {
 
 function parseModelSelection(model: string | undefined): { providerID: string; modelID: string } | undefined {
   if (!model) return undefined
-  const [providerID, ...rest] = model.split('/')
+  const selection = model.replace(/:(off|minimal|low|medium|high|xhigh)$/, '')
+  const [providerID, ...rest] = selection.split('/')
   const modelID = rest.join('/')
   return providerID && modelID ? { providerID, modelID } : undefined
 }
@@ -881,7 +883,7 @@ function modelSelection(value: unknown): ModelSelection | undefined {
         return providerID && modelID ? { providerID, modelID } : undefined
       })()
   if (!parsed) throw new ModelUnavailableError({ providerID: '', modelID: String(value) })
-  return { ...parsed, value: `${parsed.providerID}/${parsed.modelID}` }
+  return { ...parsed, value: typeof value === 'string' ? value.trim() : `${parsed.providerID}/${parsed.modelID}` }
 }
 
 async function validateModelSelection(userId: string, selection: ModelSelection | undefined): Promise<void> {
@@ -1110,7 +1112,7 @@ const piSdkSessionHost: PiSdkSessionHost<BridgeClient> = {
   redactEvent: (value) => redactSensitive(value) as RpcMessage,
   publishStatus: (record, status) => broadcastSse({ type: 'session.status', properties: { sessionID: record.id, status: { type: status } } }, record.userId),
   publishEvent: (record, message) => broadcastSse(message, record.userId),
-  onAgentSettled: (session) => { void deliverNextQueuedFollowUp(session) },
+  onAgentSettled: () => undefined,
 }
 
 function createPiSession(record: SessionRecord, project: Project, capabilities?: readonly string[]): PiSdkSession<BridgeClient> {
@@ -1282,16 +1284,49 @@ function startAutomationScheduler(): void {
 
 
 
-async function deliverNextQueuedFollowUp(session: PiSdkSession<BridgeClient>): Promise<void> {
-  const ownerId = session.record.userId
-  if (!ownerId) return
-  const store = await runtimeStore()
-  const entry = (await store.listQueueEntries(ownerId, session.record.id)).find((item) => item.kind === 'follow_up' && item.state === 'enqueued')
-  if (!entry) return
-  const claimed = await store.claimQueueEntry(ownerId, session.record.id, entry.clientId)
-  if (!claimed) return
-  await store.updateQueueEntry(ownerId, session.record.id, entry.clientId, 'failed', 'DURABLE_RUN_REQUIRED: Legacy follow-up execution is disabled')
-  broadcastSse({ type: 'message.queue.updated', properties: { sessionID: session.record.id } }, ownerId)
+async function deliverNextQueuedFollowUp(ownerId: string, sessionId: string): Promise<void> {
+  const key = tenantSessionKey(ownerId, sessionId)
+  const previous = queuedFollowUpQueues.get(key) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolve) => { release = resolve })
+  const tail = previous.catch(() => undefined).then(() => current)
+  queuedFollowUpQueues.set(key, tail)
+  await previous.catch(() => undefined)
+  try {
+    const store = await runtimeStore()
+    while (true) {
+      const entry = (await store.listQueueEntries(ownerId, sessionId)).find((item) => item.kind === 'follow_up' && item.state === 'enqueued')
+      if (!entry) break
+      const claimed = await store.claimQueueEntry(ownerId, sessionId, entry.clientId)
+      if (!claimed) break
+      broadcastSse({ type: 'message.queue.updated', properties: { sessionID: sessionId } }, ownerId)
+      try {
+        const client = await applicationDatabase()
+        const record = await ownedSessionRecord(client, ownerId, sessionId)
+        if (!record) throw new Error('Session not found')
+        const project = await ownedSessionProject(client, ownerId, record)
+        if (!project) throw new Error('Session project is unavailable')
+        const identity = createHash('sha256').update(JSON.stringify([ownerId, sessionId, claimed.clientId])).digest('hex')
+        const result = await runStatelessPrompt({
+          ownerId,
+          sessionId,
+          runId: `follow-up-${identity}`,
+          requestId: `follow-up-request-${identity}`,
+          prompt: claimed.content,
+        }, record, project) as { state?: string; error?: { message?: string } | null }
+        if (result && typeof result === 'object' && 'state' in result && result.state !== 'completed') {
+          throw new Error(result.error?.message ?? `Run ended in ${result.state}`)
+        }
+        await store.updateQueueEntry(ownerId, sessionId, claimed.clientId, 'delivered')
+      } catch (error) {
+        await store.updateQueueEntry(ownerId, sessionId, claimed.clientId, 'failed', redactedDiagnostic(error))
+      }
+      broadcastSse({ type: 'message.queue.updated', properties: { sessionID: sessionId } }, ownerId)
+    }
+  } finally {
+    release()
+    if (queuedFollowUpQueues.get(key) === tail) queuedFollowUpQueues.delete(key)
+  }
 }
 
 const active = new Map<string, PiSdkSession<BridgeClient>>()
@@ -1895,7 +1930,7 @@ const bridgeRequestDependencies = {
   generalChatRoot, resolve, join, existsSync, isPathWithin, resolveNewSessionRoute, NewSessionRouteError, preferenceModel,
   validateModelSelection, modelSelection, normalizeSessionTags, InvalidSessionTagsError, sessionWorkspace,
   saveState, sessions, rpcSession, sendRpc, runStatelessPrompt, abortActiveDurableSession, storedSessionResponse, parseModelSelection,
-  parseRoutingModelSelection, routeFirstSessionRequest, generateFirstSessionTitle, localSessionRecord, sessionMessageText, entriesPayload,
+  parseRoutingModelSelection, routeFirstSessionRequest, generateFirstSessionTitle, provisionalSessionTitle, localSessionRecord, sessionMessageText, entriesPayload,
   transcriptHistory, messageDeliveryId, queueClientId, MessageDeliveryConflictError,
   replayMessageDeliveryResponse, messageDeliveryResponse, QueueEntryConflictError, QueueEntryTransitionError,
   withDeliveryMetadata, redactSensitive, redactSensitiveText, ownedSessionProject, resolveToolSessionContext,
@@ -1903,6 +1938,7 @@ const bridgeRequestDependencies = {
   permissionAskedProperties, upsertRegisteredTool, listToolsForAgent, searchToolsForAgent,
   describeToolForAgent, createCoreToolGateway, continueCoreApprovedTool, listPendingCoreApprovals, respondToCoreApproval,
   hasPendingApprovalWaiter, notifyApprovalResolution, escapeFilter, DEFAULT_SETTINGS, applicationExtensionPaths,
+  deliverNextQueuedFollowUp,
   homedir, root, openApiProviders, dailyUsage, runtimeProviders, active, activeKey, sseClients, encoder,
   handleProxy, redactedDiagnostic, broadcastSse, persistSessionModel, rpcData, projectEntries,
   projectResponse, encodeSessionCursor, decodeSessionCursor, sessionPageLimit, ensureApplicationSessionMetadata,

@@ -161,8 +161,15 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
     const preferences = await deps.getUserPreferences(client, authenticatedUser!.id)
     const requestedModel = typeof input.model === 'string' && input.model.trim()
       ? input.model.trim()
-      : deps.preferenceModel(preferences?.preferences, 'conversation')
-    const model = requestedModel && thinking && !requestedModel.endsWith(`:${thinking}`) ? `${requestedModel}:${thinking}` : requestedModel
+      : typeof resolved.agent.model === 'string' && resolved.agent.model.trim()
+        ? resolved.agent.model.trim()
+        : deps.preferenceModel(preferences?.preferences, 'conversation')
+    const modelThinkingSuffix = requestedModel ? /:(off|minimal|low|medium|high|xhigh)$/.exec(requestedModel)?.[1] : undefined
+    const agentThinking = resolved.agent.thinking === 'off' || resolved.agent.thinking === 'minimal' || resolved.agent.thinking === 'low' || resolved.agent.thinking === 'medium' || resolved.agent.thinking === 'high'
+      ? resolved.agent.thinking
+      : undefined
+    const selectedThinking = modelThinkingSuffix ?? thinking ?? agentThinking
+    const model = requestedModel && selectedThinking && !modelThinkingSuffix ? `${requestedModel}:${selectedThinking}` : requestedModel
     const selectedModel = deps.modelSelection(model)
     try {
       await deps.validateModelSelection(authenticatedUser!.id, selectedModel)
@@ -258,9 +265,18 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       if (path.length === 3 && request.method === 'GET') {
         const projects = await deps.createProjectSessionRepository(ownershipClient).listProjects(ownerId)
         const project = await deps.ownedSessionProject(ownershipClient, ownerId, ownedRecord)
-        const cwd = ownedRecord.directory ?? project?.path
+        const cwdCandidates = project?.name === 'General Chat'
+          ? [ownedRecord.directory, project.path].filter(Boolean)
+          : [ownedRecord.directory ?? project?.path].filter(Boolean)
         let workspaceAvailable = false
-        try { workspaceAvailable = Boolean(cwd && deps.statSync(cwd).isDirectory()) } catch { /* Missing workspace is a transcript-only session. */ }
+        for (const cwd of cwdCandidates) {
+          try {
+            if (deps.statSync(cwd).isDirectory()) {
+              workspaceAvailable = true
+              break
+            }
+          } catch { /* Check the General Chat managed root when a session workspace is missing. */ }
+        }
         return deps.json({ ...deps.storedSessionResponse(ownedRecord, projects), workspaceAvailable })
       }
       if (path.length === 3 && request.method === 'PATCH') {
@@ -384,25 +400,7 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
         return deps.json(deps.messageDeliveryResponse(reservation.delivery), 201)
       }
       if (path.length === 4 && path[3] === 'steer' && request.method === 'POST') {
-        const input = await deps.body(request)
-        const content = typeof input.content === 'string' ? input.content.trim() : typeof input.message === 'string' ? input.message.trim() : ''
-        if (!content) return deps.json({ error: 'Steering content is required' }, 400)
-        const clientId = deps.queueClientId(input.clientId ?? input.messageID)
-        let reservation
-        try { reservation = await store.reserveQueueEntry(ownerId, id, clientId, content, 'steering') }
-        catch (error) {
-          if (error instanceof deps.QueueEntryConflictError) return deps.json({ error: error.message, code: error.code }, 409)
-          throw error
-        }
-        if (!reservation.created) return deps.json({ entry: reservation.entry }, 200)
-        try {
-          await deps.sendRpc(id, { type: 'steer', message: content, id: clientId }, ownedRecord)
-          return deps.json({ entry: reservation.entry }, 201)
-        } catch (error) {
-          const entry = await store.updateQueueEntry(ownerId, id, clientId, 'failed', error instanceof Error ? error.message : 'Steering failed')
-          deps.broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
-          return deps.json({ entry }, 200)
-        }
+        return deps.json({ error: 'Steering compatibility route is disabled; create a Durable run instead', code: 'DURABLE_RUN_REQUIRED' }, 410)
       }
       if (path.length === 4 && path[3] === 'queue' && request.method === 'GET') {
         return deps.json({ entries: await store.listQueueEntries(ownerId, id) })
@@ -449,10 +447,13 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
             try {
               entry = await store.updateQueueEntry(ownerId, id, clientId, 'steering')
               if (!entry) return deps.json({ error: 'Queue entry not found' }, 404)
-              await deps.sendRpc(id, { type: 'steer', message: entry.content, id: entry.clientId }, ownedRecord)
+              entry = await store.updateQueueEntry(ownerId, id, clientId, 'failed', 'DURABLE_RUN_REQUIRED')
             } catch (error) {
-              entry = await store.updateQueueEntry(ownerId, id, clientId, 'failed', error instanceof Error ? error.message : 'Steering failed')
+              if (error instanceof deps.QueueEntryTransitionError) return deps.json({ error: error.message, code: error.code }, 409)
+              throw error
             }
+            deps.broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
+            return deps.json({ entry, code: 'DURABLE_RUN_REQUIRED' }, 410)
           }
           deps.broadcastSse({ type: 'message.queue.updated', properties: { sessionID: id } }, ownerId)
           return entry ? deps.json({ entry }) : deps.json({ error: 'Queue entry not found' }, 404)
@@ -493,6 +494,7 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
             ? deps.routeFirstSessionRequest(ownershipClient, ownerId, ownedRecord.project, claimedDelivery.content)
             : Promise.resolve(null)
           const shouldGenerateTitle = ownedRecord.title === 'Untitled session'
+            || (typeof deps.provisionalSessionTitle === 'function' && deps.provisionalSessionTitle(claimedDelivery.content) === ownedRecord.title)
           const title = shouldGenerateTitle && typeof deps.generateFirstSessionTitle === 'function'
             ? deps.generateFirstSessionTitle(ownershipClient, ownerId, claimedDelivery.content).catch((error: unknown) => {
                 console.warn(`Session title generation failed: ${deps.redactedDiagnostic(error)}`)
@@ -556,6 +558,11 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
             : runtimeResult
           await store.completeMessageDelivery(claimedDelivery, response)
           await store.updateRuntimeRun(ownerId, id, claimedDelivery.messageId, 'completed')
+          if (typeof deps.deliverNextQueuedFollowUp === 'function') {
+            void deps.deliverNextQueuedFollowUp(ownerId, id).catch((error: unknown) => {
+              console.warn(`Queued follow-up delivery failed: ${deps.redactedDiagnostic(error)}`)
+            })
+          }
           return deps.json(deps.withDeliveryMetadata(response, deps.messageDeliveryResponse({ ...claimedDelivery, state: 'completed' })))
         } catch (error) {
           await store.interruptMessageDelivery(claimedDelivery)

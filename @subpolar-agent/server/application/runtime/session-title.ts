@@ -16,6 +16,12 @@ function assistantText(message: { content?: unknown }): string {
     .join('')
 }
 
+export function provisionalSessionTitle(request: string): string | undefined {
+  const words = request.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return undefined
+  return normalizeSessionTitle(words.slice(0, 6).join(' '))
+}
+
 export function normalizeSessionTitle(value: string): string | undefined {
   const title = value
     .replace(/^\s*```(?:text|markdown)?\s*/i, '')
