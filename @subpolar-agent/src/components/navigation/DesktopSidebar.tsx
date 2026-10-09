@@ -14,6 +14,7 @@ import { useSettingsDialog } from "@/hooks/useSettingsDialog";
 import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { GENERAL_CHAT_PROJECT_ID } from "@subpolar/shared/utils";
 import {
+  Bell,
   Bot,
   ChevronDown,
   ChevronRight,
@@ -39,6 +40,7 @@ import { ProjectDialog } from "@/components/project/ProjectDialog";
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getSidebarProjectRoute } from "@/lib/projectNavigation";
 import { showToast } from "@/lib/toast";
+import { NotificationsSheet } from "@/components/navigation/NotificationsSheet";
 
 const NEW_PROJECT_VALUE = "__new_project__";
 
@@ -245,6 +247,7 @@ export function DesktopSidebar() {
   const { open: openSettings, setActiveTab } = useSettingsDialog();
   const isDesktop = useDesktop();
 
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [agentsExpanded, setAgentsExpanded] = useState(true);
   const [historyExpanded, setHistoryExpanded] = useState(true);
   const [selectedSidebarProjectId, setSelectedSidebarProjectId] = useState<string>(String(GENERAL_CHAT_PROJECT_ID));
@@ -453,6 +456,20 @@ export function DesktopSidebar() {
               className="h-6 w-auto sm:h-8"
             />
           )}
+          <NotificationsSheet
+            isOpen={notificationsOpen}
+            onOpen={() => setNotificationsOpen(true)}
+            onClose={() => setNotificationsOpen(false)}
+            trigger={(
+              <button
+                type="button"
+                aria-label="Open notifications"
+                className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Bell className="h-4 w-4" />
+              </button>
+            )}
+          />
           <SidebarCollapseToggle collapsed={collapsed} onToggle={toggle} />
         </div>
 

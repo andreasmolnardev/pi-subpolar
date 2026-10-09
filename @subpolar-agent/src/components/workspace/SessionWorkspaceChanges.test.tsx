@@ -28,9 +28,9 @@ vi.mock('@/api/session-workspace', () => ({ sessionWorkspaceApi: {
   createGroup: vi.fn(), updateGroup: vi.fn(), stage: vi.fn(), unstage: vi.fn(), commit: vi.fn(),
 } }))
 let workspace: SessionWorkspace
-function mount(sessionId = 'session', projectRouteId?: string) {
+function mount(sessionId = 'session', projectRouteId?: string, openRequest?: number) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
-  const view = render(<MemoryRouter><QueryClientProvider client={client}><SessionWorkspaceChanges sessionId={sessionId} projectRouteId={projectRouteId} /></QueryClientProvider></MemoryRouter>)
+  const view = render(<MemoryRouter><QueryClientProvider client={client}><SessionWorkspaceChanges sessionId={sessionId} projectRouteId={projectRouteId} openRequest={openRequest} /></QueryClientProvider></MemoryRouter>)
   return { ...view, client }
 }
 async function review() { fireEvent.click(await screen.findByRole('button', { name: 'Review' })) }
@@ -53,6 +53,21 @@ beforeEach(() => {
 })
 
 describe('SessionWorkspaceChanges', () => {
+  it('opens and reopens the panel when the open request counter changes', async () => {
+    const view = mount('open-request-session', undefined, 0)
+    const panel = document.querySelector('[aria-label="Session workspace panel"]')!
+    expect(panel).not.toBeVisible()
+
+    view.rerender(<MemoryRouter><QueryClientProvider client={view.client}><SessionWorkspaceChanges sessionId="open-request-session" openRequest={1} /></QueryClientProvider></MemoryRouter>)
+    expect(await screen.findByRole('tab', { name: 'Review' })).toBeVisible()
+    expect(panel).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close workspace panel' }))
+    expect(panel).not.toBeVisible()
+    view.rerender(<MemoryRouter><QueryClientProvider client={view.client}><SessionWorkspaceChanges sessionId="open-request-session" openRequest={2} /></QueryClientProvider></MemoryRouter>)
+    expect(panel).toBeVisible()
+  })
+
   it('resolves the durable owned repository ID instead of passing the numeric display ID to Git APIs', async () => {
     const view = mount('repo-context-session', '7')
     await review()

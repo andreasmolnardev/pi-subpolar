@@ -53,6 +53,16 @@ export interface PendingSessionPrompt {
   routing?: boolean;
 }
 
+export interface NewSessionRouteState {
+  pendingPrompt: PendingSessionPrompt;
+  provisionalTitle: string;
+  optimisticMessage: { id: string; role: 'user'; text: string };
+}
+
+function provisionalTitleFromPrompt(prompt: string): string {
+  return prompt.trim().split(/\s+/).filter(Boolean).slice(0, 6).join(' ').replace(/[.!?]+$/, '').slice(0, 120).trim() || 'New session';
+}
+
 const LARGE_PASTE_THRESHOLD = 500;
 
 const createClientMessageID = () => `optimistic_user_${Date.now()}_${Math.random()}`;
@@ -622,8 +632,10 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
         return;
       }
 
+      const provisionalTitle = provisionalTitleFromPrompt(prompt);
       const session = await createSession.mutateAsync({
         project: /^\d+$/.test(targetProjectId) ? Number(targetProjectId) : targetProjectId,
+        title: provisionalTitle,
         agent: selectedAgentForRequest,
         model: currentModel === "__auto__" ? undefined : currentModel,
         permission: selectedPermissionForRequest,
@@ -654,7 +666,9 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
         navigate(`/projects/${targetProjectId}/sessions/${session.id}`, {
           state: {
             pendingPrompt,
-          },
+            provisionalTitle,
+            optimisticMessage: { id: messageID, role: 'user', text: prompt },
+          } satisfies NewSessionRouteState,
         });
         onSend?.();
         sendPrompt.mutate({
@@ -698,7 +712,9 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
       navigate(`/projects/${targetProjectId}/sessions/${session.id}`, {
         state: {
           pendingPrompt,
-        },
+          provisionalTitle,
+          optimisticMessage: { id: messageID, role: 'user', text: prompt },
+        } satisfies NewSessionRouteState,
       });
 
       onSend?.();

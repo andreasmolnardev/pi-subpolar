@@ -3,10 +3,10 @@ import { useParams, useNavigate, Navigate, useLocation } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query";
 import { getProject, hasProjectId, listProjects } from "@/api/projects";
 import { MessageThread } from "@/components/message/MessageThread";
-import { ChatInputBar, type ChatInputBarHandle } from "@/components/chat/ChatInputBar";
+import { ChatInputBar, type ChatInputBarHandle, type NewSessionRouteState } from "@/components/chat/ChatInputBar";
 import { SessionWorkspaceChanges } from '@/components/workspace';
 import { CreateWorktreeDialog } from '@/components/worktree/CreateWorktreeDialog';
-import { ChevronDown, CornerUpLeft } from "lucide-react";
+import { ChevronDown, CornerUpLeft, PanelRightOpen } from "lucide-react";
 import { Header } from "@/components/ui/header";
 import { SessionList } from "@/components/session/SessionList";
 import { ProjectNotFoundDialog } from "@/components/project/ProjectNotFoundDialog";
@@ -61,6 +61,7 @@ import {
 import { newSessionPath } from "@/lib/new-session-route";
 import { downloadTranscript, exportTranscript, type TranscriptExportFormat } from "@/lib/transcriptExport";
 import { useCompletionSuggestions } from "@/hooks/useCompletionSuggestions";
+import type { Message, MessageWithParts } from "@/api/types";
 
 const compareMessageIds = (id1: string, id2: string): number => {
   const num1 = parseInt(id1, 10)
@@ -72,7 +73,7 @@ const compareMessageIds = (id1: string, id2: string): number => {
 const PENDING_ACTION_SYNC_INTERVAL_MS = 30000
 const PROMPT_OVERLAY_CLEARANCE_PX = 16
 
-type PendingPromptLocationState = {
+type PendingPromptLocationState = Partial<NewSessionRouteState> & {
   pendingPrompt?: StoredPendingSessionPrompt
 }
 
@@ -119,6 +120,14 @@ export function SessionDetail() {
   const [sessionsPopoverOpen, setSessionsPopoverOpen] = useState(false);
   const [minimizedQuestion, setMinimizedQuestion] = useState<QuestionRequest | null>(null);
   const [exportingFormat, setExportingFormat] = useState<TranscriptExportFormat | null>(null);
+  const [firstMessageHandoff, setFirstMessageHandoff] = useState(() => {
+    const state = location.state as PendingPromptLocationState | null;
+    return state?.optimisticMessage ?? null;
+  });
+  const [provisionalTitle, setProvisionalTitle] = useState(() => (
+    (location.state as PendingPromptLocationState | null)?.provisionalTitle
+  ));
+  const [workspaceOpenRequest, setWorkspaceOpenRequest] = useState(0);
 
   const isMobile = useMobile();
   const { keyboardHeight } = useVisualViewport();
@@ -175,14 +184,49 @@ export function SessionDetail() {
     sessionId,
     repoDirectory,
   );
-  const workspaceMissing = (session as { workspaceAvailable?: boolean } | undefined)?.workspaceAvailable === false;
+  const isGeneralChatProject = repoId === GENERAL_CHAT_PROJECT_ID;
+  const workspaceMissing = !isGeneralChatProject && (session as { workspaceAvailable?: boolean } | undefined)?.workspaceAvailable === false;
 
   const messages = useMemo(() => {
-    if (!rawMessages) return undefined
+    const availableMessages = rawMessages ?? []
     const revertMessageID = session?.revert?.messageID
-    if (!revertMessageID) return rawMessages
-    return rawMessages.filter(msgWithParts => compareMessageIds(msgWithParts.info.id, revertMessageID) < 0)
-  }, [rawMessages, session?.revert?.messageID]);
+    const visibleMessages = revertMessageID
+      ? availableMessages.filter(msgWithParts => compareMessageIds(msgWithParts.info.id, revertMessageID) < 0)
+      : availableMessages
+    if (!firstMessageHandoff) return visibleMessages
+    if (visibleMessages.some(message => message.info.id === firstMessageHandoff.id)) return visibleMessages
+
+    const optimisticMessage: MessageWithParts = {
+      info: {
+        id: firstMessageHandoff.id,
+        sessionID: sessionId ?? '',
+        role: 'user',
+        time: { created: Date.now() },
+        agent: '__default__',
+        model: { providerID: '', modelID: '' },
+      } as Message,
+      parts: [{
+        id: `${firstMessageHandoff.id}_text`,
+        sessionID: sessionId ?? '',
+        messageID: firstMessageHandoff.id,
+        type: 'text',
+        text: firstMessageHandoff.text,
+      }],
+    }
+    return [...visibleMessages, optimisticMessage]
+  }, [firstMessageHandoff, rawMessages, session?.revert?.messageID, sessionId]);
+
+  useEffect(() => {
+    const routeState = location.state as PendingPromptLocationState | null
+    if (routeState?.optimisticMessage) setFirstMessageHandoff(routeState.optimisticMessage)
+    if (routeState?.provisionalTitle) setProvisionalTitle(routeState.provisionalTitle)
+  }, [location.state]);
+
+  useEffect(() => {
+    if (firstMessageHandoff && rawMessages?.some(message => message.info.id === firstMessageHandoff.id)) {
+      setFirstMessageHandoff(null)
+    }
+  }, [firstMessageHandoff, rawMessages]);
 
   const messagesContentVersion = useMemo(() => getMessagesContentVersion(messages), [messages]);
 
@@ -352,7 +396,7 @@ export function SessionDetail() {
   }, [sendPendingPrompt, sessionId]);
 
   useEffect(() => {
-    if (!pendingPrompt || !notYetSentPrompt || !sessionId || !isConnected || messagesLoading) return
+    if (!pendingPrompt || !notYetSentPrompt || !sessionId || repoLoading || sessionLoading || !repoDirectory || workspaceMissing || messagesLoading) return
 
     const pendingPromptKey = `${sessionId}:${pendingPrompt.messageID}`
     if (consumedPendingPromptRef.current === pendingPromptKey) return
@@ -361,11 +405,14 @@ export function SessionDetail() {
 
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
   }, [
-    isConnected,
     location.pathname,
     location.search,
     messagesLoading,
     navigate,
+    repoDirectory,
+    repoLoading,
+    sessionLoading,
+    workspaceMissing,
     notYetSentPrompt,
     pendingPrompt,
     sessionId,
@@ -373,7 +420,7 @@ export function SessionDetail() {
   ])
 
   const handleRetryInterruptedPrompt = useCallback(() => {
-    if (!interruptedPrompt || !sessionId || !isConnected) return
+    if (!interruptedPrompt || !sessionId) return
 
     const retryPrompt: StoredPendingSessionPrompt = {
       ...interruptedPrompt,
@@ -383,7 +430,7 @@ export function SessionDetail() {
     savePendingSessionPrompt(sessionId, retryPrompt)
     setPendingPromptVersion((version) => version + 1)
     submitPendingPrompt(retryPrompt)
-  }, [interruptedPrompt, isConnected, sessionId, submitPendingPrompt])
+  }, [interruptedPrompt, sessionId, submitPendingPrompt]);
 
   const handleDiscardInterruptedPrompt = useCallback(() => {
     if (!interruptedPrompt || !sessionId) return
@@ -564,8 +611,9 @@ export function SessionDetail() {
   }
 
   const workspaceDisplayName = repo?.name || repo?.directory.split('/').pop() || repo?.directory || 'Workspace';
-  const isGeneralChatProject = repoId === GENERAL_CHAT_PROJECT_ID;
-  const sessionTitle = session?.title || "Untitled Session";
+  const sessionTitle = (session?.title && session.title.toLowerCase() !== 'untitled session'
+    ? session.title
+    : provisionalTitle) || session?.title || "Untitled Session";
   const tabFromUrl = new URLSearchParams(location.search).get('projectTab') ?? undefined;
   const sessionBackPath = getSessionListPath(repoId, tabFromUrl);
 
@@ -674,6 +722,16 @@ export function SessionDetail() {
                onDownloadTranscript={(format) => void handleExport(format)}
                isDownloadingTranscript={exportingFormat !== null}
              />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Open session side panel"
+              title="Open session side panel"
+              onClick={() => setWorkspaceOpenRequest(request => request + 1)}
+            >
+              <PanelRightOpen className="h-4 w-4" />
+            </Button>
             <SessionMoreButton />
           </Header.Actions>
         </Header>
@@ -685,9 +743,9 @@ export function SessionDetail() {
 
       <div className="relative flex-1 overflow-hidden flex flex-col">
         <div key={sessionId} ref={messageContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,black_16px,black)]" style={{ paddingBottom: promptOverlayHeight + inputBottomOffset + PROMPT_OVERLAY_CLEARANCE_PX }}>
-          {repoLoading || sessionLoading || messagesLoading ? (
+          {(repoLoading || sessionLoading || messagesLoading) && !firstMessageHandoff ? (
             <MessageSkeleton />
-          ) : apiUrl && repoDirectory ? (
+          ) : apiUrl && (repoDirectory || firstMessageHandoff) ? (
             <MessageThread 
               apiUrl={apiUrl} 
               sessionID={sessionId} 
@@ -759,7 +817,7 @@ export function SessionDetail() {
                       type="button"
                       size="sm"
                       onClick={handleRetryInterruptedPrompt}
-                      disabled={!isConnected || sendPendingPrompt.isPending}
+                      disabled={sendPendingPrompt.isPending}
                     >
                       Retry
                     </Button>
@@ -793,7 +851,7 @@ export function SessionDetail() {
                   </div>
                 </div>
               )}
-              {!workspaceMissing && sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} projectRouteId={repoId > 0 ? String(repoId) : undefined} />}
+              {!workspaceMissing && sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} projectRouteId={repoId > 0 ? String(repoId) : undefined} openRequest={workspaceOpenRequest} />}
               {!workspaceMissing && sessionId && !isGeneralChatProject && <div className="pb-2"><CreateWorktreeDialog key={sessionId} sessionId={sessionId} agent={sessionAgent.agent} /></div>}
               <ChatInputBar
                 ref={promptInputRef}

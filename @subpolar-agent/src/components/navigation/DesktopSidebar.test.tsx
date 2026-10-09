@@ -1,5 +1,6 @@
+import * as React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { DesktopSidebar } from './DesktopSidebar'
@@ -7,6 +8,15 @@ import { getSidebarProjectRoute } from '@/lib/projectNavigation'
 import * as useDesktopModule from '@/hooks/useDesktop'
 import * as useSidebarCollapsedModule from '@/hooks/useSidebarCollapsed'
 import * as useAuthModule from '@/hooks/useAuth'
+
+vi.mock('@/components/navigation/NotificationsSheet', () => ({
+  NotificationsSheet: ({ isOpen, onOpen, trigger }: { isOpen: boolean; onOpen: () => void; trigger: React.ReactElement }) => (
+    <>
+      {React.cloneElement(trigger, { onClick: onOpen })}
+      {isOpen && <div role="dialog" aria-label="Notifications" />}
+    </>
+  ),
+}))
 
 vi.mock('@/hooks/useDesktop')
 vi.mock('@/hooks/useSidebarCollapsed')
@@ -88,6 +98,21 @@ describe('DesktopSidebar', () => {
     const { container } = render(<DesktopSidebar />, { wrapper: createWrapper(['/']) })
 
     expect(container.firstChild).toBeNull()
+  })
+
+  it('opens notifications from the desktop sidebar', async () => {
+    vi.spyOn(useDesktopModule, 'useDesktop').mockReturnValue(true)
+    vi.spyOn(useSidebarCollapsedModule, 'useSidebarCollapsed').mockReturnValue([false, vi.fn()])
+    vi.spyOn(useAuthModule, 'useAuth').mockReturnValue({
+      isAuthenticated: true,
+      isLoading: false,
+      user: null,
+    } as any)
+
+    render(<DesktopSidebar />, { wrapper: createWrapper(['/']) })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open notifications' }))
+    expect(await screen.findByRole('dialog', { name: 'Notifications' })).toBeInTheDocument()
   })
 
   it('renders brand name', () => {

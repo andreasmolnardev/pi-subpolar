@@ -11,11 +11,14 @@ import {
 
 const mocks = vi.hoisted(() => ({
   sendPrompt: vi.fn(),
+  streamConnected: true,
+  workspaceAvailable: undefined as boolean | undefined,
+  transcriptMessages: [] as Array<{ info: { id: string; role: string }; parts: Array<{ text?: string }> }>,
 }))
 
 vi.mock('@/hooks/usePiHarness', () => ({
   useSession: vi.fn(() => ({
-    data: { title: 'Test session' },
+    data: { title: 'Untitled session', workspaceAvailable: mocks.workspaceAvailable },
     isLoading: false,
   })),
   useAbortSession: vi.fn(() => ({ mutate: vi.fn() })),
@@ -42,12 +45,12 @@ vi.mock('@/api/projects', () => ({
 }))
 
 vi.mock('@/hooks/useSSE', () => ({
-  useSSE: vi.fn(() => ({ isConnected: true, isReconnecting: false })),
+  useSSE: vi.fn(() => ({ isConnected: mocks.streamConnected, isReconnecting: false })),
 }))
 
 vi.mock('@/hooks/useSessionTranscript', () => ({
   useSessionTranscript: vi.fn(() => ({
-    messages: [],
+    messages: mocks.transcriptMessages,
     isLoading: false,
     hasOlder: false,
     loadOlder: vi.fn(),
@@ -96,9 +99,15 @@ vi.mock('@/contexts/EventContext', () => ({
 }))
 
 vi.mock('@/components/chat/ChatInputBar', () => ({
-  ChatInputBar: vi.fn(() => null),
+  ChatInputBar: vi.fn(() => <div data-testid="chat-input-mounted" />),
 }))
-vi.mock('@/components/message/MessageThread', () => ({ MessageThread: vi.fn(() => null) }))
+vi.mock('@/components/message/MessageThread', () => ({
+  MessageThread: vi.fn(({ messages }: { messages?: Array<{ info: { id: string }; parts: Array<{ text?: string }> }> }) => (
+    <div data-testid="message-thread">
+      {messages?.map(message => <div key={message.info.id} data-message-id={message.info.id}>{message.parts.map(part => part.text).filter(Boolean).join('')}</div>)}
+    </div>
+  )),
+}))
 vi.mock('@/components/message/MessageSkeleton', () => ({ MessageSkeleton: vi.fn(() => null) }))
 vi.mock('@/components/message/SessionTodoDisplay', () => ({ SessionTodoDisplay: vi.fn(() => null) }))
 vi.mock('@/components/session/SessionList', () => ({ SessionList: vi.fn(() => null) }))
@@ -113,8 +122,8 @@ vi.mock('@/components/project/ProjectNotFoundDialog', () => ({ ProjectNotFoundDi
 
 const createQueryClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-const renderSession = (sessionID = 'session-1') => render(
-  <MemoryRouter initialEntries={[`/repos/1/sessions/${sessionID}`]}>
+const renderSession = (sessionID = 'session-1', state?: unknown, repoID = '1') => render(
+  <MemoryRouter initialEntries={[{ pathname: `/repos/${repoID}/sessions/${sessionID}`, state }]}>
     <QueryClientProvider client={createQueryClient()}>
       <Routes>
         <Route path="/repos/:id/sessions/:sessionId" element={<SessionDetail />} />
@@ -126,11 +135,68 @@ const renderSession = (sessionID = 'session-1') => render(
 describe('SessionDetail interrupted first-send handoff', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.streamConnected = true
+    mocks.workspaceAvailable = undefined
+    mocks.transcriptMessages = []
     window.localStorage.clear()
   })
 
   afterEach(() => {
     cleanup()
+  })
+
+  it('shows the first message and provisional title immediately, then deduplicates it against the transcript', async () => {
+    const routeState = {
+      pendingPrompt: { prompt: 'Please inspect this project and fix the issue', messageID: 'optimistic_user_first' },
+      provisionalTitle: 'Please inspect this project and fix',
+      optimisticMessage: { id: 'optimistic_user_first', role: 'user' as const, text: 'Please inspect this project and fix the issue' },
+    }
+
+    const view = renderSession('session-1', routeState)
+
+    expect(await screen.findByText('Please inspect this project and fix the issue')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Switch session: Please inspect this project and fix' })).toBeTruthy()
+
+    mocks.transcriptMessages = [{
+      info: { id: 'optimistic_user_first', role: 'user' },
+      parts: [{ text: 'Please inspect this project and fix the issue' }],
+    }]
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: '/repos/1/sessions/session-1', state: routeState }]}>
+        <QueryClientProvider client={createQueryClient()}>
+          <Routes><Route path="/repos/:id/sessions/:sessionId" element={<SessionDetail />} /></Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(screen.getAllByText('Please inspect this project and fix the issue')).toHaveLength(1))
+    expect(screen.getByRole('button', { name: 'Switch session: Please inspect this project and fix' })).toBeTruthy()
+  })
+
+  it('keeps General Chat sessions usable when their workspace is unavailable', async () => {
+    mocks.workspaceAvailable = false
+
+    renderSession('session-general', undefined, '0')
+
+    expect(await screen.findByTestId('chat-input-mounted')).toBeTruthy()
+    expect(screen.queryByText(/This session's workspace is unavailable/)).toBeNull()
+  })
+
+  it('submits a pending first prompt after session data loads even before SSE connects', async () => {
+    mocks.streamConnected = false
+    savePendingSessionPrompt('session-1', {
+      prompt: 'Start working',
+      messageID: 'optimistic_user_initial',
+    })
+
+    renderSession()
+
+    await waitFor(() => expect(mocks.sendPrompt).toHaveBeenCalledTimes(1))
+    expect(mocks.sendPrompt.mock.calls[0]![0]).toMatchObject({
+      sessionID: 'session-1',
+      prompt: 'Start working',
+      messageID: 'optimistic_user_initial',
+    })
   })
 
   it('shows the interrupted state without replaying the stored message on reload', async () => {
@@ -183,6 +249,7 @@ describe('SessionDetail interrupted first-send handoff', () => {
     })
 
     renderSession()
+    await waitFor(() => expect(mocks.sendPrompt).toHaveBeenCalledTimes(1))
     const [, options] = mocks.sendPrompt.mock.calls[0]
     await act(async () => {
       options.onSuccess({})
