@@ -456,20 +456,6 @@ export function DesktopSidebar() {
               className="h-6 w-auto sm:h-8"
             />
           )}
-          <NotificationsSheet
-            isOpen={notificationsOpen}
-            onOpen={() => setNotificationsOpen(true)}
-            onClose={() => setNotificationsOpen(false)}
-            trigger={(
-              <button
-                type="button"
-                aria-label="Open notifications"
-                className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Bell className="h-4 w-4" />
-              </button>
-            )}
-          />
           <SidebarCollapseToggle collapsed={collapsed} onToggle={toggle} />
         </div>
 
@@ -623,41 +609,66 @@ export function DesktopSidebar() {
           </SidebarSection>
         </div>
 
-        {/* Profile */}
-        <div className="border-t border-border mt-auto">
-          <button
-            type="button"
-            aria-label="Open account settings"
-            onClick={() => { setActiveTab('account'); openSettings(); }}
-            className={cn(
-              "flex items-center gap-3 w-full p-3 hover:bg-accent/50 transition-colors text-left",
-              collapsed && "justify-center",
-            )}
-          >
-            <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-medium text-primary flex-shrink-0 overflow-hidden">
-              {user?.image
-                ? (
-                  <img
-                    src={user.image}
-                    alt=""
-                    className="h-full w-full object-cover"
-                  />
-                )
-                : (
-                  (user?.name?.[0] || user?.email?.[0] || "?").toUpperCase()
-                )}
-            </div>
-            {!collapsed && (
-              <div className="flex flex-col items-start min-w-0">
-                <span className="text-sm font-medium text-foreground truncate w-full text-left">
-                  {user?.name || "User"}
-                </span>
-                <span className="text-xs text-muted-foreground truncate w-full text-left">
-                  {user?.email || ""}
-                </span>
+        <div className="mt-auto">
+          <div className="border-t border-border p-2">
+            <NotificationsSheet
+              isOpen={notificationsOpen}
+              onOpen={() => setNotificationsOpen(true)}
+              onClose={() => setNotificationsOpen(false)}
+              side="top"
+              trigger={(
+                <button
+                  type="button"
+                  aria-label="Open notifications"
+                  title={collapsed ? "Notifications" : undefined}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-md p-2.5 text-sm text-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    collapsed && "justify-center",
+                  )}
+                >
+                  <Bell className="h-4 w-4 flex-shrink-0" />
+                  {!collapsed && <span>Notifications</span>}
+                </button>
+              )}
+            />
+          </div>
+
+          {/* Profile */}
+          <div>
+            <button
+              type="button"
+              aria-label="Open account settings"
+              onClick={() => { setActiveTab('account'); openSettings(); }}
+              className={cn(
+                "flex items-center gap-3 w-full p-3 hover:bg-accent/50 transition-colors text-left",
+                collapsed && "justify-center",
+              )}
+            >
+              <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-medium text-primary flex-shrink-0 overflow-hidden">
+                {user?.image
+                  ? (
+                    <img
+                      src={user.image}
+                      alt=""
+                      className="h-full w-full object-cover"
+                    />
+                  )
+                  : (
+                    (user?.name?.[0] || user?.email?.[0] || "?").toUpperCase()
+                  )}
               </div>
-            )}
-          </button>
+              {!collapsed && (
+                <div className="flex flex-col items-start min-w-0">
+                  <span className="text-sm font-medium text-foreground truncate w-full text-left">
+                    {user?.name || "User"}
+                  </span>
+                  <span className="text-xs text-muted-foreground truncate w-full text-left">
+                    {user?.email || ""}
+                  </span>
+                </div>
+              )}
+            </button>
+          </div>
         </div>
       </Sidebar>
 

@@ -9,9 +9,10 @@ interface NotificationsSheetProps {
   onClose: () => void
   onOpen?: () => void
   trigger?: ReactNode
+  side?: 'top' | 'bottom'
 }
 
-export function NotificationsSheet({ isOpen, onClose, onOpen, trigger }: NotificationsSheetProps) {
+export function NotificationsSheet({ isOpen, onClose, onOpen, trigger, side = 'bottom' }: NotificationsSheetProps) {
   const {
     current: currentPermission,
     pendingCount: permissionCount,
@@ -52,7 +53,7 @@ export function NotificationsSheet({ isOpen, onClose, onOpen, trigger }: Notific
       )}
       <PopoverContent
         aria-label="Notifications"
-        side="bottom"
+        side={side}
         align="end"
         sideOffset={8}
         className="w-[min(24rem,calc(100vw-2rem))] max-h-[min(70vh,34rem)] overflow-auto p-0"

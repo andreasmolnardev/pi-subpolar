@@ -710,9 +710,9 @@ export function SessionDetail() {
           </div>
           <Header.Actions className="gap-2 sm:gap-4">
             <div className="flex items-center gap-1">
-              <PendingActionsGroup />
+              <PendingActionsGroup showNotifications={false} />
             </div>
-             <ContextUsageIndicator
+            <ContextUsageIndicator
               apiUrl={apiUrl}
               sessionID={sessionId}
               directory={repoDirectory}
