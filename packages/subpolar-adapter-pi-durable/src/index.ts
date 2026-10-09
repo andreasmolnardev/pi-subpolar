@@ -16,7 +16,7 @@ import {
   type ToolExecutionApi,
   type Tx,
 } from "@earendil-works/pi-durable";
-import type { Models, TSchema } from "@earendil-works/pi-ai";
+import type { ModelThinkingLevel, Models, TSchema } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { defineDoc, type Storage } from "@earendil-works/pi-durable";
 import type { SqliteOptions } from "./sqlite.ts";
@@ -39,6 +39,7 @@ const ConversationMap = defineDoc<{ conversations: Record<string, number> }>({
 
 export interface PiDurableAgentConfig {
   readonly model: { readonly provider: string; readonly modelId: string };
+  readonly thinkingLevel?: ModelThinkingLevel;
   readonly instructions?: string;
   readonly cwd?: string;
 }
@@ -293,6 +294,7 @@ export class PiDurableAgentEngine implements AgentEngine {
     if (this.#bindings.has(conversation.id)) throw new Error("A Durable execution is already active for this owner/session conversation");
     await conversation.configure({
       model: config.model,
+      ...(config.thinkingLevel === undefined ? {} : { thinkingLevel: config.thinkingLevel }),
       ...(config.instructions === undefined ? {} : { instructions: config.instructions }),
       ...(config.cwd === undefined ? {} : { cwd: config.cwd }),
     }, context);

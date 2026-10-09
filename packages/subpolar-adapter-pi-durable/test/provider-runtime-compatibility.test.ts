@@ -63,13 +63,18 @@ describe('Subpolar provider runtime with Pi Durable', () => {
     const fauxModel = faux.getModel()
     provider.getModels = () => [{ ...fauxModel, provider: accountProviderId }]
     Object.defineProperty(provider, 'auth', { value: faux.provider.auth })
-    provider.streamSimple = faux.provider.streamSimple.bind(faux.provider) as unknown as typeof provider.streamSimple
+    const originalStreamSimple = faux.provider.streamSimple.bind(faux.provider)
+    let observedReasoning: unknown
+    provider.streamSimple = ((...args: Parameters<typeof provider.streamSimple>) => {
+      observedReasoning = (args[2] as { reasoning?: unknown } | undefined)?.reasoning
+      return originalStreamSimple(...args as Parameters<typeof faux.provider.streamSimple>)
+    }) as typeof provider.streamSimple
     await runtime.refresh({ allowNetwork: false })
     const model = runtime.getModels(accountProviderId)[0]
     if (!model) throw new Error('Faux model was not published by the owner-scoped runtime')
 
     const engine = await PiDurableAgentEngine.initialize({ databasePath: await databasePath(), models: runtime, tools: [] })
-    await engine.configure('owner-a', 'session-a', { model: { provider: accountProviderId, modelId: model.id } })
+    await engine.configure('owner-a', 'session-a', { model: { provider: accountProviderId, modelId: model.id }, thinkingLevel: 'high' })
     await engine.submit({
       ownerId: 'owner-a', sessionId: 'session-a', requestId: 'compat-inference', runId: 'compat-run', prompt: 'infer deterministically',
     }, {
@@ -88,6 +93,7 @@ describe('Subpolar provider runtime with Pi Durable', () => {
       status: 'done', output: 'provider runtime inference passed',
     })
     expect(faux.state.callCount).toBe(1)
+    expect(observedReasoning).toBe('high')
     await engine.close()
   })
 

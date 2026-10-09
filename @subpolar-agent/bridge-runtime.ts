@@ -847,14 +847,16 @@ function parseModelSelection(model: string | undefined): { providerID: string; m
   return providerID && modelID ? { providerID, modelID } : undefined
 }
 
-function parseDurableModelSelection(model: string | undefined): { providerID: string; modelID: string } | undefined {
+function parseDurableModelSelection(model: string | undefined): { providerID: string; modelID: string; thinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' } | undefined {
   if (!model) return undefined
   const separator = model.indexOf('/')
   if (separator <= 0 || separator === model.length - 1) return undefined
-  const suffix = /:(?:off|minimal|low|medium|high|xhigh)$/.exec(model)
+  const suffix = /:(off|minimal|low|medium|high|xhigh)$/.exec(model)
   const selection = suffix ? model.slice(0, -suffix[0].length) : model
   const parsed = parseProviderModelId(selection)
-  return parsed ? { providerID: parsed.instanceId, modelID: parsed.modelId } : undefined
+  return parsed
+    ? { providerID: parsed.instanceId, modelID: parsed.modelId, ...(suffix ? { thinkingLevel: suffix[1] as 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' } : {}) }
+    : undefined
 }
 
 type ModelSelection = { providerID: string; modelID: string; value: string }
@@ -1546,6 +1548,7 @@ async function executeStatelessPrompt(input: StatelessSubpolarAgentRunInput, own
         const cwd = context.session?.directory ?? sessionProject.path ?? project.path
         await engine.configure(ownerId, input.sessionId, {
           model: { provider: selection.providerID, modelId: selection.modelID },
+          thinkingLevel: selection.thinkingLevel ?? agentRuntime.agent.thinking,
           ...(agentRuntime.systemPrompt ? { instructions: agentRuntime.systemPrompt } : {}),
           cwd,
         })
