@@ -120,6 +120,18 @@ export interface Agent extends JsonRecord {
   description?: string
   systemPrompt?: string
 }
+export interface AgentProfileInput extends JsonRecord {
+  name?: string
+  description?: string
+  mode?: 'primary' | 'subagent'
+  prompt?: string
+  systemPrompt?: string
+  enabled?: boolean
+  template?: 'general' | 'coding' | 'plan' | 'reviewer'
+  model?: string
+  thinking?: 'off' | 'minimal' | 'low' | 'medium' | 'high'
+  approval_mode?: 'auto' | 'ask' | 'deny'
+}
 export interface ProviderModelSelection { providerID: string; modelID: string }
 export interface ProviderModelState {
   recent: ProviderModelSelection[]
@@ -316,8 +328,20 @@ export class SubpolarClient {
     const query = new URLSearchParams()
     if (options.directory !== undefined) query.set('directory', options.directory)
     const suffix = query.size ? `?${query}` : ''
-    const result = await this.request<{ agents: Agent[] } | Agent[]>(`/api/agents${suffix}`)
-    return Array.isArray(result) ? result : result.agents
+    const result = await this.request<unknown>(`/api/agents${suffix}`)
+    if (Array.isArray(result)) return result as Agent[]
+    if (!result || typeof result !== 'object') return []
+    const agents = (result as { agents?: unknown }).agents
+    return Array.isArray(agents) ? agents as Agent[] : []
+  }
+  createAgent(input: AgentProfileInput): Promise<Agent> {
+    return this.request('/api/agents', this.json('POST', input))
+  }
+  updateAgent(id: string, input: Partial<AgentProfileInput>): Promise<Agent> {
+    return this.request(`/api/agents/${encodeURIComponent(id)}`, this.json('PATCH', input))
+  }
+  deleteAgent(id: string): Promise<{ success: boolean }> {
+    return this.request(`/api/agents/${encodeURIComponent(id)}`, this.json('DELETE'))
   }
   async getProviderCatalog(options: { directory?: string; refresh?: boolean; force?: boolean } = {}): Promise<ProviderCatalog> {
     const query = new URLSearchParams()
@@ -325,8 +349,15 @@ export class SubpolarClient {
     if (options.refresh !== undefined) query.set('refresh', String(options.refresh))
     if (options.force !== undefined) query.set('force', String(options.force))
     const suffix = query.size ? `?${query}` : ''
-    const result = await this.request<{ catalog: ProviderCatalog } | ProviderCatalog>(`/api/providers/catalog${suffix}`)
-    return 'catalog' in result ? result.catalog : result
+    const result = await this.request<unknown>(`/api/providers/catalog${suffix}`)
+    const envelope = result && typeof result === 'object' ? result as { catalog?: unknown } : undefined
+    const value = envelope && 'catalog' in envelope ? envelope.catalog : result
+    const catalog = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+    return {
+      providers: Array.isArray(catalog.providers) ? catalog.providers as ProviderCatalog['providers'] : [],
+      accounts: Array.isArray(catalog.accounts) ? catalog.accounts as ProviderCatalog['accounts'] : [],
+      models: Array.isArray(catalog.models) ? catalog.models as ProviderCatalog['models'] : [],
+    }
   }
   async listModels(): Promise<ProviderCatalogModel[]> {
     return [...(await this.getProviderCatalog()).models]

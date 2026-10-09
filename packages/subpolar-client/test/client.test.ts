@@ -41,6 +41,29 @@ describe('SubpolarClient', () => {
     expect(new URL(calls[1]!.url).searchParams.has('directory')).toBe(false)
   })
 
+  test('always returns arrays when agent or model list response collections are absent', async () => {
+    const { client } = mockClient((request) => new URL(request.url).pathname === '/api/agents'
+      ? Response.json({ unexpected: true })
+      : Response.json({ catalog: { providers: null, accounts: null } }))
+    await expect(client.listAgents()).resolves.toEqual([])
+    await expect(client.listModels()).resolves.toEqual([])
+    await expect(client.getProviderCatalog()).resolves.toEqual({ providers: [], accounts: [], models: [] })
+  })
+
+  test('creates, updates, and deletes owner-scoped agent profiles', async () => {
+    const { client, calls } = mockClient((request) => Response.json({ id: 'agent/one', name: 'helper' }, { status: request.method === 'POST' ? 201 : 200 }))
+    const input = { name: 'helper', model: 'openai/account/model', thinking: 'low' as const, systemPrompt: 'Be concise' }
+    await client.createAgent(input)
+    await client.updateAgent('agent/one', { model: 'openai/account/other' })
+    await client.deleteAgent('agent/one')
+    expect(calls.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      'POST /api/agents', 'PATCH /api/agents/agent%2Fone', 'DELETE /api/agents/agent%2Fone',
+    ])
+    expect(await calls[0]!.json()).toEqual(input)
+    expect(await calls[1]!.json()).toEqual({ model: 'openai/account/other' })
+    expect(calls.every((request) => request.headers.get('authorization') === 'Bearer test-token')).toBe(true)
+  })
+
   test('passes the provider catalog directory while preserving envelope handling and default refresh behavior', async () => {
     const catalog = { providers: [], accounts: [], models: [] }
     const { client, calls } = mockClient(() => Response.json({ catalog }))

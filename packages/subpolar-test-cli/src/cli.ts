@@ -9,7 +9,7 @@ const USAGE = `Usage: subpolar-test-cli [global options] <command>
 Global options: --url URL | --env NAME | --profile NAME, --token USER_TOKEN, --timeout MS, --json
 Commands:
   status
-  agents list | agents inspect <ID>
+  agents list | agents inspect <ID> | agents create <NAME> [--description TEXT] [--prompt TEXT] [--system-prompt TEXT] [--model PROVIDER/MODEL] [--thinking LEVEL] [--template NAME] [--mode primary|subagent] [--config JSON] | agents update <ID> [profile options] | agents delete <ID>
   models list
   projects list | create <NAME> [--directory PATH] [--agents NAME,...] | update <ID> [--name NAME] [--directory PATH] [--agents NAME,...] | delete <ID>
   sessions list [--project ID] [--search TEXT]
@@ -138,7 +138,43 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
       const agents = await client.listAgents()
       data = agents.find((agent) => agent.id === id || agent.name === id)
       if (!data) throw new CliUsageError(`Agent not found: ${id}`)
-    } else if (group === 'models' && action === 'list') data = await client.listModels()
+    } else if (group === 'agents' && (action === 'create' || action === 'update')) {
+      const idOrName = required(rest[0], action === 'create' ? 'AGENT_NAME' : 'AGENT_ID')
+      const configText = optionValue(rest, '--config')
+      let input: Record<string, unknown> = {}
+      if (configText) {
+        try {
+          const parsed: unknown = JSON.parse(configText)
+          if (!isRecord(parsed)) throw new Error('expected an object')
+          input = parsed
+        } catch (error) {
+          throw new CliUsageError(`--config must be a JSON object: ${error instanceof Error ? error.message : 'invalid JSON'}`)
+        }
+      }
+      const fields: Array<[string, string]> = [
+        ['--description', 'description'], ['--prompt', 'prompt'], ['--system-prompt', 'systemPrompt'],
+        ['--model', 'model'], ['--thinking', 'thinking'], ['--template', 'template'], ['--mode', 'mode'],
+        ['--approval-mode', 'approval_mode'],
+      ]
+      for (const [flag, key] of fields) {
+        const value = optionValue(rest, flag)
+        if (value !== undefined) input[key] = value
+      }
+      const enabled = optionValue(rest, '--enabled')
+      if (enabled !== undefined) {
+        if (!['true', 'false'].includes(enabled)) throw new CliUsageError('--enabled must be true or false')
+        input.enabled = enabled === 'true'
+      }
+      if (action === 'create') input.name = idOrName
+      if (input.model !== undefined && (typeof input.model !== 'string' || !input.model.includes('/'))) {
+        throw new CliUsageError('--model must use PROVIDER/MODEL format')
+      }
+      if (input.thinking !== undefined && !['off', 'minimal', 'low', 'medium', 'high'].includes(String(input.thinking))) throw new CliUsageError('--thinking must be off, minimal, low, medium, or high')
+      if (input.mode !== undefined && !['primary', 'subagent'].includes(String(input.mode))) throw new CliUsageError('--mode must be primary or subagent')
+      if (action === 'create') data = await client.createAgent(input)
+      else data = await client.updateAgent(idOrName, input)
+    } else if (group === 'agents' && action === 'delete') data = await client.deleteAgent(required(rest[0], 'AGENT_ID'))
+    else if (group === 'models' && action === 'list') data = await client.listModels()
     else if (group === 'projects' && action === 'list') data = await client.listProjects()
     else if (group === 'projects' && action === 'create') {
       const name = required(rest[0], 'PROJECT_NAME')

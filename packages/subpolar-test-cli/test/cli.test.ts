@@ -37,6 +37,21 @@ describe('@subpolar/test-cli', () => {
     }
   })
 
+  test('agents and models list always emit arrays for empty or incomplete API catalogs', async () => {
+    for (const [args, payload] of [
+      [['agents', 'list'], { unexpected: true }],
+      [['models', 'list'], { catalog: { providers: [], accounts: [] } }],
+    ] as const) {
+      const out: string[] = []
+      const result = await runCli([...args, '--json'], {
+        io: { stdout: (value) => out.push(value) },
+        fetch: async () => response(payload),
+      })
+      expect(result).toBe(0)
+      expect(JSON.parse(out[0]!).data).toEqual([])
+    }
+  })
+
   test('creates, updates, and deletes projects through owner-scoped client routes', async () => {
     const requests: Request[] = []
     const responses = [
@@ -59,6 +74,26 @@ describe('@subpolar/test-cli', () => {
     ])
     expect(await requests[0]!.json()).toEqual({ name: 'demo', directory: '/workspace', agentNames: ['master', 'helper'] })
     expect(await requests[1]!.json()).toEqual({ name: 'renamed', agentNames: ['master'] })
+  })
+
+  test('creates, updates, and deletes agent profiles through authenticated owner-scoped routes', async () => {
+    const requests: Request[] = []
+    const responses = [response({ id: 'agent-1', name: 'helper' }, 201), response({ id: 'agent-1', name: 'helper' }), response({ success: true })]
+    for (const args of [
+      ['agents', 'create', 'helper', '--model', 'openai/account/model', '--thinking', 'low', '--prompt', 'Keep answers brief'],
+      ['agents', 'update', 'agent-1', '--system-prompt', 'Be precise', '--enabled', 'true'],
+      ['agents', 'delete', 'agent-1'],
+    ]) {
+      const result = await runCli([...args, '--json'], {
+        io: { stdout: () => undefined }, fetch: async (input, init) => { requests.push(new Request(input, init)); return responses.shift()! },
+      })
+      expect(result).toBe(0)
+    }
+    expect(requests.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      'POST /api/agents', 'PATCH /api/agents/agent-1', 'DELETE /api/agents/agent-1',
+    ])
+    expect(await requests[0]!.json()).toEqual({ name: 'helper', model: 'openai/account/model', thinking: 'low', prompt: 'Keep answers brief' })
+    expect(await requests[1]!.json()).toEqual({ systemPrompt: 'Be precise', enabled: true })
   })
 
   test('creates a session with the requested interactive configuration', async () => {

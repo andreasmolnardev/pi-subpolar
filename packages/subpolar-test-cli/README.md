@@ -7,7 +7,8 @@ An interactive development/debugging CLI for manually operating a running Subpol
 ```sh
 bun run --cwd packages/subpolar-test-cli start -- status --json
 bun run --cwd packages/subpolar-test-cli start -- --url http://localhost:4173 projects list
-bun run --cwd packages/subpolar-test-cli start -- sessions create --title "Debug session"
+bun run --cwd packages/subpolar-test-cli start -- agents create helper --model PROVIDER/MODEL --thinking low --prompt "Keep answers brief"
+bun run --cwd packages/subpolar-test-cli start -- sessions create --title "Debug session" --agent helper
 bun run --cwd packages/subpolar-test-cli start -- sessions send SESSION_ID "hello" --follow
 bun run --cwd packages/subpolar-test-cli start -- sessions inspect SESSION_ID --json
 bun run --cwd packages/subpolar-test-cli start -- sessions tool-call SESSION_ID CALL_ID --json
@@ -31,9 +32,10 @@ Exit codes: `0` success, `1` request/runtime failure, `2` usage error, `3` timeo
 ## Commands
 
 - `status` — health and capability information.
-- `agents list`, `models list`, `projects list`, plus owner-scoped `projects create NAME`, `projects update ID`, and `projects delete ID`.
+- `agents list`, `agents inspect ID`, `agents create NAME`, `agents update ID`, and `agents delete ID`. Profile create/update accepts `--description`, `--prompt`, `--system-prompt`, `--model PROVIDER/MODEL`, `--thinking off|minimal|low|medium|high`, `--template`, `--mode primary|subagent`, `--approval-mode`, `--enabled true|false`, and `--config JSON` for additional profile fields.
+- `models list`, `projects list`, plus owner-scoped `projects create NAME`, `projects update ID`, and `projects delete ID`.
 - `sessions list [--project ID] [--search TEXT]` and `sessions delete SESSION_ID`.
-- `sessions create` with optional `--title`, `--project`, `--directory`, `--agent`, `--model`, `--thinking`, `--permission`, and `--worktree`.
+- `sessions create` with optional `--title`, `--project`, `--directory`, `--agent`, `--model`, `--thinking`, `--permission`, and `--worktree`. Model precedence is explicit session model, selected agent model, then the user's conversation preference.
 - `sessions send SESSION_ID MESSAGE [--follow]` — send a message and start its run; `--follow` then streams session events.
 - `sessions inspect SESSION_ID`, `sessions messages SESSION_ID`, `sessions events SESSION_ID [--after ID] [--limit N]`, `sessions tool-call SESSION_ID CALL_ID`, `sessions errors SESSION_ID`, `sessions update SESSION_ID [--title TEXT] [--archived true|false] [--model PROVIDER/MODEL]`, and `sessions abort SESSION_ID`.
 - `worktrees create PROJECT_ID --branch NAME --source-ref REF --expected-sha SHA` uses the authenticated repository/worktree API; session creation can attach an owned worktree using `--repository ID --worktree ID`.
@@ -43,7 +45,7 @@ Exit codes: `0` success, `1` request/runtime failure, `2` usage error, `3` timeo
 - `approvals list [--session ID]`, `approvals inspect ID [--session ID]`, and `approvals decision ID --session ID --response approve|reject|once|always`.
 - `tools list [--agent ID]`, `agents inspect ID`, approvals list/inspect/decision, and settings inspect/update use the installed client's actual API operations. Agent inspection is derived from the authorized agent listing. Approval inspection can only find currently pending approvals because the server has no approval-by-ID history endpoint.
 
-The current `@subpolar/client` includes session, status, project/model/agent listing, repository status, worktree creation, tool-call inspection, tool listing/policy replacement, settings inspection/update, approval list/decision, and owner-scoped SSE operations. No direct HTTP fallback is used. Authentication uses standard bearer tokens or browser-style cookies; CLI sign-in/token persistence is not implemented yet, so supply a user token with `--token`, `SUBPOLAR_TOKEN`, or a named environment/profile.
+The current `@subpolar/client` includes session, status, project/model/agent operations (including owner-scoped agent profile create/update/delete), repository status, worktree creation, tool-call inspection, tool listing/policy replacement, settings inspection/update, approval list/decision, and owner-scoped SSE operations. No direct HTTP fallback is used. Authentication uses standard bearer tokens or browser-style cookies; CLI sign-in/token persistence is not implemented yet, so supply a normal user token with `--token`, `SUBPOLAR_TOKEN`, or a named environment/profile.
 
 ## Tests
 
