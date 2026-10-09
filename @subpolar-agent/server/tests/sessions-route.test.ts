@@ -162,6 +162,68 @@ describe('handleSessionsRoute', () => {
     await expect(response?.json()).resolves.toEqual(delivery)
   })
 
+  it('rejects legacy prompt RPC commands with DURABLE_RUN_REQUIRED before sending RPC', async () => {
+    for (const command of ['prompt', 'steer', 'follow_up', 'compact']) {
+      const record = { id: 'session-1', userId: 'owner-a', directory: '/workspace', project: 'General Chat' }
+      const url = new URL('http://localhost/api/sessions/session-1/rpc')
+      let sent = false
+      const routeContext = {
+        request: new Request(url.href, { method: 'POST', body: JSON.stringify({ type: command }) }),
+        url,
+        path: ['api', 'sessions', 'session-1', 'rpc'],
+        correlationId: 'test-request',
+        authenticatedUser: { id: 'owner-a' },
+        gatewayCredential: null,
+        internalRequest: false,
+        deps: {
+          applicationDatabase: async () => ({}),
+          ownedSessionRecord: async () => record,
+          runtimeStore: async () => ({}),
+          body: async () => ({ type: command }),
+          sendRpc: async () => { sent = true },
+          json: (body: unknown, status = 200) => Response.json(body, { status }),
+          redactedDiagnostic: () => 'redacted',
+        },
+      } as never
+
+      const response = await handleSessionsRoute(routeContext)
+
+      expect(response?.status).toBe(410)
+      await expect(response?.json()).resolves.toMatchObject({ code: 'DURABLE_RUN_REQUIRED' })
+      expect(sent).toBe(false)
+    }
+  })
+
+  it('returns DURABLE_RUN_REQUIRED from the compatibility prompt route', async () => {
+    const record = { id: 'session-1', userId: 'owner-a', directory: '/workspace', project: 'General Chat' }
+    const url = new URL('http://localhost/api/sessions/session-1/prompt')
+    let sent = false
+    const routeContext = {
+      request: new Request(url.href, { method: 'POST', body: JSON.stringify({ message: 'hello' }) }),
+      url,
+      path: ['api', 'sessions', 'session-1', 'prompt'],
+      correlationId: 'test-request',
+      authenticatedUser: { id: 'owner-a' },
+      gatewayCredential: null,
+      internalRequest: false,
+      deps: {
+        applicationDatabase: async () => ({}),
+        ownedSessionRecord: async () => record,
+        runtimeStore: async () => ({}),
+        body: async () => ({ message: 'hello' }),
+        sendRpc: async () => { sent = true },
+        json: (body: unknown, status = 200) => Response.json(body, { status }),
+        redactedDiagnostic: () => 'redacted',
+      },
+    } as never
+
+    const response = await handleSessionsRoute(routeContext)
+
+    expect(response?.status).toBe(410)
+    await expect(response?.json()).resolves.toMatchObject({ code: 'DURABLE_RUN_REQUIRED' })
+    expect(sent).toBe(false)
+  })
+
   it('aborts the authenticated owner session after ownership is established and preserves RPC response', async () => {
     const record = { id: 'session-1', userId: 'owner-a', directory: '/workspace', project: 'General Chat' }
     const aborts: unknown[][] = []

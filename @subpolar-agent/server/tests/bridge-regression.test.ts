@@ -37,6 +37,38 @@ function section(start: string, end: string, source = bridge): string {
 }
 
 describe('bridge model delivery ordering', () => {
+  it('runs subagents and automations through the owner-scoped Durable runner', () => {
+    const subagent = section('async function executeSubagentHost(', 'const executeAutomationHost:')
+    const automation = section('const executeAutomationHost:', 'const runtimeNotificationAdapter:')
+    const rpcAllowlist = section('const allowedRpcCommands = new Set([', '// Only extensions that do not own session state')
+
+    expect(subagent).toContain('runStatelessPrompt({')
+    expect(subagent).toContain('ownerId: input.task.owner_id')
+    expect(subagent).toContain('sessionId,')
+    expect(subagent).toContain('runId: input.task.id')
+    expect(subagent).toContain('profile: input.task.subagent_id')
+    expect(subagent).toContain('directory: worktree?.path ?? cwd')
+    expect(subagent).toContain('signal: input.signal')
+    expect(subagent).toContain('capabilities: input.capabilities.join(\',\')')
+    expect(subagent).not.toContain("type: 'prompt'")
+    expect(subagent).not.toContain('createPiSession')
+
+    expect(automation).toContain('runStatelessPrompt({')
+    expect(automation).toContain('ownerId: automation.owner_id')
+    expect(automation).toContain('sessionId,')
+    expect(automation).toContain('runId: run.id')
+    expect(automation).toContain('profile: automation.agent_id')
+    expect(automation).toContain('signal,')
+    expect(automation).not.toContain("type: 'prompt'")
+    expect(automation).not.toContain('rpcSession(')
+
+    for (const command of ["'prompt'", "'steer'", "'follow_up'", "'compact'"]) {
+      expect(rpcAllowlist).not.toContain(command)
+    }
+    const queuedFollowUp = section('async function deliverNextQueuedFollowUp(', 'const active = new Map')
+    expect(queuedFollowUp).not.toContain('session.send(')
+    expect(queuedFollowUp).toContain('DURABLE_RUN_REQUIRED')
+  })
   it('resolves stored model suffixes before configuring Pi Durable with the ModelRuntime', () => {
     const selection = section('function parseDurableModelSelection(', 'type ModelSelection')
     const execution = section('async function runStatelessPrompt(', 'function redactConfig')

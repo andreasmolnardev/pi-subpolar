@@ -569,12 +569,13 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       if (path.length === 4 && path[3] === 'rpc' && request.method === 'POST') {
         const input = await deps.body(request)
         if (typeof input.type !== 'string') return deps.json({ error: 'RPC type is required' }, 400)
+        if (['prompt', 'steer', 'follow_up', 'compact'].includes(input.type)) {
+          return deps.json({ error: 'This command requires a Durable run', code: 'DURABLE_RUN_REQUIRED' }, 410)
+        }
         return deps.json(await deps.sendRpc(id, input as any, ownedRecord))
       }
       if (path.length === 4 && path[3] === 'prompt' && request.method === 'POST') {
-        const input = await deps.body(request)
-        if (typeof input.message !== 'string' || !input.message.trim()) return deps.json({ error: 'Prompt message is required' }, 400)
-        return deps.json(await deps.sendRpc(id, { type: 'prompt', message: input.message, ...(typeof input.streamingBehavior === 'string' ? { streamingBehavior: input.streamingBehavior } : {}) }, ownedRecord))
+        return deps.json({ error: 'Prompt compatibility route is disabled; create a Durable run instead', code: 'DURABLE_RUN_REQUIRED' }, 410)
       }
       if (path.length === 4 && path[3] === 'abort' && request.method === 'POST') {
         deps.abortActiveDurableSession(ownerId, id)

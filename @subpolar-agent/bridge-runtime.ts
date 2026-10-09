@@ -488,10 +488,10 @@ void startupReady.catch((error) => {
 
 mkdirSync(projectsRoot, { recursive: true })
 const allowedRpcCommands = new Set([
-  'prompt', 'steer', 'follow_up', 'abort', 'clear_queue', 'new_session', 'get_state',
+  'abort', 'clear_queue', 'new_session', 'get_state',
   'set_model', 'cycle_model', 'get_available_models', 'set_thinking_level',
   'cycle_thinking_level', 'get_available_thinking_levels', 'set_steering_mode',
-  'set_follow_up_mode', 'compact', 'set_auto_compaction', 'set_auto_retry', 'abort_retry',
+  'set_follow_up_mode', 'set_auto_compaction', 'set_auto_retry', 'abort_retry',
   'get_session_stats', 'get_entries', 'get_tree', 'get_last_assistant_text', 'set_session_name',
   'get_messages', 'get_commands', 'fork', 'clone', 'get_fork_messages',
 ])
@@ -1149,15 +1149,24 @@ async function executeSubagentHost(input: { task: import('./server/application/t
     tags: stored.tags,
   }
   const project = generalChatProject()
-  const session = createPiSession(record, project, input.capabilities)
-  const abort = () => { void session.send({ type: 'abort' }) }
-  input.signal.addEventListener('abort', abort, { once: true })
   try {
-    await session.send({ type: 'prompt', message: typeof taskInput.prompt === 'string' ? taskInput.prompt : input.task.title })
-    return { text: session.getLastAssistantText(), sessionId: record.id, worktreeId: worktree?.id }
+    const result = await runStatelessPrompt({
+      ownerId: input.task.owner_id,
+      sessionId,
+      runId: input.task.id,
+      requestId: input.task.id,
+      prompt: typeof taskInput.prompt === 'string' ? taskInput.prompt : input.task.title,
+      signal: input.signal,
+      metadata: { capabilities: input.capabilities.join(',') },
+    }, record, project)
+    const runResult = result as { state?: string; output?: unknown; error?: { message?: string } | null }
+    const output = runResult && typeof runResult === 'object' && 'state' in runResult
+      ? runResult.state === 'completed'
+        ? runResult.output
+        : (() => { throw new Error(runResult.error?.message ?? `Run ended in ${runResult.state}`) })()
+      : result
+    return { text: output, sessionId: record.id, worktreeId: worktree?.id }
   } finally {
-    input.signal.removeEventListener('abort', abort)
-    session.close()
     await repository.deleteSession(input.task.owner_id, sessionId)
     if (worktree && subagentWorktrees) await subagentWorktrees.remove(worktree)
   }
@@ -1179,19 +1188,22 @@ const executeAutomationHost: AutomationExecutor = async (run: AutomationRun, aut
     : null
   const configuredProject: Project = project ? { name: project.name, path: project.path } : generalChatProject()
   if (automation.project_id && !project) throw new Error('Automation project is unavailable')
-  const session = rpcSession(sessionId, automation.owner_id, record, configuredProject, automation.agent_id)
-  const key = activeKey(automation.owner_id, sessionId)
-  const abort = () => { void session.send({ type: 'abort' }).catch(() => undefined) }
-  signal.addEventListener('abort', abort, { once: true })
-  try {
-    if (signal.aborted) throw new Error('Automation cancelled')
-    await session.send({ type: 'prompt', message: automation.prompt })
-    return { text: session.getLastAssistantText(), sessionId }
-  } finally {
-    signal.removeEventListener('abort', abort)
-    session.close()
-    if (active.get(key) === session) active.delete(key)
-  }
+  if (signal.aborted) throw new Error('Automation cancelled')
+  const result = await runStatelessPrompt({
+    ownerId: automation.owner_id,
+    sessionId,
+    runId: run.id,
+    requestId: run.id,
+    prompt: automation.prompt,
+    signal,
+  }, record, configuredProject)
+  const runResult = result as { state?: string; output?: unknown; error?: { message?: string } | null }
+  const output = runResult && typeof runResult === 'object' && 'state' in runResult
+    ? runResult.state === 'completed'
+      ? runResult.output
+      : (() => { throw new Error(runResult.error?.message ?? `Run ended in ${runResult.state}`) })()
+    : result
+  return { text: output, sessionId }
 }
 
 const runtimeNotificationAdapter: NotificationAdapter = async (subscription, item) => {
@@ -1278,11 +1290,7 @@ async function deliverNextQueuedFollowUp(session: PiSdkSession<BridgeClient>): P
   if (!entry) return
   const claimed = await store.claimQueueEntry(ownerId, session.record.id, entry.clientId)
   if (!claimed) return
-  try {
-    await session.send({ type: 'follow_up', message: entry.content, id: entry.clientId })
-  } catch (error) {
-    await store.updateQueueEntry(ownerId, session.record.id, entry.clientId, 'failed', error instanceof Error ? error.message : 'Follow-up delivery failed')
-  }
+  await store.updateQueueEntry(ownerId, session.record.id, entry.clientId, 'failed', 'DURABLE_RUN_REQUIRED: Legacy follow-up execution is disabled')
   broadcastSse({ type: 'message.queue.updated', properties: { sessionID: session.record.id } }, ownerId)
 }
 
