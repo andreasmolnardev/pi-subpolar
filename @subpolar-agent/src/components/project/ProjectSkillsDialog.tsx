@@ -78,7 +78,7 @@ export function ProjectSkillsDialog({
           </DialogDescription>
         </DialogHeader>
         <Tabs value={activeTab} onValueChange={handleTabChange} className="flex-1 flex flex-col min-h-0">
-          <TabsList className="mx-4 sm:mx-6 mt-3">
+          <TabsList className="mt-3">
             <TabsTrigger value="project">Project</TabsTrigger>
             <TabsTrigger value="global">Global</TabsTrigger>
           </TabsList>

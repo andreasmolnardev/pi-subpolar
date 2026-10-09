@@ -271,7 +271,7 @@ export function AutomationJobDialog({ open, onOpenChange, job, isSaving, onSubmi
 
         <Tabs defaultValue="basics" className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="border-b border-border px-3 sm:px-6 pb-3">
-            <TabsList className="grid h-9 w-full grid-cols-4 bg-card p-0.5">
+            <TabsList className="h-9 max-w-full gap-0.5 overflow-x-auto bg-card p-0.5">
               <TabsTrigger value="basics" className="h-8 px-2 text-xs sm:text-sm data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm">General</TabsTrigger>
               <TabsTrigger value="timing" className="h-8 px-2 text-xs sm:text-sm data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm">Timing</TabsTrigger>
               <TabsTrigger value="prompt" className="h-8 px-2 text-xs sm:text-sm data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm">Prompt</TabsTrigger>

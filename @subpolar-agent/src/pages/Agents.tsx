@@ -203,7 +203,7 @@ export function Agents() {
           </div>
         ) : (
           <Tabs value={activeAgent} onValueChange={setActiveAgent} className="flex flex-col min-h-0 flex-1">
-            <TabsList className="w-full justify-start gap-1 overflow-x-auto flex-shrink-0">
+            <TabsList className="max-w-full flex-shrink-0 justify-start gap-1 overflow-x-auto">
               {agentNames.map((name) => {
                 const agent = agents?.[name]
                 const label = agent?.icon ? `${agent.icon} ${name}` : name

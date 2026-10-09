@@ -418,7 +418,7 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
         <div className="flex-1 overflow-y-auto p-2 sm:p-4">
           <Form {...form}>
             <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'profile' | 'preferences')} className="flex flex-col gap-4">
-              <TabsList className="w-full justify-start">
+              <TabsList className="justify-start">
                 <TabsTrigger value="profile">Agent Profile</TabsTrigger>
                 <TabsTrigger value="preferences">Agent Preferences</TabsTrigger>
               </TabsList>
