@@ -4,8 +4,9 @@ import { buildMoreItems, buildNavModel } from './moreDrawerItems'
 describe('buildMoreItems', () => {
   it('returns the history item on the project list route', () => {
     const items = buildMoreItems('/')
-    expect(items).toHaveLength(1)
+    expect(items).toHaveLength(2)
     expect(items[0]).toMatchObject({ key: 'history', label: 'History', to: '/history' })
+    expect(items[1]).toMatchObject({ key: 'automations', label: 'Automations', to: '/automations' })
   })
 
   it('returns the history item for project and session routes', () => {
@@ -13,10 +14,10 @@ describe('buildMoreItems', () => {
     expect(buildMoreItems('/projects/42')[0]).toMatchObject({ key: 'history', to: '/history' })
   })
 
-  it('returns no drawer items for routes without additional actions', () => {
-    expect(buildMoreItems('/history')).toEqual([])
-    expect(buildMoreItems('/automations')).toEqual([])
-    expect(buildMoreItems('/unknown/path')).toEqual([])
+  it('keeps Automations available in the more drawer', () => {
+    expect(buildMoreItems('/history')).toMatchObject([{ key: 'automations', to: '/automations' }])
+    expect(buildMoreItems('/automations')).toMatchObject([{ key: 'automations', to: '/automations' }])
+    expect(buildMoreItems('/unknown/path')).toMatchObject([{ key: 'automations', to: '/automations' }])
   })
 })
 

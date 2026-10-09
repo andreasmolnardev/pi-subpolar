@@ -9,6 +9,7 @@ import { Projects } from './pages/Projects'
 import { ProjectDetail } from './pages/ProjectDetail'
 import { ProjectChanges } from './pages/ProjectChanges'
 import { Automations } from './pages/Automations'
+import { FirstClassAutomations } from './pages/FirstClassAutomations'
 import { SessionDetail } from './pages/SessionDetail'
 import { History } from './pages/History'
 import { Agents } from './pages/Agents'
@@ -212,6 +213,7 @@ const router = createBrowserRouter([
           { path: '/repos/:id', element: <RepoRedirect /> },
           { path: '/repos', element: <RepoRedirect /> },
           { path: '/history', element: <History /> },
+          { path: '/automations', element: <FirstClassAutomations /> },
           { path: '/settings', element: <SettingsRoute /> },
         ],
       },

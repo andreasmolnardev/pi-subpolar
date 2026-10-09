@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Plus, SquarePlus, History } from 'lucide-react'
+import { Plus, SquarePlus, History, Workflow } from 'lucide-react'
 
 export interface MoreDrawerItem {
   key: string
@@ -24,7 +24,9 @@ export interface NavModel {
   items: MoreDrawerItem[]
 }
 
-function getBaseItems(): MoreDrawerItem[] { return [] }
+function getBaseItems(): MoreDrawerItem[] {
+  return [{ key: 'automations', label: 'Automations', icon: Workflow, to: '/automations' }]
+}
 
 export function buildNavModel(pathname: string): NavModel {
   const baseItems = getBaseItems()

@@ -34,6 +34,9 @@ export async function handleSessionsRoute(context: BridgeRequestContext): Promis
       if (local) Object.assign(local, record)
       return record
     }).filter((session) => {
+      // Automation sessions are canonical runs owned by execution history,
+      // not chat sessions to surface in the ordinary navbar/history list.
+      if (Array.isArray(session.tags) && session.tags.some((tag: unknown) => typeof tag === 'string' && tag.toLocaleLowerCase() === 'automation')) return false
       if (!requestedDirectory) return true
       const project = session.project === 'General Chat' ? deps.generalChatProject() : userProjects.find((candidate) => candidate.name === session.project)
       return (session.directory ?? project?.path) === deps.resolve(requestedDirectory)

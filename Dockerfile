@@ -23,6 +23,9 @@ COPY packages/subpolar-operations/package.json ./packages/subpolar-operations/pa
 COPY packages/subpolar-persistance-local/package.json ./packages/subpolar-persistance-local/package.json
 COPY packages/subpolar-persistance-pocketbase/package.json ./packages/subpolar-persistance-pocketbase/package.json
 COPY packages/subpolar-tools/package.json ./packages/subpolar-tools/package.json
+COPY packages/subpolar-automations/package.json ./packages/subpolar-automations/package.json
+COPY packages/subpolar-client/package.json ./packages/subpolar-client/package.json
+COPY packages/subpolar-test-cli/package.json ./packages/subpolar-test-cli/package.json
 RUN bun install --frozen-lockfile
 
 COPY . .

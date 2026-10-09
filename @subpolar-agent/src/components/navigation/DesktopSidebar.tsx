@@ -23,6 +23,7 @@ import {
   Pencil,
   Plus,
   Trash2,
+  Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSessionCompletedUnread, useSessionStatusForSession, useSessionStatus } from "@/stores/sessionStatusStore";
@@ -464,6 +465,12 @@ export function DesktopSidebar() {
             label="Home"
             active={isActive("/home")}
             onClick={() => navigate("/home")}
+          />
+          <SidebarNavItem
+            icon={Workflow}
+            label="Automations"
+            active={location.pathname === "/automations"}
+            onClick={() => navigate("/automations")}
           />
 
           {!collapsed && (
