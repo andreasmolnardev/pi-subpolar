@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Key, ExternalLink, Copy, Shield, Smartphone } from "lucide-react";
+import { Loader2, Key, ExternalLink, Copy, Search, Shield, Smartphone } from "lucide-react";
 import { providerLoginFlowApi, type ProviderLoginEvent, type ProviderLoginFlowStatus, type ProviderLoginPrompt, type ProviderLoginType } from "@/api/oauth";
 import type { ProviderAuthMethod, ProviderAuthMethodKind } from "@/api/providers";
 
@@ -62,6 +62,7 @@ export function ApiKeyDialog({
   mode = "add",
 }: ApiKeyDialogProps) {
   const [selectedProviderId, setSelectedProviderId] = useState("");
+  const [providerSearch, setProviderSearch] = useState("");
   const [setupStep, setSetupStep] = useState<"provider" | "details">("details");
   const [selectedKind, setSelectedKind] = useState<ProviderAuthMethodKind>("api_key");
   const [displayName, setDisplayName] = useState("");
@@ -76,6 +77,15 @@ export function ApiKeyDialog({
   const activeProvider = providerChoices?.length
     ? providerChoices.find((choice) => choice.providerId === selectedProviderId) ?? null
     : provider;
+  const filteredProviderChoices = useMemo(() => {
+    const query = providerSearch.trim().toLocaleLowerCase();
+    if (!query) return providerChoices ?? [];
+    return (providerChoices ?? []).filter((choice) => [
+      choice.name,
+      choice.providerId,
+      ...choice.methods.map((method) => method.label),
+    ].some((value) => value.toLocaleLowerCase().includes(query)));
+  }, [providerChoices, providerSearch]);
 
   const methods = useMemo(
     () => (activeProvider?.methods ?? []).filter((method) => method.available),
@@ -89,6 +99,7 @@ export function ApiKeyDialog({
   useEffect(() => {
     if (!open) return;
     setSelectedProviderId(provider?.providerId ?? "");
+    setProviderSearch("");
     setSetupStep(providerChoices?.length ? "provider" : "details");
     setDisplayName("");
     setFlow(null);
@@ -240,8 +251,18 @@ export function ApiKeyDialog({
 
         {!flow && setupStep === "provider" && providerChoices?.length ? (
           <div className="space-y-4 py-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={providerSearch}
+                onChange={(event) => setProviderSearch(event.target.value)}
+                placeholder="Search providers…"
+                aria-label="Search providers"
+                className="pl-9"
+              />
+            </div>
             <div className="grid max-h-[50vh] gap-2 overflow-y-auto sm:grid-cols-2">
-              {providerChoices.map((choice) => (
+              {filteredProviderChoices.map((choice) => (
                 <Button
                   key={choice.providerId}
                   type="button"
@@ -258,6 +279,9 @@ export function ApiKeyDialog({
                   </span>
                 </Button>
               ))}
+              {filteredProviderChoices.length === 0 && (
+                <p className="col-span-full py-6 text-center text-sm text-muted-foreground">No providers match your search.</p>
+              )}
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}
             <DialogFooter>
