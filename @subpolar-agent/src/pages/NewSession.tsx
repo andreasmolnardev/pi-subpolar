@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { CircleChevronDown } from 'lucide-react'
@@ -93,7 +93,9 @@ export function NewSession() {
   const [customized, setCustomized] = useState(() => Boolean(route.agentName))
   const [hoveringCustomize, setHoveringCustomize] = useState(() => Boolean(route.agentName))
   const [controlsPinned, setControlsPinned] = useState(false)
+  const [customizationRowHeight, setCustomizationRowHeight] = useState(32)
   const customizationCardRef = useRef<HTMLDivElement>(null)
+  const customizationRowRef = useRef<HTMLDivElement>(null)
   const customizationHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => () => {
@@ -163,6 +165,21 @@ export function NewSession() {
   }, [model, providersQuery.data])
   const selectedModelOption = modelOptions.find((option) => option.value === model)
   const variantOptions = Object.keys(selectedModelOption?.variants ?? {})
+
+  useLayoutEffect(() => {
+    const row = customizationRowRef.current
+    if (!row) return
+
+    const measure = () => {
+      const height = Math.max(32, Math.ceil(row.getBoundingClientRect().height))
+      setCustomizationRowHeight((current) => current === height ? current : height)
+    }
+
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(row)
+    return () => observer.disconnect()
+  }, [contextQuery.data, modelOptions, selectedProject?.isGeneralChat, visibleAgents.length])
 
   if (contextQuery.isLoading) return <div className="flex h-dvh items-center justify-center">Loading...</div>
   if (contextQuery.isError || !contextQuery.data) return <NewSessionError error={contextQuery.error} />
@@ -248,11 +265,14 @@ export function NewSession() {
             onFocus={() => { cancelCustomizationHide(); setHoveringCustomize(true) }}
           >
             <p className="mb-2 text-2xl text-muted-foreground">{motivationalMessage}</p>
-            <div className="relative h-8 max-h-8 overflow-hidden">
+            <div
+              className="relative w-full overflow-hidden transition-[height] duration-300 ease-out"
+              style={{ height: customizationRowHeight }}
+            >
               <div
                 aria-hidden={controlsVisible}
                 inert={controlsVisible}
-                className={`absolute inset-0 flex h-8 max-h-8 items-center justify-center transition-transform duration-300 ease-out ${controlsVisible ? '-translate-y-full' : 'translate-y-0'}`}
+                className={`absolute inset-0 flex items-center justify-center transition-transform duration-300 ease-out ${controlsVisible ? '-translate-y-full' : 'translate-y-0'}`}
               >
                 <button
                   type="button"
@@ -266,12 +286,12 @@ export function NewSession() {
                 </button>
               </div>
               <div
+                ref={customizationRowRef}
                 aria-hidden={!controlsVisible}
                 inert={!controlsVisible}
-
-                className={`absolute inset-0 h-8 max-h-8 transition-transform duration-300 ease-out ${controlsVisible ? 'translate-y-0' : 'translate-y-full pointer-events-none'}`}
+                className={`absolute inset-x-0 top-0 min-h-8 transition-transform duration-300 ease-out ${controlsVisible ? 'translate-y-0' : 'translate-y-full pointer-events-none'}`}
               >
-                <div className="flex h-8 max-h-8 w-full min-w-0 flex-nowrap items-center justify-center gap-1 overflow-hidden whitespace-nowrap text-sm">
+                <div className="flex min-h-8 w-full min-w-0 flex-wrap items-center justify-center gap-x-1 gap-y-1 text-sm">
                   <Select
                     onOpenChange={handleSelectOpenChange}
                     value={resolvedProjectId}
