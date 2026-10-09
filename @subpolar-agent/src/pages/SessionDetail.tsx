@@ -129,6 +129,7 @@ export function SessionDetail() {
     (location.state as PendingPromptLocationState | null)?.provisionalTitle
   ));
   const [workspaceOpenRequest, setWorkspaceOpenRequest] = useState(0);
+  const workspaceTriggerRef = useRef<HTMLButtonElement>(null);
 
   const isMobile = useMobile();
   const { keyboardHeight } = useVisualViewport();
@@ -721,6 +722,7 @@ export function SessionDetail() {
               isDownloadingTranscript={exportingFormat !== null}
             />
             <Button
+              ref={workspaceTriggerRef}
               type="button"
               variant="ghost"
               size="icon"
@@ -849,7 +851,7 @@ export function SessionDetail() {
                   </div>
                 </div>
               )}
-              {!workspaceMissing && sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} projectRouteId={repoId > 0 ? String(repoId) : undefined} openRequest={workspaceOpenRequest} />}
+              {!workspaceMissing && sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} projectRouteId={repoId > 0 ? String(repoId) : undefined} openRequest={workspaceOpenRequest} openButtonRef={workspaceTriggerRef} />}
               {!workspaceMissing && sessionId && !isGeneralChatProject && <div className="pb-2"><CreateWorktreeDialog key={sessionId} sessionId={sessionId} agent={sessionAgent.agent} /></div>}
               {isReconnecting && !isConnected && (
                 <div role="status" aria-live="polite" className="mx-auto mb-2 flex w-full max-w-3xl items-center justify-between gap-3 rounded-full border border-border bg-muted/70 px-3 py-2 text-xs">

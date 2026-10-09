@@ -28,13 +28,32 @@ vi.mock('@/api/session-workspace', () => ({ sessionWorkspaceApi: {
   createGroup: vi.fn(), updateGroup: vi.fn(), stage: vi.fn(), unstage: vi.fn(), commit: vi.fn(),
 } }))
 let workspace: SessionWorkspace
-function mount(sessionId = 'session', projectRouteId?: string, openRequest?: number) {
+function mount(sessionId = 'session', projectRouteId?: string, openRequest = 1) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
-  const view = render(<MemoryRouter><QueryClientProvider client={client}><SessionWorkspaceChanges sessionId={sessionId} projectRouteId={projectRouteId} openRequest={openRequest} /></QueryClientProvider></MemoryRouter>)
+  function Host() {
+    const [request, setRequest] = useState(openRequest)
+    return <MemoryRouter><QueryClientProvider client={client}>
+      <button type="button" aria-label="Open workspace sidebar" onClick={() => setRequest(value => value + 1)}>Open workspace sidebar</button>
+      <SessionWorkspaceChanges sessionId={sessionId} projectRouteId={projectRouteId} openRequest={request} />
+    </QueryClientProvider></MemoryRouter>
+  }
+  const view = render(<Host />)
   return { ...view, client }
 }
-async function review() { fireEvent.click(await screen.findByRole('button', { name: 'Review' })) }
-async function files() { await review(); fireEvent.click(screen.getByRole('tab', { name: 'Files' })) }
+async function review() {
+  if (!screen.queryByRole('tab', { name: 'Review' })) fireEvent.click(screen.getByRole('button', { name: 'Open workspace sidebar' }))
+  await screen.findByRole('tab', { name: 'Review' })
+}
+async function workspaceView(name: 'Files' | 'Browser' | 'Repository') {
+  await review()
+  if (!screen.queryByRole('tab', { name })) {
+    fireEvent.click(screen.getByRole('button', { name: 'Add sidebar view' }))
+    fireEvent.click(await screen.findByRole('button', { name: new RegExp(`${name}$`) }))
+  } else {
+    fireEvent.click(screen.getByRole('tab', { name }))
+  }
+}
+async function files() { await workspaceView('Files') }
 beforeEach(() => {
   vi.resetAllMocks()
   useSessionStatus.getState().clearStatus('session')
@@ -54,24 +73,26 @@ beforeEach(() => {
 
 describe('SessionWorkspaceChanges', () => {
   it('opens and reopens the panel when the open request counter changes', async () => {
-    const view = mount('open-request-session', undefined, 0)
-    const panel = document.querySelector('[aria-label="Session workspace panel"]')!
+    mount('open-request-session', undefined, 0)
+    let panel = document.querySelector('[aria-label="Session workspace panel"]')!
     expect(panel).not.toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Add sidebar view' })).not.toBeInTheDocument()
 
-    view.rerender(<MemoryRouter><QueryClientProvider client={view.client}><SessionWorkspaceChanges sessionId="open-request-session" openRequest={1} /></QueryClientProvider></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open workspace sidebar' }))
     expect(await screen.findByRole('tab', { name: 'Review' })).toBeVisible()
+    panel = document.querySelector('[aria-label="Session workspace panel"]')!
     expect(panel).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Close workspace panel' }))
     expect(panel).not.toBeVisible()
-    view.rerender(<MemoryRouter><QueryClientProvider client={view.client}><SessionWorkspaceChanges sessionId="open-request-session" openRequest={2} /></QueryClientProvider></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open workspace sidebar' }))
     expect(panel).toBeVisible()
   })
 
   it('resolves the durable owned repository ID instead of passing the numeric display ID to Git APIs', async () => {
     const view = mount('repo-context-session', '7')
     await review()
-    fireEvent.click(screen.getByRole('tab', { name: 'Repository' }))
+    await workspaceView('Repository')
     expect((await screen.findAllByText('feature/local-review')).length).toBeGreaterThan(0)
     expect(screen.getByText(/HEAD:/)).toBeInTheDocument()
     expect(screen.getByText('0123456789abcdef')).toBeInTheDocument()
@@ -99,7 +120,7 @@ describe('SessionWorkspaceChanges', () => {
   it('shows repository empty and error states without querying an unlinked project', async () => {
     const view = mount('unlinked-session', '0')
     await review()
-    fireEvent.click(screen.getByRole('tab', { name: 'Repository' }))
+    await workspaceView('Repository')
     expect(await within(screen.getByRole('tabpanel', { name: 'Repository' })).findByText('This session is not linked to a project repository.')).toBeInTheDocument()
     expect(repositoryMetadataMock.sources).not.toHaveBeenCalled()
     expect(gitMocks.status).not.toHaveBeenCalled()
@@ -112,7 +133,7 @@ describe('SessionWorkspaceChanges', () => {
     gitMocks.worktrees.mockRejectedValue(new Error('Git repository is unavailable'))
     const failed = mount('repo-error-session', '7')
     await review()
-    fireEvent.click(screen.getByRole('tab', { name: 'Repository' }))
+    await workspaceView('Repository')
     expect(await screen.findByRole('alert')).toHaveTextContent('Git repository is unavailable')
     failed.unmount()
   })
@@ -122,13 +143,13 @@ describe('SessionWorkspaceChanges', () => {
     gitMocks.status.mockResolvedValueOnce({ repository: { root: '.', gitDir: '.git', bare: false, head: 'account-a-head' }, status: { branch: 'account-a-branch', ahead: 0, behind: 0, entries: [], omitted: [], truncated: false }, requestId: 'a' })
     const view = mount('shared-repo-session', '7')
     await review()
-    fireEvent.click(screen.getByRole('tab', { name: 'Repository' }))
+    await workspaceView('Repository')
     expect(await screen.findByText('account-a-branch')).toBeInTheDocument()
 
     gitMocks.status.mockResolvedValueOnce({ repository: { root: '.', gitDir: '.git', bare: false, head: 'account-b-head' }, status: { branch: 'account-b-branch', ahead: 0, behind: 0, entries: [], omitted: [], truncated: false }, requestId: 'b' })
     act(() => changeAuthOwner('repo-account-b'))
     await review()
-    fireEvent.click(screen.getByRole('tab', { name: 'Repository' }))
+    await workspaceView('Repository')
     expect(await screen.findByText('account-b-branch')).toBeInTheDocument()
     expect(screen.queryByText('account-a-branch')).not.toBeInTheDocument()
     expect(view.client.getQueryCache().getAll().some(query => query.queryKey[0] === 'session-repository-context' && query.queryKey[1] === 'repo-account-a')).toBe(false)
@@ -192,6 +213,7 @@ describe('SessionWorkspaceChanges', () => {
   })
   it('uses backend totals, exposes styled individual diffs, and switches accessible tabs', async () => {
     mount()
+    await review()
     const pill = await screen.findByRole('button', { name: '2 files changed +7 −2' })
     expect(within(pill).getByText('+7')).toBeInTheDocument()
     fireEvent.click(pill)
@@ -199,7 +221,7 @@ describe('SessionWorkspaceChanges', () => {
     expect(screen.getByText('-old')).toHaveClass('bg-red-500/10')
     fireEvent.click(screen.getByRole('button', { name: 'b.ts' }))
     await waitFor(() => expect(api.diff).toHaveBeenCalledWith('session', 'b.ts'))
-    fireEvent.click(screen.getByRole('tab', { name: 'Browser' }))
+    await workspaceView('Browser')
     expect(within(screen.getByRole('tabpanel', { name: 'Browser' })).getByText(/This session is not linked to a project repository/)).toBeVisible()
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Browser' }), { key: 'Home' })
     expect(screen.getByRole('tab', { name: 'Review' })).toHaveAttribute('aria-selected', 'true')
@@ -207,7 +229,9 @@ describe('SessionWorkspaceChanges', () => {
   it('keeps a Files launcher with zero changes and hides Commit for non-Git workspaces', async () => {
     workspace = { ...workspace, isGit: false, files: [], additions: 0, deletions: 0 }
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: 'Files' }))
+    await review()
+    fireEvent.click(screen.getByRole('button', { name: 'Add sidebar view' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Files$/ }))
     expect(await screen.findByRole('navigation', { name: 'Workspace file explorer' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Commit' })).not.toBeInTheDocument()
   })
@@ -233,6 +257,7 @@ describe('SessionWorkspaceChanges', () => {
     workspace.groups[0].paths = ['a.ts']
     vi.mocked(api.commit).mockRejectedValue(new Error('HEAD changed; restage the file'))
     mount()
+    await review()
     fireEvent.click(await screen.findByRole('button', { name: 'Commit' }))
     expect(api.commit).not.toHaveBeenCalled()
     fireEvent.click(screen.getAllByRole('button', { name: 'Commit area' })[0])
@@ -332,12 +357,13 @@ describe('SessionWorkspaceChanges', () => {
   })
   it('quick open activates Files and existing tabs without losing drafts, and validates session events', async () => {
     mount('quick-open')
-    await screen.findByRole('button', { name: 'Review' })
+    await review()
     act(() => requestWorkspaceFile('another-session', 'ignored.ts'))
     act(() => window.dispatchEvent(new CustomEvent(WORKSPACE_OPEN_FILE, { detail: { sessionId: 'quick-open', path: 42 } })))
     expect(api.file).not.toHaveBeenCalled()
     const receive = vi.fn()
     window.addEventListener(WORKSPACE_QUICK_OPEN, receive)
+    fireEvent.click(screen.getByRole('button', { name: 'Add sidebar view' }))
     fireEvent.click(screen.getByRole('button', { name: 'Quick open' }))
     expect(receive.mock.calls[0][0].detail).toEqual({ sessionId: 'quick-open' })
     window.removeEventListener(WORKSPACE_QUICK_OPEN, receive)
@@ -378,6 +404,7 @@ describe('SessionWorkspaceChanges', () => {
   })
   it('polls while a session is active and refreshes when it returns to idle', async () => {
     mount()
+    await review()
     await screen.findByRole('button', { name: '2 files changed +7 −2' })
     vi.useFakeTimers()
     try {
@@ -399,6 +426,7 @@ describe('SessionWorkspaceChanges', () => {
   it('surfaces file permission/binary errors and bounded status errors with retry', async () => {
     vi.mocked(api.get).mockRejectedValueOnce(new Error('Unavailable'))
     mount('file-error')
+    await review()
     expect(await screen.findByRole('alert')).toHaveTextContent('Unavailable')
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await screen.findByRole('button', { name: 'Commit' })
