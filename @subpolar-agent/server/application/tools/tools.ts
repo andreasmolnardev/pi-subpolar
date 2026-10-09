@@ -145,6 +145,7 @@ export type AgentDefinition = {
   project_overrides: Record<string, AgentProjectOverride>
   tool_context_modes: Record<string, ToolContextMode>
   skill_context_modes: Record<string, SkillContextMode>
+  preferences?: Record<string, unknown>
   effective_source: AgentEffectiveSource
   created_at?: number
   updated_at?: number

@@ -466,6 +466,7 @@ export function DesktopSidebar() {
         tool_context_modes: agent.tool_context_modes || {},
         skill_context_modes: agent.skill_context_modes || {},
         project_overrides: agent.project_overrides || {},
+        preferences: agent.preferences || {},
       };
       const saved = existing?.id
         ? await settingsApi.updateAgent(existing.id, request)

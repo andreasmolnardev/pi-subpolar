@@ -124,6 +124,7 @@ export function Agents() {
         tool_context_modes: agent.tool_context_modes || {},
         skill_context_modes: agent.skill_context_modes || {},
         project_overrides: agent.project_overrides || {},
+        preferences: agent.preferences || {},
         sort_order: agent.sort_order || 0,
       }
       const savedAgent = id ? await settingsApi.updateAgent(id, request) : await settingsApi.createAgent(request)

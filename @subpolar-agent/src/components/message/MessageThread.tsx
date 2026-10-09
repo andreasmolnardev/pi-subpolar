@@ -34,6 +34,7 @@ interface MessageThreadProps {
   onSuggestionSelect?: (suggestion: string) => void
   sessionStartedAt?: number
   readOnly?: boolean
+  agentPreferences?: Record<string, unknown>
 }
 
 function SendingIndicator() {
@@ -353,6 +354,7 @@ const MessageRow = memo(function MessageRow({
             <div key={`${msg.id}-${part.id}-${partIndex}`}>
               <MessagePart
                 part={part}
+                simpleChatMode={simpleChatMode}
                 role={msg.role}
                 allParts={parts}
                 partIndex={partIndex}
@@ -403,6 +405,7 @@ const MessageRow = memo(function MessageRow({
               <div key={`${msg.id}-${part.id}-${partIndex}`}>
                 <MessagePart
                   part={part}
+                  simpleChatMode={simpleChatMode}
                   role={msg.role}
                   allParts={parts}
                   partIndex={parts.indexOf(part)}
@@ -467,6 +470,7 @@ const MessageRow = memo(function MessageRow({
                   <div key={`${msg.id}-${part.id}-${partIndex}`}>
                     <MessagePart
                       part={part}
+                      simpleChatMode={simpleChatMode}
                       role={msg.role}
                       allParts={parts}
                       partIndex={parts.indexOf(part)}
@@ -521,6 +525,7 @@ const MessageRow = memo(function MessageRow({
               <div key={`${msg.id}-${part.id}-${partIndex}`}>
                 <MessagePart
                   part={part}
+                  simpleChatMode={simpleChatMode}
                   role={msg.role}
                   allParts={parts}
                   partIndex={parts.indexOf(part)}
@@ -554,6 +559,7 @@ export const MessageThread = memo(function MessageThread({
   onSuggestionSelect,
   sessionStartedAt,
   readOnly = false,
+  agentPreferences,
 }: MessageThreadProps) {
   const [editingUserMessageId, setEditingUserMessageId] = useState<string | null>(null)
   const [editingForAssistantId, setEditingForAssistantId] = useState<string | null>(null)
@@ -563,7 +569,9 @@ export const MessageThread = memo(function MessageThread({
   const retryMutation = useRefreshMessage({ apiUrl, sessionId: sessionID, directory })
   const sessionStatus = useSessionStatusForSession(sessionID)
   const { preferences } = useSettings()
-  const simpleChatMode = preferences?.simpleChatMode ?? false
+  const simpleChatMode = typeof agentPreferences?.simpleChatMode === 'boolean'
+    ? agentPreferences.simpleChatMode
+    : preferences?.simpleChatMode ?? false
   
   const pendingAssistantId = useMemo(() => {
     if (!messages) return undefined

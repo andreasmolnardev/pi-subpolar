@@ -734,6 +734,7 @@ export function SessionDetail() {
               model={modelString || undefined}
               suggestionsByAssistantId={suggestionsByAssistantId}
               onSuggestionSelect={isArchived ? undefined : handleSuggestionSelect}
+              agentPreferences={sessionAgent.preferences}
               readOnly={isArchived}
             />
           ) : null}

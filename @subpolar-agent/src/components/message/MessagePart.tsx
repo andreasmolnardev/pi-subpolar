@@ -28,6 +28,7 @@ interface MessagePartProps {
   messageTextContent?: string
   isActiveGenerationStep?: boolean
   assistantMetadata?: AssistantMetadata
+  simpleChatMode?: boolean
 }
 
 interface AssistantMetadata {
@@ -139,9 +140,9 @@ function TTSButton({ messageId, content, className = "" }: TTSButtonProps) {
   )
 }
 
-export const MessagePart = memo(function MessagePart({ part, role, allParts, partIndex, onFileClick, onChildSessionClick, messageTextContent, isActiveGenerationStep = false, assistantMetadata }: MessagePartProps) {
+export const MessagePart = memo(function MessagePart({ part, role, allParts, partIndex, onFileClick, onChildSessionClick, messageTextContent, isActiveGenerationStep = false, assistantMetadata, simpleChatMode: simpleChatModeOverride }: MessagePartProps) {
   const { preferences } = useSettings()
-  const simpleChatMode = preferences?.simpleChatMode ?? false
+  const simpleChatMode = simpleChatModeOverride ?? preferences?.simpleChatMode ?? false
   const copyableContent = getCopyableContent(part, allParts)
   const isMobile = useMobile()
   

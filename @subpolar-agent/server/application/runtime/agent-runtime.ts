@@ -232,6 +232,7 @@ function toAgentDefinition(value: unknown): AgentDefinition {
     project_overrides: object(record.project_overrides) as AgentDefinition['project_overrides'],
     tool_context_modes: modes as AgentDefinition['tool_context_modes'],
     skill_context_modes: skills as AgentDefinition['skill_context_modes'],
+    preferences: object(record.preferences),
     effective_source: object(record.effective_source) as unknown as AgentEffectiveSource,
     created_at: finiteNumber(record.created_at),
     updated_at: finiteNumber(record.updated_at),
