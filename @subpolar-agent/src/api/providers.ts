@@ -398,31 +398,19 @@ export const providerAccountsApi = {
 };
 
 export async function getPiModelState(): Promise<PiModelState> {
-  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`)
+  return providerCatalogClient.getModelState()
 }
 
 export async function addPiRecentModel(model: ModelSelection): Promise<PiModelState> {
-  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ recent: model }),
-  })
+  return providerCatalogClient.addRecentModel(model)
 }
 
 export async function removePiRecentModel(model: ModelSelection): Promise<PiModelState> {
-  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ removeRecent: model }),
-  })
+  return providerCatalogClient.removeRecentModel(model)
 }
 
 export async function togglePiFavoriteModel(model: ModelSelection): Promise<PiModelState> {
-  return fetchWrapper<PiModelState>(`${API_BASE_URL}/api/providers/model-state`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ favorite: model }),
-  })
+  return providerCatalogClient.toggleFavoriteModel(model)
 }
 
 async function getConfiguredProviders(connectedIds: Set<string>): Promise<ProviderWithModels[]> {
