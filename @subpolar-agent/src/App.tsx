@@ -33,6 +33,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useServerHealth } from '@/hooks/useServerHealth'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { CommandPalette } from '@/components/navigation/CommandPalette'
+import { OPEN_SESSION_SEARCH_EVENT, SessionSearchCommand } from '@/components/navigation/SessionSearchCommand'
 import { WORKSPACE_QUICK_OPEN, sessionIdFromPath } from '@/components/workspace/quickOpen'
 import {
   CompletionSuggestionContext,
@@ -85,11 +86,12 @@ function AppShell() {
   const rootRef = useRef<HTMLDivElement>(null)
   const { openSheet, open } = useMobileTabBar()
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   useTheme()
   useKeyboardShortcuts({
-    openCommandPalette: () => setCommandPaletteOpen(true),
+    openCommandPalette: () => setSessionSearchOpen(true),
     newSession: () => navigate('/new'),
-    openSessions: () => navigate('/history'),
+    openSessions: () => setSessionSearchOpen(true),
   })
   useEffect(() => {
     const quickOpen = (event: Event) => {
@@ -97,8 +99,13 @@ function AppShell() {
       const sessionId = sessionIdFromPath(location.pathname)
       if (sessionId && detail?.sessionId === sessionId) setCommandPaletteOpen(true)
     }
+    const openSessionSearch = () => setSessionSearchOpen(true)
     window.addEventListener(WORKSPACE_QUICK_OPEN, quickOpen)
-    return () => window.removeEventListener(WORKSPACE_QUICK_OPEN, quickOpen)
+    window.addEventListener(OPEN_SESSION_SEARCH_EVENT, openSessionSearch)
+    return () => {
+      window.removeEventListener(WORKSPACE_QUICK_OPEN, quickOpen)
+      window.removeEventListener(OPEN_SESSION_SEARCH_EVENT, openSessionSearch)
+    }
   }, [location.pathname])
   const swipeNav = useSwipeNavigation()
 
@@ -153,6 +160,7 @@ function AppShell() {
       <HealthMonitor />
       <SettingsDialog />
       <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
+      <SessionSearchCommand open={sessionSearchOpen} onOpenChange={setSessionSearchOpen} />
       <Toaster position="bottom-right" expand={false} richColors closeButton duration={2500} />
     </EventProvider>
   )

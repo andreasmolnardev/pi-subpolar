@@ -6,9 +6,8 @@ import { MessageThread } from "@/components/message/MessageThread";
 import { ChatInputBar, type ChatInputBarHandle, type NewSessionRouteState } from "@/components/chat/ChatInputBar";
 import { SessionWorkspaceChanges } from '@/components/workspace';
 import { CreateWorktreeDialog } from '@/components/worktree/CreateWorktreeDialog';
-import { ChevronDown, CornerUpLeft, PanelRightOpen } from "lucide-react";
+import { CornerUpLeft, PanelRightOpen } from "lucide-react";
 import { Header } from "@/components/ui/header";
-import { SessionList } from "@/components/session/SessionList";
 import { ProjectNotFoundDialog } from "@/components/project/ProjectNotFoundDialog";
 import { getSessionListPath } from '@/lib/navigation'
 import { GENERAL_CHAT_PROJECT_ID } from '@subpolar/shared/utils'
@@ -22,7 +21,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ContextUsageIndicator } from "@/components/session/ContextUsageIndicator";
 import { useSession, useAbortSession, useSendPrompt, useSessionQueue, useRemoveQueueEntry, useRetryQueueEntry, useReorderQueueEntry, useClearQueue } from "@/hooks/usePiHarness";
 import { useProjectActivity } from "@/hooks/useProjectActivity";
@@ -48,6 +46,7 @@ import { QuestionPrompt } from "@/components/session/QuestionPrompt";
 import { MinimizedQuestionIndicator } from "@/components/session/MinimizedQuestionIndicator";
 import { PermissionRequestDialog } from "@/components/session/PermissionRequestDialog";
 import { PendingActionsGroup } from "@/components/notifications/PendingActionsGroup";
+import { openSessionSearch } from "@/components/navigation/SessionSearchCommand";
 import { SessionSendErrorBanner } from "@/components/session/SessionSendErrorBanner";
 import { SessionTodoDisplay } from "@/components/message/SessionTodoDisplay";
 import { useSidebarAction } from "@/hooks/useSidebarAction";
@@ -118,7 +117,6 @@ export function SessionDetail() {
   const promptInputRef = useRef<ChatInputBarHandle>(null);
   const consumedPendingPromptRef = useRef<string | null>(null);
   const [, setPendingPromptVersion] = useState(0);
-  const [sessionsPopoverOpen, setSessionsPopoverOpen] = useState(false);
   const [minimizedQuestion, setMinimizedQuestion] = useState<QuestionRequest | null>(null);
   const [exportingFormat, setExportingFormat] = useState<TranscriptExportFormat | null>(null);
   const [firstMessageHandoff, setFirstMessageHandoff] = useState(() => {
@@ -542,7 +540,7 @@ export function SessionDetail() {
   }, [navigate, repoId, location.search])
 
   const { leaderActive } = useKeyboardShortcuts({
-    openSessions: () => setSessionsPopoverOpen(true),
+    openSessions: openSessionSearch,
     newSession: handleNewSession,
     closeSession: handleCloseSession,
     compact: handleCompact,
@@ -677,35 +675,9 @@ export function SessionDetail() {
                     <span className="text-muted-foreground">/</span>
                   </>
                 )}
-                <Popover open={sessionsPopoverOpen} onOpenChange={setSessionsPopoverOpen}>
-                  <PopoverTrigger asChild>
-                     <button
-                       aria-label={`Switch session: ${sessionTitle}`}
-                      className="flex min-w-0 items-center gap-1 rounded px-1 -mx-1 transition-colors hover:bg-accent"
-                      title="Switch session"
-                    >
-                      <span className="truncate bg-gradient-to-r from-foreground to-muted-foreground bg-clip-text text-transparent">{sessionTitle}</span>
-                      <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="h-[min(70vh,34rem)] w-[min(92vw,34rem)] p-0">
-                    {apiUrl && (
-                      <SessionList
-                        apiUrl={apiUrl}
-                        directory={repoDirectory}
-                        activeSessionID={sessionId || undefined}
-                        onSelectSession={(selectedSessionID) => {
-                          navigate(`/projects/${repoId}/sessions/${selectedSessionID}${sessionRouteSuffix}`)
-                          setSessionsPopoverOpen(false)
-                        }}
-                        onNewSession={() => {
-                          handleNewSession()
-                          setSessionsPopoverOpen(false)
-                        }}
-                      />
-                    )}
-                  </PopoverContent>
-                </Popover>
+                <span className="min-w-0 truncate bg-gradient-to-r from-foreground to-muted-foreground bg-clip-text text-transparent">
+                  {sessionTitle}
+                </span>
               </div>
             </div>
           </div>

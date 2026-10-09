@@ -41,6 +41,7 @@ import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, Sele
 import { getSidebarProjectRoute } from "@/lib/projectNavigation";
 import { showToast } from "@/lib/toast";
 import { NotificationsSheet } from "@/components/navigation/NotificationsSheet";
+import { SessionSearchButton } from "@/components/navigation/SessionSearchCommand";
 
 const NEW_PROJECT_VALUE = "__new_project__";
 
@@ -611,6 +612,7 @@ export function DesktopSidebar() {
 
         <div className="mt-auto">
           <div className="border-t border-border p-2">
+            <SessionSearchButton collapsed={collapsed} />
             <NotificationsSheet
               isOpen={notificationsOpen}
               onOpen={() => setNotificationsOpen(true)}

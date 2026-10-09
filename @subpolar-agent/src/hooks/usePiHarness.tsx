@@ -45,6 +45,7 @@ const SESSION_LIST_PAGE_SIZE = 25
 interface UseSessionsAcrossDirectoriesOptions {
   search?: string
   limit?: number
+  enabled?: boolean
 }
 
 type SessionPageParam = Record<string, string>
@@ -110,7 +111,7 @@ export const useSessionsAcrossDirectories = (
       }
       return undefined;
     },
-    enabled: !!apiUrl && uniqueDirectories.length > 0,
+    enabled: !!apiUrl && uniqueDirectories.length > 0 && options?.enabled !== false,
     staleTime: 10000,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
