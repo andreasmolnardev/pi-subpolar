@@ -37,6 +37,7 @@ type ToolExecutionContext = {
 import { PocketBaseMemoryService, type MemoryContext, type MemoryScope } from '../../persistence/memory.ts'
 import { BrowserSessionService, BrowserRuntimeError, browserProfileAllows, type BrowserContext } from '../../browser/index.ts'
 import { webFetch, webSearch, type WebFetchInput, type WebSearchInput } from './web-search.ts'
+import { WebSearchCredentialService } from '../../persistence/web-search-credentials.ts'
 import type { SkillRepository } from '../../../../packages/subpolar-contracts/src/index.ts'
 import { createGateway as createCoreGateway } from '../../../../packages/subpolar-core/src/index.ts'
 import type {
@@ -1299,7 +1300,8 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
     if (searchSettings?.enabled === false || configuredProviders.length === 0) throw new Error('Web Search is disabled in Integrations settings')
     const networkPolicy = networkPolicyFromMetadata(tool.metadata)
     networkPolicy.allowedHosts = [...new Set([...(networkPolicy.allowedHosts ?? []), 'mcp.exa.ai', 'html.duckduckgo.com', 'mcp.firecrawl.dev', 'search.parallel.ai'])]
-    return webSearch(input as WebSearchInput, { networkPolicy, providers: configuredProviders })
+    const apiKeys = context?.userId ? await new WebSearchCredentialService(client).getAll(context.userId) : {}
+    return webSearch(input as WebSearchInput, { networkPolicy, providers: configuredProviders, apiKeys })
   }
   if (tool.target === 'web' && tool.operation === 'fetch') return webFetch(input as WebFetchInput, { networkPolicy: networkPolicyFromMetadata(tool.metadata) })
   if (tool.target === 'mcp-discovery' && tool.operation === 'discover') return discoverMcpServer(input as Parameters<typeof discoverMcpServer>[0])

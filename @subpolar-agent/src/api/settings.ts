@@ -141,6 +141,16 @@ export const settingsApi = {
 
   listIntegrations: async (): Promise<{ integrations: IntegrationSettings }> => ({ integrations: await readIntegrationSettings() as IntegrationSettings }),
 
+  getWebSearchCredentialStatus: async (): Promise<{ configured: Record<'exa' | 'firecrawl' | 'parallel', boolean> }> => fetchWrapper(`${API_BASE_URL}/api/providers/web-search-credentials`),
+
+  saveWebSearchCredentials: async (credentials: Partial<Record<'exa' | 'firecrawl' | 'parallel', string>>): Promise<{ configured: Record<'exa' | 'firecrawl' | 'parallel', boolean> }> => fetchWrapper(`${API_BASE_URL}/api/providers/web-search-credentials`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ credentials }),
+  }),
+
+  deleteWebSearchCredential: async (provider: 'exa' | 'firecrawl' | 'parallel'): Promise<{ configured: Record<'exa' | 'firecrawl' | 'parallel', boolean> }> => fetchWrapper(`${API_BASE_URL}/api/providers/web-search-credentials/${encodeURIComponent(provider)}`, { method: 'DELETE' }),
+
   createIntegration: async (integration: IntegrationConfig): Promise<IntegrationConfig> => {
     const integrations = await readIntegrationSettings()
     const next = [...integrations.filter((item) => item.id !== integration.id), integration]
