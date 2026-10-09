@@ -31,6 +31,7 @@ export class EventStream {
   private pendingDirectories = new Set<string>()
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null
   private reconnectDelay: number = RECONNECT_DELAY_MS
+  private reconnectAt: number | null = null
   private connected = false
   private subscriberIdCounter = 0
   private clientId: string | null = null
@@ -203,6 +204,7 @@ export class EventStream {
   private handleOpen(): void {
     this.connected = true
     this.reconnectDelay = RECONNECT_DELAY_MS
+    this.reconnectAt = null
     this.startWatchdog()
     this.markActivity()
     this.notifyStatusChange(true)
@@ -265,6 +267,7 @@ export class EventStream {
     }
 
     this.connected = true
+    this.reconnectAt = null
     this.startWatchdog()
     this.markActivity()
     this.notifyStatusChange(true)
@@ -286,6 +289,7 @@ export class EventStream {
     this.upstreamConnectedCount = null
     this.upstreamTotalCount = null
     this.lastEventAt = null
+    this.reconnectAt = null
     this.pendingDirectories.clear()
     this.notifyHealth()
   }
@@ -294,6 +298,7 @@ export class EventStream {
     if (this.subscribers.size === 0) return
 
     this.reconnectDelay = RECONNECT_DELAY_MS
+    this.reconnectAt = null
     this.disconnectConnectionOnly()
     this.connect()
   }
@@ -313,6 +318,7 @@ export class EventStream {
     this.upstreamConnectedCount = null
     this.upstreamTotalCount = null
     this.lastEventAt = null
+    this.reconnectAt = null
     this.pendingDirectories = new Set(this.directoryRefCounts.keys())
     this.notifyStatusChange(false)
     this.notifyHealth()
@@ -321,8 +327,12 @@ export class EventStream {
   private automationReconnect(): void {
     if (this.reconnectTimeout) return
 
+    this.reconnectAt = Date.now() + this.reconnectDelay
+    this.notifyHealth()
     this.reconnectTimeout = setTimeout(() => {
       this.reconnectTimeout = null
+      this.reconnectAt = null
+      this.notifyHealth()
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS)
       this.connect()
     }, this.reconnectDelay)
@@ -363,6 +373,7 @@ export class EventStream {
       isHealthy: this.connected && this.lastEventAt != null && !isStalled && !upstreamDisconnected,
       lastEventAt: this.lastEventAt,
       isStalled,
+      reconnectAt: this.reconnectAt,
     }
   }
 

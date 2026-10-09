@@ -175,7 +175,7 @@ export function SessionDetail() {
   const repoDirectory = repo?.fullPath;
   const sessionRouteSuffix = '';
 
-  const { isConnected, isReconnecting } = useSSE(apiUrl, repoDirectory, sessionId);
+  const { isConnected, isReconnecting, reconnectInSeconds = 0 } = useSSE(apiUrl, repoDirectory, sessionId);
 
   const transcript = useSessionTranscript(apiUrl, sessionId, repoDirectory);
   const rawMessages = transcript.messages;
@@ -716,12 +716,10 @@ export function SessionDetail() {
               apiUrl={apiUrl}
               sessionID={sessionId}
               directory={repoDirectory}
-               isConnected={isConnected}
-               isReconnecting={isReconnecting}
-               messages={messages}
-               onDownloadTranscript={(format) => void handleExport(format)}
-               isDownloadingTranscript={exportingFormat !== null}
-             />
+              messages={messages}
+              onDownloadTranscript={(format) => void handleExport(format)}
+              isDownloadingTranscript={exportingFormat !== null}
+            />
             <Button
               type="button"
               variant="ghost"
@@ -853,6 +851,12 @@ export function SessionDetail() {
               )}
               {!workspaceMissing && sessionId && <SessionWorkspaceChanges key={sessionId} sessionId={sessionId} projectRouteId={repoId > 0 ? String(repoId) : undefined} openRequest={workspaceOpenRequest} />}
               {!workspaceMissing && sessionId && !isGeneralChatProject && <div className="pb-2"><CreateWorktreeDialog key={sessionId} sessionId={sessionId} agent={sessionAgent.agent} /></div>}
+              {isReconnecting && !isConnected && (
+                <div role="status" aria-live="polite" className="mx-auto mb-2 flex w-full max-w-3xl items-center justify-between gap-3 rounded-full border border-border bg-muted/70 px-3 py-2 text-xs">
+                  <span className="font-medium text-foreground">Connection interrupted</span>
+                  <span className="whitespace-nowrap text-muted-foreground">Attempting to reconnect in {reconnectInSeconds} s</span>
+                </div>
+              )}
               <ChatInputBar
                 ref={promptInputRef}
                 directory={repoDirectory}

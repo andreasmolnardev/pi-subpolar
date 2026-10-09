@@ -65,6 +65,8 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
   const [isConnected, setIsConnected] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isReconnecting, setIsReconnecting] = useState(false)
+  const [reconnectAt, setReconnectAt] = useState<number | null>(() => eventStream.getHealth().reconnectAt ?? null)
+  const [clockNow, setClockNow] = useState(() => Date.now())
   const setSessionStatus = useSessionStatus((state) => state.setStatus)
   const markSessionCompleted = useSessionStatus((state) => state.markCompleted)
   const setSessionTodos = useSessionTodos((state) => state.setTodos)
@@ -408,10 +410,16 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
       }
     }
 
+    const handleHealthChange = (health: ReturnType<typeof eventStream.getHealth>) => {
+      if (!mountedRef.current) return
+      setReconnectAt(health.reconnectAt ?? null)
+    }
+
     const subscription = eventStream.subscribeGlobalMonitor({
       directories: directoriesList,
       onEvent: handleMessage,
       onStatusChange: handleStatusChange,
+      onHealthChange: handleHealthChange,
     })
     eventStreamSubscriptionRef.current = subscription
 
@@ -446,5 +454,15 @@ export const useSSE = (apiUrl: string | null | undefined, directory?: string | s
     }
   }, [currentSessionId, isConnected])
 
-  return { isConnected, error, isReconnecting }
+  useEffect(() => {
+    if (isConnected || reconnectAt === null) return
+    const timer = window.setInterval(() => setClockNow(Date.now()), 250)
+    return () => window.clearInterval(timer)
+  }, [isConnected, reconnectAt])
+
+  const reconnectInSeconds = reconnectAt === null
+    ? 0
+    : Math.max(0, Math.ceil((reconnectAt - clockNow) / 1000))
+
+  return { isConnected, error, isReconnecting, reconnectInSeconds }
 }
