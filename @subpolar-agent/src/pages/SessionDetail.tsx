@@ -112,6 +112,7 @@ export function SessionDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const repoId = Number(id) || 0;
+  const isGeneralChatProject = repoId === GENERAL_CHAT_PROJECT_ID;
   const messageContainerRef = useRef<HTMLDivElement>(null);
   const prependAnchorRef = useRef<{ height: number; top: number; count: number } | null>(null);
   const promptInputRef = useRef<ChatInputBarHandle>(null);
@@ -184,7 +185,6 @@ export function SessionDetail() {
     sessionId,
     repoDirectory,
   );
-  const isGeneralChatProject = repoId === GENERAL_CHAT_PROJECT_ID;
   const workspaceMissing = !isGeneralChatProject && (session as { workspaceAvailable?: boolean } | undefined)?.workspaceAvailable === false;
 
   const messages = useMemo(() => {
@@ -606,7 +606,7 @@ export function SessionDetail() {
     return <Navigate to="/" replace />;
   }
 
-  if (repoError || !repo) {
+  if (!isGeneralChatProject && (repoError || !repo)) {
     return <ProjectNotFoundDialog projectId={id} />
   }
 
