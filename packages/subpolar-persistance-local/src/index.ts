@@ -14,8 +14,8 @@ import type {
   UpdateSkillInput,
   ListSkillsInput,
   GetSkillInput,
-} from "../../subpolar-contracts/src/index.ts";
-import { UnsupportedCapabilityError, SkillConflictError, SkillNotFoundError, SkillValidationError, createSkill, updateSkill, listSkills, resolveEffectiveSkills, assertValidSkill, type JsonValue } from "../../subpolar-contracts/src/index.ts";
+} from "@subpolar/contracts";
+import { UnsupportedCapabilityError, SkillConflictError, SkillNotFoundError, SkillValidationError, createSkill, updateSkill, listSkills, resolveEffectiveSkills, assertValidSkill, type JsonValue } from "@subpolar/contracts";
 
 const ephemeralCapabilities: AdapterCapabilities = {
   adapter: "local-ephemeral",
@@ -110,7 +110,7 @@ export class LocalSkillRepository implements SkillRepository {
     });
   }
 
-  async resolve(ownerId: string, input: Parameters<SkillRepository["resolve"]>[1]): Promise<readonly import("../../subpolar-contracts/src/index.ts").EffectiveSkill[]> {
+  async resolve(ownerId: string, input: Parameters<SkillRepository["resolve"]>[1]): Promise<readonly import("@subpolar/contracts").EffectiveSkill[]> {
     return resolveEffectiveSkills({ ...input, skills: await this.list(ownerId, { includeDisabled: true }) });
   }
 

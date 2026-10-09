@@ -22,7 +22,7 @@ import type {
   StatelessRunResult,
   ToolCall,
   TranscriptEvent,
-} from "../../subpolar-contracts/src/index.ts";
+} from "@subpolar/contracts";
 import { redactAuditValue, type GatewayFailure, type GatewayResult, type ToolGateway } from "./index.ts";
 
 export interface StatelessSubpolarRuntimeOptions {
