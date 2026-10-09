@@ -1,0 +1,53 @@
+{
+  "version": 2,
+  "description": "Owner-scoped first-class automation definitions, deduplicated trigger occurrences, canonical-run-linked executions, action results, and scheduler recovery state.",
+  "collections": [
+    {
+      "name": "subpolar_automations",
+      "fields": ["automationId", "ownerId", "name", "description", "enabled", "agentId", "promptTemplate", "projectId", "trigger", "actions", "executionConfig", "createdAt", "updatedAt", "deletedAt"],
+      "indexes": [
+        "CREATE UNIQUE INDEX idx_subpolar_automations_owner_key ON subpolar_automations (ownerId, automationId)",
+        "CREATE INDEX idx_subpolar_automations_owner_enabled ON subpolar_automations (ownerId, enabled, updatedAt)"
+      ]
+    },
+    {
+      "name": "subpolar_automation_occurrences",
+      "fields": ["occurrenceId", "ownerId", "automationId", "occurrenceKey", "triggerType", "trigger", "payload", "scheduledAt", "receivedAt", "status", "executionId", "claimedAt", "completedAt", "error"],
+      "indexes": [
+        "CREATE UNIQUE INDEX idx_subpolar_automation_occurrence_key ON subpolar_automation_occurrences (ownerId, automationId, occurrenceKey)",
+        "CREATE INDEX idx_subpolar_automation_occurrence_status ON subpolar_automation_occurrences (ownerId, automationId, status, receivedAt)"
+      ]
+    },
+    {
+      "name": "subpolar_automation_executions",
+      "fields": ["executionId", "ownerId", "automationId", "agentId", "projectId", "occurrenceId", "occurrenceKey", "trigger", "canonicalRunId", "resolvedInput", "status", "output", "error", "createdAt", "updatedAt", "startedAt", "completedAt"],
+      "indexes": [
+        "CREATE UNIQUE INDEX idx_subpolar_automation_execution_key ON subpolar_automation_executions (ownerId, executionId)",
+        "CREATE INDEX idx_subpolar_automation_execution_history ON subpolar_automation_executions (ownerId, automationId, createdAt)"
+      ]
+    },
+    {
+      "name": "subpolar_automation_action_executions",
+      "fields": ["actionExecutionId", "ownerId", "executionId", "actionId", "actionType", "ordinal", "status", "input", "result", "error", "createdAt", "updatedAt", "startedAt", "completedAt"],
+      "indexes": [
+        "CREATE UNIQUE INDEX idx_subpolar_automation_action_key ON subpolar_automation_action_executions (ownerId, actionExecutionId)",
+        "CREATE UNIQUE INDEX idx_subpolar_automation_action_identity ON subpolar_automation_action_executions (ownerId, executionId, actionId)",
+        "CREATE INDEX idx_subpolar_automation_action_order ON subpolar_automation_action_executions (ownerId, executionId, ordinal)"
+      ]
+    },
+    {
+      "name": "subpolar_automation_schedules",
+      "fields": ["ownerId", "automationId", "nextRunAt", "lastRunAt", "lastOccurrenceKey", "updatedAt"],
+      "indexes": [
+        "CREATE UNIQUE INDEX idx_subpolar_automation_schedule_owner ON subpolar_automation_schedules (ownerId, automationId)",
+        "CREATE INDEX idx_subpolar_automation_schedule_due ON subpolar_automation_schedules (nextRunAt)"
+      ]
+    }
+  ],
+  "semantics": {
+    "delivery": "at-least-once with stable occurrence keys; exactly-once execution is not claimed",
+    "claiming": "cross-process exclusion requires an injected atomic claim or conditional update implementation",
+    "unknown": "use unknown for a side effect whose completion is uncertain after interruption; do not blindly replay it",
+    "secrets": "store secret references only; secret-like fields in JSON are redacted before persistence"
+  }
+}

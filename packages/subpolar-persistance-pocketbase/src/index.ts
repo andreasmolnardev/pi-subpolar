@@ -40,6 +40,8 @@ import type {
   ToolPolicyRepository,
 } from "./durable.ts";
 export type * from "./durable.ts";
+export * from "./automations.ts";
+export * from "./automation-webhook-secrets.ts";
 
 export const POCKETBASE_ADAPTER_NAME = "pocketbase";
 

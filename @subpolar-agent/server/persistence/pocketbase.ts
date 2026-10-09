@@ -563,6 +563,64 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
   await ensureCollection(client, 'metadata_migrations', [
     field('user_id', 'text', { required: true }), field('migration_name', 'text', { required: true }), field('migrated_at', 'number', { required: true }), field('result', 'json'),
   ], ['CREATE UNIQUE INDEX idx_metadata_migrations_key ON metadata_migrations (user_id, migration_name)'], true)
+  await ensureAutomationV1Collections(client)
+}
+
+/** Ensure collections used by the first-class @subpolar/automations package. */
+export async function ensureAutomationV1Collections(client: PocketBase): Promise<void> {
+  await ensureCollection(client, 'subpolar_automations', [
+    field('automationId', 'text', { required: true }), field('ownerId', 'text', { required: true }), field('name', 'text', { required: true }),
+    field('description', 'text'), field('enabled', 'bool'), field('agentId', 'text', { required: true }),
+    field('promptTemplate', 'text', { required: true }), field('projectId', 'text'), field('trigger', 'json', { required: true }),
+    field('actions', 'json', { required: true }), field('executionConfig', 'json'), field('createdAt', 'text', { required: true }),
+    field('updatedAt', 'text', { required: true }), field('deletedAt', 'text'),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_automations_owner_key ON subpolar_automations (ownerId, automationId)', 'CREATE INDEX idx_subpolar_automations_owner_enabled ON subpolar_automations (ownerId, enabled, updatedAt)'], true)
+  // PocketBase considers an empty JSON object blank, while an absent execution
+  // config is a valid domain default. Reconcile databases created by earlier
+  // builds so definitions without explicit execution options remain creatable.
+  const automationCollection = await (client.collections as unknown as { getOne: (name: string) => Promise<RecordModel> }).getOne('subpolar_automations')
+  const automationFields = Array.isArray(automationCollection.fields) ? automationCollection.fields as Record<string, unknown>[] : []
+  if (automationFields.some((item) => (item.name === 'executionConfig' || item.name === 'enabled') && item.required === true)) {
+    await (client.collections as unknown as { update: (id: string, data: Record<string, unknown>) => Promise<RecordModel> }).update(String(automationCollection.id), {
+      fields: automationFields.map((item) => item.name === 'executionConfig' || item.name === 'enabled' ? { ...item, required: false } : item),
+    })
+  }
+  await ensureCollection(client, 'subpolar_automation_occurrences', [
+    field('occurrenceId', 'text', { required: true }), field('ownerId', 'text', { required: true }), field('automationId', 'text', { required: true }),
+    field('occurrenceKey', 'text', { required: true }), field('triggerType', 'text', { required: true }), field('trigger', 'json'), field('payload', 'json'),
+    field('scheduledAt', 'text'), field('receivedAt', 'text', { required: true }), field('status', 'select', { required: true, values: ['pending', 'claimed', 'completed', 'failed', 'cancelled', 'unknown'], maxSelect: 1 }),
+    field('executionId', 'text'), field('claimedAt', 'text'), field('completedAt', 'text'), field('error', 'json'),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_automation_occurrence_key ON subpolar_automation_occurrences (ownerId, automationId, occurrenceKey)', 'CREATE INDEX idx_subpolar_automation_occurrence_status ON subpolar_automation_occurrences (ownerId, automationId, status, receivedAt)'], true)
+  await ensureCollection(client, 'subpolar_automation_executions', [
+    field('executionId', 'text', { required: true }), field('ownerId', 'text', { required: true }), field('automationId', 'text', { required: true }),
+    field('agentId', 'text', { required: true }), field('projectId', 'text'), field('occurrenceId', 'text', { required: true }), field('occurrenceKey', 'text'), field('trigger', 'json'), field('canonicalRunId', 'text'),
+    field('resolvedInput', 'json', { required: true }), field('status', 'select', { required: true, values: ['pending', 'running', 'waiting_approval', 'processing_output', 'completed', 'failed', 'cancelled', 'interrupted', 'unknown'], maxSelect: 1 }),
+    field('output', 'json'), field('error', 'json'), field('createdAt', 'text', { required: true }), field('updatedAt', 'text', { required: true }),
+    field('startedAt', 'text'), field('completedAt', 'text'),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_automation_execution_key ON subpolar_automation_executions (ownerId, executionId)', 'CREATE INDEX idx_subpolar_automation_execution_history ON subpolar_automation_executions (ownerId, automationId, createdAt)'], true)
+  await ensureCollection(client, 'subpolar_automation_action_executions', [
+    field('actionExecutionId', 'text', { required: true }), field('ownerId', 'text', { required: true }), field('executionId', 'text', { required: true }),
+    field('actionId', 'text', { required: true }), field('actionType', 'text', { required: true }), field('ordinal', 'number'),
+    field('status', 'select', { required: true, values: ['pending', 'running', 'completed', 'failed', 'skipped', 'unknown'], maxSelect: 1 }),
+    field('input', 'json'), field('result', 'json'), field('error', 'json'), field('createdAt', 'text', { required: true }),
+    field('updatedAt', 'text', { required: true }), field('startedAt', 'text'), field('completedAt', 'text'),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_automation_action_key ON subpolar_automation_action_executions (ownerId, actionExecutionId)', 'CREATE UNIQUE INDEX idx_subpolar_automation_action_identity ON subpolar_automation_action_executions (ownerId, executionId, actionId)', 'CREATE INDEX idx_subpolar_automation_action_order ON subpolar_automation_action_executions (ownerId, executionId, ordinal)'], true)
+  const actionCollection = await (client.collections as unknown as { getOne: (name: string) => Promise<RecordModel> }).getOne('subpolar_automation_action_executions')
+  const actionFields = Array.isArray(actionCollection.fields) ? actionCollection.fields as Record<string, unknown>[] : []
+  if (actionFields.some((item) => item.name === 'ordinal' && item.required === true)) {
+    await (client.collections as unknown as { update: (id: string, data: Record<string, unknown>) => Promise<RecordModel> }).update(String(actionCollection.id), {
+      fields: actionFields.map((item) => item.name === 'ordinal' ? { ...item, required: false } : item),
+    })
+  }
+  await ensureCollection(client, 'subpolar_automation_schedules', [
+    field('ownerId', 'text', { required: true }), field('automationId', 'text', { required: true }), field('nextRunAt', 'text'),
+    field('lastRunAt', 'text'), field('lastOccurrenceKey', 'text'), field('updatedAt', 'text', { required: true }),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_automation_schedule_owner ON subpolar_automation_schedules (ownerId, automationId)', 'CREATE INDEX idx_subpolar_automation_schedule_due ON subpolar_automation_schedules (nextRunAt)'], true)
+  await ensureCollection(client, 'subpolar_automation_webhook_secrets', [
+    field('ownerId', 'text', { required: true }), field('automationId', 'text', { required: true }), field('credentialRef', 'text', { required: true }),
+    field('secretHash', 'text', { required: true }), field('createdAt', 'text', { required: true }), field('updatedAt', 'text', { required: true }),
+    field('lastUsedAt', 'text'), field('revokedAt', 'text'),
+  ], ['CREATE UNIQUE INDEX idx_subpolar_automation_webhook_secret_ref ON subpolar_automation_webhook_secrets (credentialRef)', 'CREATE INDEX idx_subpolar_automation_webhook_secret_owner ON subpolar_automation_webhook_secrets (ownerId, automationId)'], true)
 }
 
 function escapeFilter(value: string): string {
