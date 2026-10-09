@@ -94,6 +94,7 @@ import {
   createAutomationWorker,
   expireAutomationLeases,
   markInterruptedRuns,
+  nextCronRun,
   type AutomationExecutor,
   type AutomationRecord,
   type AutomationRun,
@@ -140,6 +141,10 @@ import { proposeTools, registerToolDraft } from './server/application/tools/tool
 import { InvalidSessionTagsError, normalizeSessionTags } from './server/persistence/project-store.ts'
 import { createSuggestionService } from './server/application/suggestions.ts'
 import { createBridgeRequestHandler } from './server/bridge-request-handler.ts'
+import {
+  createFirstClassAutomationRuntime,
+} from './server/application/automations/first-class-runtime.ts'
+import type { AgentExecutionPort, AutomationExecution } from '../packages/subpolar-automations/src/index.ts'
 
 import {
   PiSdkSession,
@@ -206,6 +211,7 @@ let subagentWorktrees: WorktreeController | undefined
 let automationWorker: ReturnType<typeof createAutomationWorker> | undefined
 let automationScheduler: ReturnType<typeof setInterval> | undefined
 let automationMaintenanceInitialized = false
+let firstClassAutomationScheduleTick = false
 let providerAccountServicePromise: Promise<ReturnType<typeof createProviderAccountService>> | undefined
 let providerLoginFlowControllerPromise: Promise<ProviderLoginFlowController> | undefined
 const migratedUsers = new Set<string>()
@@ -1176,6 +1182,272 @@ function automationWorkerFor(client: Awaited<ReturnType<typeof applicationDataba
   return automationWorker
 }
 
+function automationSessionId(executionId: string): string {
+  return `automation-${executionId.replaceAll(/[^a-zA-Z0-9_-]/g, '-')}`
+}
+
+function canonicalAutomationRunId(executionId: string): string {
+  return `automation-run-${executionId}`
+}
+
+function automationAgentExecutor(client: Awaited<ReturnType<typeof applicationDatabase>>): AgentExecutionPort {
+  return {
+    canonicalRunId(automationExecutionId) {
+      return canonicalAutomationRunId(automationExecutionId)
+    },
+    async execute(input) {
+      const ownerId = input.ownerId
+      const agent = (await listAgents(client, ownerId)).find((candidate) => candidate.id === input.agentId)
+      if (!agent || !agent.enabled) throw Object.assign(new Error('Configured automation agent is unavailable'), { code: 'AUTOMATION_AGENT_UNAVAILABLE' })
+      const repository = createProjectSessionRepository(client)
+      const projectRecord = input.projectId ? await repository.getProject(ownerId, input.projectId) : null
+      if (input.projectId && !projectRecord) throw Object.assign(new Error('Automation project is unavailable'), { code: 'AUTOMATION_PROJECT_UNAVAILABLE' })
+      const project: Project = projectRecord ? { name: projectRecord.name, path: projectRecord.path } : generalChatProject()
+      const sessionId = automationSessionId(input.automationExecutionId)
+      const directory = projectRecord ? projectRecord.path : sessionWorkspace(sessionId)
+      if (!projectRecord) mkdirSync(directory, { recursive: true })
+      const stored = await repository.getSession(ownerId, sessionId) ?? await repository.createSession(ownerId, {
+        id: sessionId,
+        ...(projectRecord ? { projectId: projectRecord.id } : {}),
+        project: project.name,
+        title: `Automation · ${agent.name}`,
+        profile: agent.name,
+        directory,
+        tags: ['automation'],
+      })
+      if (stored.userId !== ownerId || stored.profile !== agent.name || (input.projectId && stored.projectId !== input.projectId)) {
+        throw Object.assign(new Error('Automation session ownership or configuration mismatch'), { code: 'AUTOMATION_SESSION_MISMATCH' })
+      }
+      const owner: SessionRecord = localSessionRecord(stored)
+      const runId = canonicalAutomationRunId(input.automationExecutionId)
+      const requestId = `automation-request-${input.automationExecutionId}`
+      try {
+        activeAutomationExecutions.add(input.automationExecutionId)
+        const result = object(await runStatelessPrompt({
+          ownerId,
+          sessionId,
+          runId,
+          requestId,
+          prompt: input.prompt,
+          signal: input.signal,
+          metadata: {
+            automationExecutionId: input.automationExecutionId,
+            idempotencyKey: input.idempotencyKey,
+            triggerType: input.trigger.kind,
+            ...(input.trigger.causal?.automationExecutionId ? { parentAutomationExecutionId: input.trigger.causal.automationExecutionId } : {}),
+            recursionDepth: String(input.trigger.causal?.recursionDepth ?? 0),
+          },
+        }, owner, project))
+        const state = result.state
+        if (state === 'approval_required') {
+          return { runId, status: 'approval_required', error: { code: 'TOOL_APPROVAL_REQUIRED', message: 'The agent is waiting for an owner approval' } }
+        }
+        if (state !== 'completed') {
+          const failure = object(result.error)
+          const status = state === 'interrupted' || state === 'failed' || state === 'unknown' ? state : 'unknown'
+          return { runId, status, error: { code: typeof failure.code === 'string' ? failure.code : 'AUTOMATION_AGENT_RUN_FAILED', message: typeof failure.message === 'string' ? failure.message : 'The agent run did not complete' } }
+        }
+        const rawOutput = result.output
+        const outputObject = object(rawOutput)
+        const text = typeof rawOutput === 'string' ? rawOutput
+          : typeof outputObject.text === 'string' ? outputObject.text
+            : typeof outputObject.content === 'string' ? outputObject.content
+              : undefined
+        return { runId, status: 'completed', output: { ...(text === undefined ? {} : { text }), structured: runtimeJson(rawOutput) } }
+      } finally {
+        activeAutomationExecutions.delete(input.automationExecutionId)
+        const key = activeKey(ownerId, sessionId)
+        const session = active.get(key)
+        if (session) {
+          session.close()
+          active.delete(key)
+        }
+      }
+    },
+    async cancel(ownerId, canonicalRunId) {
+      const prefix = 'automation-run-'
+      if (!canonicalRunId.startsWith(prefix)) return
+      const sessionId = automationSessionId(canonicalRunId.slice(prefix.length))
+      const session = active.get(activeKey(ownerId, sessionId))
+      if (session) await session.send({ type: 'abort' }).catch(() => undefined)
+    },
+  }
+}
+
+function automationToolAction(client: Awaited<ReturnType<typeof applicationDatabase>>) {
+  return async (input: { ownerId: string; execution: AutomationExecution; toolId: string; input: unknown; actionId: string; signal?: AbortSignal }): Promise<unknown> => {
+    const { ownerId, execution } = input
+    if (input.signal?.aborted) throw input.signal.reason ?? new DOMException('Automation action cancelled', 'AbortError')
+    if (ownerId !== execution.ownerId) throw Object.assign(new Error('Automation owner mismatch'), { code: 'AUTOMATION_OWNER_MISMATCH' })
+    const sessionId = automationSessionId(execution.id)
+    const context = await resolveToolSessionContext(client, ownerId, sessionId)
+    const ownedProject = execution.projectId ? await createProjectSessionRepository(client).getProject(ownerId, execution.projectId) : null
+    if (context.agent.id !== execution.agentId || (execution.projectId && (!ownedProject || ownedProject.name !== context.project.name))) {
+      throw Object.assign(new Error('Automation agent or project context changed'), { code: 'AUTOMATION_CONTEXT_MISMATCH' })
+    }
+    const runId = execution.runId ?? canonicalAutomationRunId(execution.id)
+    const requestId = `automation-tool-${execution.id}-${input.actionId}`
+    const gateway = await createCoreToolGateway(client, ownerId, {
+      onApproval: (approval) => {
+        const request = approval.request && typeof approval.request === 'object' ? approval.request as Record<string, unknown> : {}
+        broadcastSse({
+          type: 'permission.asked',
+          directory: context.cwd,
+          properties: permissionAskedProperties({
+            id: approval.approvalId,
+            sessionId: typeof request.sessionId === 'string' ? request.sessionId : sessionId,
+            toolId: approval.toolId,
+            input: request.input,
+            reason: approval.reason ?? 'Tool approval is required',
+          }),
+        }, ownerId)
+      },
+    })
+    const result = await gateway.call({
+      callId: `automation-action-${execution.id}-${input.actionId}`,
+      toolId: input.toolId,
+      input: input.input,
+      runId,
+      requestId,
+      idempotencyKey: `automation-action:${execution.id}:${input.actionId}`,
+    }, {
+      requestId,
+      runId,
+      sessionId,
+      principal: { id: ownerId, kind: 'user' },
+      agentId: context.agent.id,
+      ...(execution.projectId ? { projectId: execution.projectId } : {}),
+      cwd: context.cwd,
+      metadata: { agentName: context.agent.name, automationExecutionId: execution.id },
+    })
+    if (result.ok) return runtimeJson(result.value)
+    if (result.status === 'approval_required') {
+      throw Object.assign(new Error('The selected tool requires owner approval'), { code: 'TOOL_APPROVAL_REQUIRED' })
+    }
+    throw Object.assign(new Error(result.error.message), { code: result.error.code })
+  }
+}
+
+function firstClassAutomationFor(client: Awaited<ReturnType<typeof applicationDatabase>>, ownerId: string) {
+  const agentExecutor = automationAgentExecutor(client)
+  return createFirstClassAutomationRuntime({
+    client,
+    ownerId,
+    agentExecutor,
+    assertAgentAccess: async (candidateOwner, agentId) => {
+      if (candidateOwner !== ownerId) throw new Error('Automation owner mismatch')
+      const agent = (await listAgents(client, ownerId)).find((candidate) => candidate.id === agentId)
+      if (!agent || !agent.enabled) throw Object.assign(new Error('Agent is not available to the authenticated owner'), { code: 'AGENT_NOT_FOUND' })
+    },
+    executeToolAction: automationToolAction(client),
+  })
+}
+
+async function runFirstClassAutomationSchedules(): Promise<void> {
+  if (firstClassAutomationScheduleTick) return
+  firstClassAutomationScheduleTick = true
+  try {
+    const client = await applicationDatabase()
+    const definitions = await client.collection('subpolar_automations').getFullList({ filter: 'enabled = true' }) as Array<Record<string, unknown>>
+    const owners = [...new Set(definitions.filter((item) => item.enabled === true && typeof item.ownerId === 'string').map((item) => String(item.ownerId)))]
+    for (const ownerId of owners) {
+      const runtime = firstClassAutomationFor(client, ownerId)
+      const now = Date.now()
+      const automations = await runtime.definitions.list(ownerId)
+      for (const automation of automations) {
+        if (!automation.enabled) continue
+        try {
+          // Recover interrupted local work after a bridge restart. Pending
+          // records can safely be resumed through the original idempotency
+          // key; a run/action already in progress has an uncertain outcome
+          // and is closed as unknown instead of being replayed.
+          for (const occurrence of await runtime.repositories.occurrences.list(ownerId, automation.id, 500)) {
+            if (occurrence.status !== 'claimed') continue
+            const execution = occurrence.executionId ? await runtime.executions.get(ownerId, occurrence.executionId) : undefined
+            if (!execution) {
+              if (occurrence.trigger) await runtime.deliver(ownerId, automation.id, occurrence.trigger as import('../packages/subpolar-automations/src/types.ts').TriggerInput, occurrence.occurrenceKey, undefined, true)
+              continue
+            }
+            if (execution.status === 'pending') {
+              await runtime.deliver(ownerId, automation.id, execution.trigger, occurrence.occurrenceKey, undefined, true)
+            } else if ((execution.status === 'running' || execution.status === 'processing_output') && !activeAutomationExecutions.has(execution.id)) {
+              const interrupted = await runtime.repositories.executionStore.transitionExecution({
+                ownerId,
+                executionId: execution.id,
+                from: ['running', 'processing_output'],
+                to: 'unknown',
+                now: new Date().toISOString(),
+                error: { code: 'AUTOMATION_INTERRUPTED', message: 'The bridge restarted while this execution was active; the outcome was not replayed' },
+              })
+              if (interrupted) await runtime.repositories.executionStore.finishOccurrence({
+                ownerId, automationId: automation.id, occurrenceKey: occurrence.occurrenceKey,
+                executionId: execution.id, status: 'unknown', now: new Date().toISOString(),
+              })
+            }
+          }
+          if (automation.trigger.type !== 'schedule') continue
+          const state = await runtime.repositories.schedules.get(ownerId, automation.id)
+          let scheduledAt = state?.nextRunAt ? Date.parse(state.nextRunAt) : nextCronRun(automation.trigger.cron, automation.trigger.timezone, now - 60_000)
+          let handled = 0
+          while (Number.isFinite(scheduledAt) && scheduledAt <= now && handled < 24) {
+            const occurrenceIso = new Date(scheduledAt).toISOString()
+            const occurrenceKey = `schedule:${automation.id}:${occurrenceIso}`
+            await runtime.deliver(ownerId, automation.id, {
+              kind: 'schedule',
+              payload: { scheduledAt: occurrenceIso },
+              occurredAt: occurrenceIso,
+            }, occurrenceKey, undefined, true)
+            const nextRunAt = nextCronRun(automation.trigger.cron, automation.trigger.timezone, scheduledAt)
+            await runtime.repositories.schedules.set(ownerId, {
+              ownerId,
+              automationId: automation.id,
+              nextRunAt: new Date(nextRunAt).toISOString(),
+              lastRunAt: occurrenceIso,
+              lastOccurrenceKey: occurrenceKey,
+            })
+            scheduledAt = nextRunAt
+            handled += 1
+          }
+        } catch (error) {
+          console.warn(`First-class automation schedule failed: ${redactedDiagnostic(error)}`)
+        }
+      }
+    }
+  } finally {
+    firstClassAutomationScheduleTick = false
+  }
+}
+
+async function dispatchFirstClassAutomationEvent(
+  ownerId: string,
+  eventType: string,
+  payload: unknown,
+  causal?: { automationExecutionId?: string; parentAutomationExecutionId?: string; recursionDepth?: number },
+  eventId?: string,
+): Promise<void> {
+  if (!ownerId || !eventType || eventType === 'automation.execution' || eventType === 'run.progress') return
+  const rate = requestRateLimiter.consume(rateLimitKey('automation-event', eventType, ownerId), 120, 60_000)
+  if (!rate.allowed) return
+  try {
+    const client = await applicationDatabase()
+    const runtime = firstClassAutomationFor(client, ownerId)
+    const definitions = await runtime.definitions.list(ownerId)
+    const occurredAt = new Date().toISOString()
+    const safePayload = runtimeJson(payload)
+    for (const automation of definitions) {
+      if (!automation.enabled || automation.trigger.type !== 'event' || automation.trigger.eventType !== eventType) continue
+      await runtime.deliver(ownerId, automation.id, {
+        kind: 'event',
+        payload: { eventType, event: safePayload },
+        occurredAt,
+        ...(causal ? { causal: { ...causal, recursionDepth: Math.max(0, causal.recursionDepth ?? 0) } } : {}),
+      }, `event:${eventId ?? crypto.randomUUID()}`, undefined, true)
+    }
+  } catch (error) {
+    console.warn(`First-class automation event dispatch failed: ${redactedDiagnostic(error)}`)
+  }
+}
+
 function routeError(correlationId: string, code: string, message: string, status: number): Response {
   return json({ error: message, code, requestId: correlationId }, status, correlationId)
 }
@@ -1230,6 +1502,7 @@ async function runAutomationSchedulerTick(): Promise<void> {
   }
   await expireAutomationLeases(client, Date.now(), { serializationScope: 'process' })
   await automationWorkerFor(client).executeDue()
+  await runFirstClassAutomationSchedules()
   await new NotificationRepository(client).sweepDue(runtimeNotificationAdapter)
 }
 
@@ -1259,6 +1532,7 @@ async function deliverNextQueuedFollowUp(session: PiSdkSession<BridgeClient>): P
 }
 
 const active = new Map<string, PiSdkSession<BridgeClient>>()
+const activeAutomationExecutions = new Set<string>()
 
 function activeKey(userId: string, id: string): string {
   return tenantSessionKey(userId, id)
@@ -1451,6 +1725,16 @@ async function runStatelessPrompt(input: StatelessSubpolarAgentRunInput, owner: 
     },
     onEvent: (event) => {
       broadcastSse({ type: 'run.event', properties: runtimeJson(event) }, ownerId)
+      if (event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.interrupted') {
+        const currentExecutionId = input.metadata?.automationExecutionId
+        const parentExecutionId = input.metadata?.parentAutomationExecutionId
+        const depth = Number(input.metadata?.recursionDepth ?? '0')
+        void dispatchFirstClassAutomationEvent(ownerId, event.type, event, {
+          ...(typeof currentExecutionId === 'string' ? { automationExecutionId: currentExecutionId } : {}),
+          ...(typeof parentExecutionId === 'string' ? { parentAutomationExecutionId: parentExecutionId } : {}),
+          recursionDepth: Number.isInteger(depth) && depth >= 0 ? depth + (currentExecutionId ? 1 : 0) : 0,
+        }, event.eventId)
+      }
     },
   })
   return runtime.runPrompt(input)
@@ -1726,7 +2010,7 @@ const bridgeRequestDependencies = {
   body, signIn, signUp, changePassword, ownedSessionRecord, configuredSuggestionService, gatewayErrorResponse,
   listGatewayCredentials, publicGatewayCredential, createGatewayCredential, rotateGatewayCredential,
   revokeGatewayCredential, AutomationRepository, automationWorkerFor, ownedProjectIdForRoute, routeError,
-  routeLimit, listAgents, validateTriggerKey, InboxRepository, NotificationRepository, getUserPreferences,
+  routeLimit, listAgents, validateTriggerKey, firstClassAutomationFor, InboxRepository, NotificationRepository, getUserPreferences,
   notificationPreferenceValue, saveUserPreferences, ensureUserDefaults, TaskRepository, TaskRequestError,
   TaskControlError, subagentController, BrowserSessionService, BrowserRuntimeError, createCustomProviderService,
   customProviderDiscoveryUrl, networkPolicyFromMetadata, fetchWithNetworkPolicy, readBoundedResponse,

@@ -2,6 +2,8 @@
 import { handleAuthRoute } from './routes/auth.ts'
 import { handleGatewayRoute } from './routes/gateway.ts'
 import { handleAutomationsRoute } from './routes/automations.ts'
+import { handleAutomationsV1Route } from './routes/automations-v1.ts'
+import { handleAutomationWebhooksV1Route } from './routes/automation-webhooks-v1.ts'
 import { handleInboxRoute } from './routes/inbox.ts'
 import { handleNotificationsRoute } from './routes/notifications.ts'
 import { handleAgentsRoute } from './routes/agents.ts'
@@ -26,6 +28,8 @@ type RouteHandler = (context: BridgeRequestContext) => Promise<Response | undefi
 const routeHandlers: RouteHandler[] = [
   handleAuthRoute,
   handleGatewayRoute,
+  handleAutomationWebhooksV1Route,
+  handleAutomationsV1Route,
   handleAutomationsRoute,
   handleInboxRoute,
   handleNotificationsRoute,
@@ -78,6 +82,7 @@ export function createBridgeRequestHandler(deps: BridgeRequestDependencies) {
     const publicApi = path[0] === 'api' && (
       path[1] === 'auth'
       || path[1] === 'auth-info'
+      || (path[1] === 'v1' && path[2] === 'automation-webhooks')
       || (path[1] === 'v1' && (path[2] === 'capabilities' || path[2] === 'health'))
     )
     const internalRequest = Boolean(deps.internalToken) && request.headers.get('authorization') === `Bearer ${deps.internalToken}`
