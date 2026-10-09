@@ -84,16 +84,23 @@ describe('SubpolarClient', () => {
     expect(calls.every((request) => request.headers.get('authorization') === 'Bearer test-token')).toBe(true)
   })
 
-  test('looks up pending approvals through the supported list route and decides using session scope', async () => {
+  test('routes approval list and decisions with optional directory while retaining sessionId calls', async () => {
     const { client, calls } = mockClient((request) => request.method === 'GET'
-      ? Response.json([{ id: 'approval-1', sessionId: 'session-1', toolId: 'builtin/write' }])
+      ? Response.json([{ id: 'approval-1', sessionID: 'session-1', permission: 'builtin/write' }])
       : Response.json({ ok: true }))
     expect(await client.inspectApproval('approval-1', 'session 1')).toMatchObject({ id: 'approval-1' })
+    await client.approvals(undefined, { directory: '/workspace/one & two' })
     await client.respondToApproval('session 1', 'approval-1', 'once')
+    await client.respondToApproval('session 1', 'approval-1', 'always', { directory: '/workspace/one & two' })
+
     expect(new URL(calls[0]!.url).pathname).toBe('/api/permission')
     expect(new URL(calls[0]!.url).searchParams.get('sessionId')).toBe('session 1')
-    expect(new URL(calls[1]!.url).pathname).toBe('/api/session/session%201/permissions/approval-1')
-    expect(await calls[1]?.json()).toEqual({ response: 'once' })
+    expect(new URL(calls[1]!.url).searchParams.get('directory')).toBe('/workspace/one & two')
+    expect(new URL(calls[2]!.url).pathname).toBe('/api/session/session%201/permissions/approval-1')
+    expect(new URL(calls[2]!.url).search).toBe('')
+    expect(new URL(calls[3]!.url).searchParams.get('directory')).toBe('/workspace/one & two')
+    expect(await calls[2]?.json()).toEqual({ response: 'once' })
+    expect(await calls[3]?.json()).toEqual({ response: 'always' })
   })
 
   test('updates and deletes sessions with optional directory routing', async () => {

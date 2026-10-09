@@ -438,10 +438,27 @@ describe('SubpolarClient', () => {
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ messageID: 'optimistic_user_immediate' })
   })
 
-  it('responds to permissions through the native approval route', async () => {
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+  it('lists pending permissions through the shared approval route with the OpenCode response shape', async () => {
+    const permissions = [{
+      id: 'approval_1', sessionID: 'ses_1', permission: 'builtin/write', patterns: ['builtin/write'],
+      metadata: { toolId: 'builtin/write', input: { path: '/repo/file' }, reason: 'Approval required' }, always: [],
+    }]
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(permissions), { status: 200 }))
 
-    await new SubpolarClient('/api', '/repo').respondToPermission('ses_1', 'approval_1', 'once')
+    await expect(new SubpolarClient('/api', '/repo').listPendingPermissions()).resolves.toEqual(permissions)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/permission?directory=%2Frepo',
+      expect.any(Object),
+    )
+  })
+
+  it('responds to permissions through the shared approval route with directory routing', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true, approval: { id: 'approval_1', status: 'approved' } }), { status: 200 }))
+
+    await expect(new SubpolarClient('/api', '/repo').respondToPermission('ses_1', 'approval_1', 'once')).resolves.toEqual({
+      ok: true, approval: { id: 'approval_1', status: 'approved' },
+    })
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost/api/session/ses_1/permissions/approval_1?directory=%2Frepo',

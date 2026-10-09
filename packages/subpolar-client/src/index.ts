@@ -382,15 +382,20 @@ export class SubpolarClient {
   async replaceAgentToolPolicies(agentId: string, policies: Array<Pick<AgentToolPolicy, 'toolId' | 'effect'>>): Promise<AgentToolPolicy[]> {
     return (await this.request<{ policies: AgentToolPolicy[] }>(`/api/settings/agents/${encodeURIComponent(agentId)}/tool-policies`, this.json('PUT', { policies }))).policies
   }
-  async approvals(sessionId?: string): Promise<Approval[]> {
-    const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''
-    return this.request(`/api/permission${query}`)
+  async approvals(sessionId?: string, options: { directory?: string } = {}): Promise<Approval[]> {
+    const query = new URLSearchParams()
+    if (sessionId !== undefined) query.set('sessionId', sessionId)
+    if (options.directory !== undefined) query.set('directory', options.directory)
+    return this.request(`/api/permission${query.size ? `?${query}` : ''}`)
   }
   async inspectApproval(approvalId: string, sessionId?: string): Promise<Approval | undefined> {
     return (await this.approvals(sessionId)).find((approval) => approval.id === approvalId)
   }
-  respondToApproval(sessionId: string, approvalId: string, response: 'approve' | 'reject' | 'once' | 'always'): Promise<JsonRecord> {
-    return this.request(`/api/session/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(approvalId)}`, this.json('POST', { response }))
+  respondToApproval(sessionId: string, approvalId: string, response: 'approve' | 'reject' | 'once' | 'always', options: { directory?: string } = {}): Promise<JsonRecord> {
+    const query = new URLSearchParams()
+    if (options.directory !== undefined) query.set('directory', options.directory)
+    const suffix = query.size ? `?${query}` : ''
+    return this.request(`/api/session/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(approvalId)}${suffix}`, this.json('POST', { response }))
   }
   worktreeSources(sessionId: string): Promise<WorktreeSources> {
     return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/worktree-sources`)

@@ -474,18 +474,15 @@ export class SubpolarClient {
   }
 
   async respondToPermission(sessionID: string, permissionID: string, response: 'once' | 'always' | 'reject') {
-    return fetchWrapper(`${this.baseURL}/session/${sessionID}/permissions/${permissionID}`, {
-      method: 'POST',
-      params: this.getParams(),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ response }),
+    return sharedApiClient.respondToApproval(sessionID, permissionID, response, {
+      ...(this.directory === undefined ? {} : { directory: this.directory }),
     })
   }
 
   async listPendingPermissions() {
-    return fetchWrapper<PermissionListResponse>(`${this.baseURL}/permission`, {
-      params: this.getParams(),
-    })
+    return await sharedApiClient.approvals(undefined, {
+      ...(this.directory === undefined ? {} : { directory: this.directory }),
+    }) as PermissionListResponse
   }
 
   async replyToQuestion(requestID: string, answers: string[][]) {
