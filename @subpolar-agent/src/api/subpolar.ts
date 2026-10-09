@@ -11,6 +11,9 @@ const sharedApiClient = new SharedSubpolarClient({
 type SessionListResponse = paths['/session']['get']['responses']['200']['content']['application/json']
 type SessionResponse = paths['/session/{sessionID}']['get']['responses']['200']['content']['application/json']
 type SessionListParams = NonNullable<paths['/session']['get']['parameters']['query']> & {
+  project?: string
+  order?: 'asc' | 'desc'
+  cursor?: string
   roots?: boolean
 }
 type CreateSessionRequest = NonNullable<paths['/session']['post']['requestBody']>['content']['application/json']
@@ -118,30 +121,41 @@ export class SubpolarClient {
   }
 
   async listSessions(params?: SessionListParams) {
-    const response = await fetchWrapper<{ sessions: Array<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }> }>(`${this.baseURL}/sessions`, { params: this.getParams(params) })
-    return response.sessions.map(session => this.toLegacySession(session)) as SessionListResponse
+    const directory = this.directory || params?.directory
+    const response = await sharedApiClient.listSessions({
+      ...(params?.project !== undefined && { project: String(params.project) }),
+      ...(directory !== undefined && { directory }),
+      ...(params?.search !== undefined && { search: params.search }),
+      ...(params?.order !== undefined && { order: params.order }),
+      ...(params?.limit !== undefined && { limit: params.limit }),
+      ...(params?.cursor !== undefined && { cursor: params.cursor }),
+    })
+    return response.sessions.map(session => this.toLegacySession(session as Parameters<typeof this.toLegacySession>[0])) as SessionListResponse
   }
 
   async listSessionsPage(params?: SessionPageParams): Promise<SessionPage> {
-    const isCursorRequest = params?.cursor !== undefined
-    const queryParams = isCursorRequest
-      ? this.getParams({ cursor: params.cursor })
-      : this.getParams({
-          ...(params?.limit !== undefined && { limit: params.limit }),
-          ...(params?.order !== undefined && { order: params.order }),
-          ...(params?.search !== undefined && { search: params.search }),
-        })
-    const response = await fetchWrapper<{ sessions: Array<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null }>; nextCursor?: string; page?: SessionPage['page'] }>(`${this.baseURL}/sessions`, { params: queryParams })
+    const response = await sharedApiClient.listSessions({
+      ...(this.directory && { directory: this.directory }),
+      ...(params?.cursor !== undefined
+        ? { cursor: params.cursor }
+        : {
+            ...(params?.limit !== undefined && { limit: params.limit }),
+            ...(params?.order !== undefined && { order: params.order }),
+            ...(params?.search !== undefined && { search: params.search }),
+          }),
+    })
     return {
-      items: response.sessions.map((item) => this.toLegacySession(item)),
+      items: response.sessions.map((item) => this.toLegacySession(item as Parameters<typeof this.toLegacySession>[0])),
       nextCursor: response.nextCursor ?? response.page?.nextCursor,
       page: response.page,
     }
   }
 
   async getSession(sessionID: string): Promise<LegacySession> {
-    const session = await fetchWrapper<{ id: string; title?: string | null; directory?: string | null; createdAt?: number; updatedAt?: number; projectId?: number | null; profile?: string; model?: string; permissionOverride?: 'ask' | 'none' | 'allow_all'; workspaceAvailable?: boolean; revert?: SessionResponse['revert'] }>(`${this.baseURL}/sessions/${sessionID}`, { params: this.getParams() })
-    return this.toLegacySession(session)
+    const session = await sharedApiClient.getSession(sessionID, {
+      ...(this.directory && { directory: this.directory }),
+    })
+    return this.toLegacySession(session as Parameters<typeof this.toLegacySession>[0])
   }
 
   async createSession(data: NewSessionCreateRequest): Promise<LegacySession> {

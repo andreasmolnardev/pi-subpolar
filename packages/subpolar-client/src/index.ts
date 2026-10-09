@@ -335,7 +335,11 @@ export class SubpolarClient {
     const result = await this.request<{ session: Session }>('/api/sessions', this.json('POST', input))
     return result.session
   }
-  getSession(id: string): Promise<Session> { return this.request(`/api/sessions/${encodeURIComponent(id)}`) }
+  getSession(id: string, options: { directory?: string } = {}): Promise<Session> {
+    const query = new URLSearchParams()
+    if (options.directory !== undefined) query.set('directory', options.directory)
+    return this.request(`/api/sessions/${encodeURIComponent(id)}${query.size ? `?${query}` : ''}`)
+  }
   async updateSession(id: string, input: { title?: string; archived?: boolean; tags?: string[]; model?: string }): Promise<Session> {
     const result = await this.request<{ session: Session }>(`/api/sessions/${encodeURIComponent(id)}`, this.json('PATCH', input))
     return result.session

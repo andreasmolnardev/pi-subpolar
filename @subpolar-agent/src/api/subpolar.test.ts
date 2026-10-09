@@ -13,6 +13,49 @@ describe('SubpolarClient', () => {
     vi.unstubAllGlobals()
   })
 
+  it('lists sessions through the shared client with supported filters and legacy adaptation', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      sessions: [{ id: 'ses_1', title: 'General Chat session', projectId: 0, directory: '/selected', createdAt: 10, updatedAt: 20 }],
+    }), { status: 200 }))
+
+    const client = new SubpolarClient('/api', '/selected')
+    const sessions = await client.listSessions({
+      directory: '/other', project: 'General Chat', search: 'chat', order: 'asc', limit: 7, roots: true,
+    })
+
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]))
+    expect(url.pathname).toBe('/api/sessions')
+    expect(url.searchParams.get('directory')).toBe('/selected')
+    expect(url.searchParams.get('project')).toBe('General Chat')
+    expect(url.searchParams.get('search')).toBe('chat')
+    expect(url.searchParams.get('order')).toBe('asc')
+    expect(url.searchParams.get('limit')).toBe('7')
+    expect(url.searchParams.has('roots')).toBe(false)
+    expect(sessions[0]).toMatchObject({
+      id: 'ses_1', projectID: 'default', directory: '/selected', title: 'General Chat session',
+      version: 'pi', time: { created: 10, updated: 20 },
+    })
+  })
+
+  it('reads sessions through the shared client with directory routing and legacy adaptation', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      id: 'ses/a', title: 'Read session', projectId: 4, directory: '/repo', createdAt: 100, updatedAt: 200,
+      profile: 'assistant', model: 'openai/gpt-4.1', permissionOverride: 'ask', workspaceAvailable: true,
+    }), { status: 200 }))
+
+    const session = await new SubpolarClient('/api', '/repo').getSession('ses/a')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost/api/sessions/ses%2Fa?directory=%2Frepo',
+      expect.any(Object),
+    )
+    expect(session).toMatchObject({
+      id: 'ses/a', projectID: '4', directory: '/repo', title: 'Read session',
+      version: 'pi', time: { created: 100, updated: 200 }, profile: 'assistant',
+      model: 'openai/gpt-4.1', permissionOverride: 'ask', workspaceAvailable: true,
+    })
+  })
+
   it('treats empty successful session deletes as success', async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
 
@@ -111,6 +154,26 @@ describe('SubpolarClient', () => {
   })
 
   describe('listSessionsPage', () => {
+    it('uses the shared client and retains cursor-only pagination with directory routing', async () => {
+      fetchMock.mockResolvedValue(new Response(JSON.stringify({
+        sessions: [{ id: 'ses_2', title: 'Next page', updatedAt: 42 }],
+        nextCursor: 'cursor_next',
+        page: { limit: 3, order: 'desc', hasNext: true, nextCursor: 'cursor_next' },
+      }), { status: 200 }))
+
+      const result = await new SubpolarClient('/api', '/repo').listSessionsPage({
+        cursor: 'cursor_current', limit: 99, order: 'asc', search: 'ignored-after-cursor',
+      })
+
+      const url = new URL(String(fetchMock.mock.calls[0]?.[0]))
+      expect(url.pathname).toBe('/api/sessions')
+      expect([...url.searchParams.entries()]).toEqual([['directory', '/repo'], ['cursor', 'cursor_current']])
+      expect(result).toMatchObject({
+        items: [{ id: 'ses_2', directory: '/repo', title: 'Next page', version: 'pi' }],
+        nextCursor: 'cursor_next',
+        page: { limit: 3, order: 'desc', hasNext: true },
+      })
+    })
     it('returns adapted sessions from the native API response', async () => {
       fetchMock.mockResolvedValue(
         new Response(
@@ -169,7 +232,7 @@ describe('SubpolarClient', () => {
       })
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost/api/sessions?limit=25&order=desc&search=deploy&directory=%2Frepo',
+        'http://localhost/api/sessions?directory=%2Frepo&limit=25&order=desc&search=deploy',
         expect.any(Object),
       )
       expect(result.items).toHaveLength(1)
@@ -196,7 +259,7 @@ describe('SubpolarClient', () => {
       await new SubpolarClient('/api', '/repo').listSessionsPage({ cursor: 'cursor_123' })
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost/api/sessions?cursor=cursor_123&directory=%2Frepo',
+        'http://localhost/api/sessions?directory=%2Frepo&cursor=cursor_123',
         expect.any(Object),
       )
     })
