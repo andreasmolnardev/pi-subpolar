@@ -279,8 +279,9 @@ export class SubpolarClient {
     const result = await this.request<{ agents: Agent[] } | Agent[]>('/api/agents')
     return Array.isArray(result) ? result : result.agents
   }
-  async getProviderCatalog(options: { refresh?: boolean; force?: boolean } = {}): Promise<ProviderCatalog> {
+  async getProviderCatalog(options: { directory?: string; refresh?: boolean; force?: boolean } = {}): Promise<ProviderCatalog> {
     const query = new URLSearchParams()
+    if (options.directory !== undefined) query.set('directory', options.directory)
     if (options.refresh !== undefined) query.set('refresh', String(options.refresh))
     if (options.force !== undefined) query.set('force', String(options.force))
     const suffix = query.size ? `?${query}` : ''

@@ -1,6 +1,12 @@
 import { API_BASE_URL } from "@/config";
 import { settingsApi } from "./settings";
-import { fetchWrapper } from "./fetchWrapper";
+import { fetchForSubpolarClient, fetchWrapper } from "./fetchWrapper";
+import { SubpolarClient } from "@subpolar/client";
+
+const providerCatalogClient = new SubpolarClient({
+  baseUrl: API_BASE_URL || globalThis.location?.origin || 'http://localhost',
+  fetch: fetchForSubpolarClient,
+});
 
 export type ProviderSource = "configured" | "local" | "builtin";
 
@@ -317,10 +323,7 @@ function catalogProviderToLegacyProviders(catalog: ProviderCatalog): Provider[] 
 }
 
 export async function getProviderCatalog(directory?: string): Promise<ProviderCatalog> {
-  const response = await fetchWrapper<ProviderCatalog | { catalog: ProviderCatalog }>(`${API_BASE_URL}/api/providers/catalog`, {
-    params: { directory },
-  });
-  return 'catalog' in response ? response.catalog : response;
+  return await providerCatalogClient.getProviderCatalog({ directory }) as unknown as ProviderCatalog;
 }
 
 export const providerCatalogApi = {

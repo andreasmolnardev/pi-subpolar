@@ -39,6 +39,21 @@ describe('SubpolarClient', () => {
     expect(calls.map((request) => new URL(request.url).pathname)).toEqual(['/api/agents', '/api/providers/catalog'])
   })
 
+  test('passes the provider catalog directory while preserving envelope handling and default refresh behavior', async () => {
+    const catalog = { providers: [], accounts: [], models: [] }
+    const { client, calls } = mockClient(() => Response.json({ catalog }))
+
+    await expect(client.getProviderCatalog({ directory: '/workspace/one & two' })).resolves.toEqual(catalog)
+
+    const url = new URL(calls[0]!.url)
+    expect(url.pathname).toBe('/api/providers/catalog')
+    expect(url.searchParams.get('directory')).toBe('/workspace/one & two')
+    expect(url.searchParams.has('refresh')).toBe(false)
+
+    const bareCatalogClient = mockClient(() => Response.json(catalog)).client
+    await expect(bareCatalogClient.getProviderCatalog()).resolves.toEqual(catalog)
+  })
+
   test('uses current provider, model-state, settings, tool, and policy route shapes', async () => {
     const { client, calls } = mockClient(async (request) => {
       const path = new URL(request.url).pathname
