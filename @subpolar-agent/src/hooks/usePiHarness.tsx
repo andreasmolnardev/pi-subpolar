@@ -290,6 +290,7 @@ export const useDeleteSession = (apiUrl: string | null | undefined, directory?: 
     onSettled: () => {
       invalidateSessionListCaches(queryClient, apiUrl);
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: ['stored-sessions'] });
     },
   });
 };

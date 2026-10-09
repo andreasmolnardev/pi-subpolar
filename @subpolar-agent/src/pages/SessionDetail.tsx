@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useParams, useNavigate, Navigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getProject, hasProjectId, listProjects } from "@/api/projects";
+import { listStoredSessions } from "@/api/sessions";
 import { MessageThread } from "@/components/message/MessageThread";
 import { ChatInputBar, type ChatInputBarHandle, type NewSessionRouteState } from "@/components/chat/ChatInputBar";
 import { SessionWorkspaceChanges } from '@/components/workspace';
@@ -184,6 +185,11 @@ export function SessionDetail() {
     sessionId,
     repoDirectory,
   );
+  const { data: storedSessions = [] } = useQuery({
+    queryKey: ["stored-sessions"],
+    queryFn: listStoredSessions,
+  });
+  const isArchived = storedSessions.some((storedSession) => storedSession.id === sessionId && storedSession.archived);
   const workspaceMissing = !isGeneralChatProject && (session as { workspaceAvailable?: boolean } | undefined)?.workspaceAvailable === false;
 
   const messages = useMemo(() => {
@@ -334,11 +340,11 @@ export function SessionDetail() {
   }, [inFlightPrompt, messages]);
 
   useEffect(() => {
-    if (!inFlightPrompt || !sessionId || sendPendingPrompt.isPending || !hasCompletedPromptResponse) return;
+    if (isArchived || !inFlightPrompt || !sessionId || sendPendingPrompt.isPending || !hasCompletedPromptResponse) return;
 
     clearPendingSessionPrompt(sessionId);
     setPendingPromptVersion((version) => version + 1);
-  }, [hasCompletedPromptResponse, inFlightPrompt, sendPendingPrompt.isPending, sessionId]);
+  }, [hasCompletedPromptResponse, inFlightPrompt, isArchived, sendPendingPrompt.isPending, sessionId]);
 
   const submitPendingPrompt = useCallback((prompt: StoredPendingSessionPrompt) => {
     if (!sessionId) return;
@@ -543,9 +549,9 @@ export function SessionDetail() {
     openSessions: openSessionSearch,
     newSession: handleNewSession,
     closeSession: handleCloseSession,
-    compact: handleCompact,
-    undo: handleUndo,
-    redo: handleRedo,
+    compact: isArchived ? undefined : handleCompact,
+    undo: isArchived ? undefined : handleUndo,
+    redo: isArchived ? undefined : handleRedo,
     fork: handleFork,
     toggleSidebar: () => {},
     toggleMode: () => {
@@ -554,13 +560,13 @@ export function SessionDetail() {
       ) as HTMLButtonElement;
       modeButton?.click();
     },
-    submitPrompt: () => {
+    submitPrompt: isArchived ? undefined : () => {
       const submitButton = document.querySelector(
         "[data-submit-prompt]",
       ) as HTMLButtonElement;
       submitButton?.click();
     },
-    abortSession: () => {
+    abortSession: isArchived ? undefined : () => {
       if (sessionId) {
         abortSession.mutate(sessionId);
       }
@@ -727,7 +733,8 @@ export function SessionDetail() {
               sessionStartedAt={session?.time?.created}
               model={modelString || undefined}
               suggestionsByAssistantId={suggestionsByAssistantId}
-              onSuggestionSelect={handleSuggestionSelect}
+              onSuggestionSelect={isArchived ? undefined : handleSuggestionSelect}
+              readOnly={isArchived}
             />
           ) : null}
         </div>
@@ -745,14 +752,14 @@ export function SessionDetail() {
                   <span className="text-sm font-medium">Waiting for shortcut key...</span>
                 </div>
               )}
-              {minimizedQuestion && minimizedQuestion.sessionID === sessionId && (
+              {!isArchived && minimizedQuestion && minimizedQuestion.sessionID === sessionId && (
                 <MinimizedQuestionIndicator
                   question={minimizedQuestion}
                   onRestore={handleRestoreQuestion}
                   onDismiss={() => rejectQuestion(minimizedQuestion.id)}
                 />
               )}
-              {!minimizedQuestion && currentQuestion && currentQuestion.sessionID === sessionId && (
+              {!isArchived && !minimizedQuestion && currentQuestion && currentQuestion.sessionID === sessionId && (
                 <QuestionPrompt
                   key={currentQuestion.id}
                   question={currentQuestion}
@@ -761,7 +768,7 @@ export function SessionDetail() {
                   onMinimize={() => handleMinimizeQuestion(currentQuestion)}
                 />
               )}
-              {activePermission && (
+              {!isArchived && activePermission && (
                 <PermissionRequestDialog
                   key={activePermission.id}
                   permission={activePermission}
@@ -773,7 +780,7 @@ export function SessionDetail() {
                 />
               )}
               <SessionSendErrorBanner sessionId={sessionId} />
-              {interruptedPrompt && (
+              {interruptedPrompt && !isArchived && (
                 <div
                   role="alert"
                   data-testid="interrupted-prompt-state"
@@ -808,16 +815,18 @@ export function SessionDetail() {
                 <div className="mb-2 rounded-xl border border-border bg-muted/60 px-3 py-2" data-testid="enqueued-card">
                   <div className="mb-2 flex items-center justify-between">
                     <span className="text-sm font-medium">Enqueued</span>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => clearQueue.mutate({ sessionID: sessionId! })}>Clear</Button>
+                    {!isArchived && <Button type="button" variant="ghost" size="sm" onClick={() => clearQueue.mutate({ sessionID: sessionId! })}>Clear</Button>}
                   </div>
                   <div className="space-y-1">
                     {queuedEntries.map((entry, index) => (
                       <div key={entry.clientId} className="flex items-center gap-2 rounded-lg bg-background/60 px-2 py-1.5 text-sm">
                         <span className="min-w-0 flex-1 truncate">{entry.content}</span>
-                        {entry.state === 'failed' && <Button type="button" variant="ghost" size="sm" onClick={() => retryQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId })}>Retry</Button>}
-                        <Button type="button" variant="ghost" size="sm" aria-label="Move queued message up" disabled={index === 0} onClick={() => reorderQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId, position: index - 1 })}>Up</Button>
-                        <Button type="button" variant="ghost" size="sm" aria-label="Move queued message down" disabled={index === queuedEntries.length - 1} onClick={() => reorderQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId, position: index + 1 })}>Down</Button>
-                        <Button type="button" variant="ghost" size="sm" onClick={() => removeQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId })}>Remove</Button>
+                        {!isArchived && entry.state === 'failed' && <Button type="button" variant="ghost" size="sm" onClick={() => retryQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId })}>Retry</Button>}
+                        {!isArchived && <>
+                          <Button type="button" variant="ghost" size="sm" aria-label="Move queued message up" disabled={index === 0} onClick={() => reorderQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId, position: index - 1 })}>Up</Button>
+                          <Button type="button" variant="ghost" size="sm" aria-label="Move queued message down" disabled={index === queuedEntries.length - 1} onClick={() => reorderQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId, position: index + 1 })}>Down</Button>
+                          <Button type="button" variant="ghost" size="sm" onClick={() => removeQueueEntry.mutate({ sessionID: sessionId!, clientId: entry.clientId })}>Remove</Button>
+                        </>}
                       </div>
                     ))}
                   </div>
@@ -831,7 +840,11 @@ export function SessionDetail() {
                   <span className="whitespace-nowrap text-muted-foreground">Attempting to reconnect in {reconnectInSeconds} s</span>
                 </div>
               )}
-              <ChatInputBar
+              {isArchived ? (
+                <div role="status" className="mx-auto mb-2 w-full rounded-xl border border-border bg-muted/70 px-4 py-3 text-center text-sm text-muted-foreground">
+                  Archived session · read-only
+                </div>
+              ) : <ChatInputBar
                 ref={promptInputRef}
                 directory={repoDirectory}
                 defaultProjectId={repoId.toString()}
@@ -842,7 +855,7 @@ export function SessionDetail() {
                 disabled={!isConnected}
                 isSessionActive={isStreamingResponse}
                 onScrollToBottom={scrollToBottom}
-              />
+              />}
             </div>
           </div>
         )}
