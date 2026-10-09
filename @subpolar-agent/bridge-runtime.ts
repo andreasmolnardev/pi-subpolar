@@ -592,6 +592,7 @@ function broadcastSse(value: unknown, userId?: string): void {
       if (client.userId !== userId) continue
       try { client.enqueue(chunk) } catch { client.close(); sseClients.delete(client) }
     }
+    void persistSseNotification(userId, safeValue).catch((error) => console.warn(`Unable to project notification: ${redactedDiagnostic(error)}`))
   }).catch((error) => console.warn(`Unable to persist SSE event: ${redactedDiagnostic(error)}`))
 }
 
@@ -1213,6 +1214,83 @@ const runtimeNotificationAdapter: NotificationAdapter = async (subscription, ite
   return createPushNotificationAdapter()(subscription, item)
 }
 
+async function persistSseNotification(ownerId: string, value: unknown): Promise<void> {
+  const event = object(value)
+  const properties = object(event.properties)
+  const eventType = typeof event.type === 'string' ? event.type : ''
+  const sessionId = typeof properties.sessionID === 'string' ? properties.sessionID : undefined
+  if (!sessionId) return
+
+  let kind: import('./server/persistence/inbox.ts').InboxKind | undefined
+  let referenceId: string | undefined
+  let title = ''
+  let body = ''
+  let state: string | undefined
+  if (eventType === 'permission.asked') {
+    kind = 'approval_required'
+    referenceId = typeof properties.id === 'string' ? properties.id : undefined
+    title = 'Approval needed'
+    const permission = typeof properties.permission === 'string' ? properties.permission : 'An action'
+    const patterns = Array.isArray(properties.patterns) ? properties.patterns.filter((part): part is string => typeof part === 'string') : []
+    body = patterns[0] ? `${permission}: ${patterns[0]}` : `${permission} needs your approval.`
+    state = 'pending'
+  } else if (eventType === 'question.asked') {
+    kind = 'agent_question'
+    referenceId = typeof properties.id === 'string' ? properties.id : undefined
+    title = 'Agent needs your input'
+    const questions = Array.isArray(properties.questions) ? properties.questions : []
+    const firstQuestion = questions[0] && typeof questions[0] === 'object' ? object(questions[0]) : {}
+    body = typeof firstQuestion.question === 'string' ? firstQuestion.question : 'The agent has a question for you.'
+    state = 'pending'
+  } else if (eventType === 'session.status') {
+    const status = object(properties.status)
+    state = typeof status.type === 'string' ? status.type : undefined
+    if (state === 'idle') {
+      kind = 'task_completed'
+      title = 'Session finished'
+      body = 'The agent finished processing this session.'
+    } else if (state === 'error') {
+      kind = 'task_failed'
+      title = 'Session encountered an error'
+      body = 'The agent could not finish processing this session.'
+    }
+    referenceId = `${sessionId}-${crypto.randomUUID()}`
+  }
+  const resolvesItem = eventType === 'permission.replied' || eventType === 'question.replied' || eventType === 'question.rejected'
+  if (!kind && !resolvesItem) return
+
+  const client = await applicationDatabase()
+  const sessions = createProjectSessionRepository(client)
+  const session = await sessions.getSession(ownerId, sessionId)
+  if (!session) return
+  const projectId = typeof session.projectId === 'string' && session.projectId ? session.projectId : '0'
+  const inbox = new InboxRepository(client)
+  if (resolvesItem) {
+    const reference = typeof properties.permissionID === 'string'
+      ? properties.permissionID
+      : typeof properties.requestID === 'string' ? properties.requestID : undefined
+    const resolvedKind = eventType === 'permission.replied' ? 'approval_required' : 'agent_question'
+    if (reference) await inbox.resolveReference(ownerId, resolvedKind, reference, session.projectId)
+    return
+  }
+  if (!kind || !referenceId) return
+
+  const path = `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`
+  const item = await inbox.upsert({
+    owner_id: ownerId,
+    ...(session.projectId ? { project_id: session.projectId } : {}),
+    kind,
+    reference_id: referenceId,
+    title,
+    body,
+    deep_link: { path, sessionId },
+    underlying_state: state,
+    metadata: { session_id: sessionId, session_title: session.title },
+    reopen: true,
+  })
+  await new NotificationRepository(client, { scope: 'process' }).deliver(ownerId, item, runtimeNotificationAdapter)
+}
+
 function automationWorkerFor(client: Awaited<ReturnType<typeof applicationDatabase>>): ReturnType<typeof createAutomationWorker> {
   if (!automationWorker) automationWorker = createAutomationWorker(new AutomationRepository(client, { serializationScope: 'process', notificationAdapter: runtimeNotificationAdapter }), executeAutomationHost)
   return automationWorker
@@ -1272,7 +1350,7 @@ async function runAutomationSchedulerTick(): Promise<void> {
   }
   await expireAutomationLeases(client, Date.now(), { serializationScope: 'process' })
   await automationWorkerFor(client).executeDue()
-  await new NotificationRepository(client).sweepDue(runtimeNotificationAdapter)
+  await new NotificationRepository(client, { scope: 'process' }).sweepDue(runtimeNotificationAdapter)
 }
 
 function startAutomationScheduler(): void {

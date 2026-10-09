@@ -12,41 +12,44 @@ export async function handleNotificationsRoute(context: BridgeRequestContext): P
       if (path.length === 2 && request.method === 'GET') return deps.json({ subscriptions: await notifications.list(authenticatedUser.id) }, 200, correlationId)
       if (path.length === 2 && request.method === 'POST') {
         const input = await deps.body(request)
-        if ((input.channel !== 'push' && input.channel !== 'email') || typeof input.target !== 'string') return deps.routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'channel and target are required', 400)
-        return deps.json({ subscription: await notifications.subscribe(authenticatedUser.id, { channel: input.channel, target: input.target }) }, 201, correlationId)
+        const pushSubscription = input.subscription && typeof input.subscription === 'object' ? input.subscription as Record<string, unknown> : undefined
+        const target = input.channel === 'push' ? pushSubscription?.endpoint : input.target
+        const keys = pushSubscription?.keys && typeof pushSubscription.keys === 'object' ? pushSubscription.keys as Record<string, unknown> : undefined
+        if ((input.channel !== 'push' && input.channel !== 'email') || typeof target !== 'string') return deps.routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'channel and target are required', 400)
+        if (input.channel === 'push' && (!keys || typeof keys.p256dh !== 'string' || typeof keys.auth !== 'string')) return deps.routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'A complete browser push subscription is required', 400)
+        return deps.json({ subscription: await notifications.subscribe(authenticatedUser.id, { channel: input.channel, target, ...(keys ? { keys: keys as { p256dh: string; auth: string } } : {}), ...(typeof input.deviceName === 'string' ? { deviceName: input.deviceName } : {}) }) }, 201, correlationId)
       }
       if (path.length === 3 && path[2] === 'subscribe' && (request.method === 'POST' || request.method === 'DELETE')) {
         const input = await deps.body(request)
         if (typeof input.endpoint !== 'string' || !input.endpoint.trim()) return deps.routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'endpoint is required', 400)
-        const rows = await client.collection('notification_subscriptions').getFullList({ filter: `owner_id = "${deps.escapeFilter(authenticatedUser.id)}"` }) as Array<Record<string, unknown>>
-        const existing = rows.find((item) => item.owner_id === authenticatedUser.id && item.target === input.endpoint)
         if (request.method === 'DELETE') {
-          if (!existing) return deps.routeError(correlationId, 'NOTIFICATION_SUBSCRIPTION_NOT_FOUND', 'Notification subscription not found', 404)
-          await client.collection('notification_subscriptions').delete(String(existing.id))
+          if (!await notifications.removeByEndpoint(authenticatedUser.id, input.endpoint)) return deps.routeError(correlationId, 'NOTIFICATION_SUBSCRIPTION_NOT_FOUND', 'Notification subscription not found', 404)
           return deps.json({ success: true }, 200, correlationId)
         }
-        if (existing) return deps.json({ subscription: existing }, 200, correlationId)
-        return deps.json({ subscription: await notifications.subscribe(authenticatedUser.id, { channel: 'push', target: input.endpoint }) }, 201, correlationId)
+        if (!input.subscription || typeof input.subscription !== 'object') return deps.routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'A complete browser push subscription is required', 400)
+        const subscription = input.subscription as Record<string, unknown>
+        const keys = subscription.keys && typeof subscription.keys === 'object' ? subscription.keys as Record<string, unknown> : undefined
+        if (typeof subscription.endpoint !== 'string' || typeof keys?.p256dh !== 'string' || typeof keys.auth !== 'string') return deps.routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'A complete browser push subscription is required', 400)
+        return deps.json({ subscription: await notifications.subscribe(authenticatedUser.id, { channel: 'push', target: subscription.endpoint, keys: keys as { p256dh: string; auth: string }, ...(typeof input.deviceName === 'string' ? { deviceName: input.deviceName } : {}) }) }, 201, correlationId)
       }
       if (path.length === 3 && path[2] === 'subscriptions' && request.method === 'GET') return deps.json({ subscriptions: await notifications.list(authenticatedUser.id) }, 200, correlationId)
       if (path.length === 3 && path[2] === 'subscriptions' && request.method === 'POST') {
         const input = await deps.body(request)
-        if ((input.channel !== 'push' && input.channel !== 'email') || typeof input.target !== 'string') return deps.routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'channel and target are required', 400)
-        return deps.json({ subscription: await notifications.subscribe(authenticatedUser.id, { channel: input.channel, target: input.target }) }, 201, correlationId)
+        const pushSubscription = input.subscription && typeof input.subscription === 'object' ? input.subscription as Record<string, unknown> : undefined
+        const target = input.channel === 'push' ? pushSubscription?.endpoint : input.target
+        const keys = pushSubscription?.keys && typeof pushSubscription.keys === 'object' ? pushSubscription.keys as Record<string, unknown> : undefined
+        if ((input.channel !== 'push' && input.channel !== 'email') || typeof target !== 'string') return deps.routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'channel and target are required', 400)
+        if (input.channel === 'push' && (!keys || typeof keys.p256dh !== 'string' || typeof keys.auth !== 'string')) return deps.routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'A complete browser push subscription is required', 400)
+        return deps.json({ subscription: await notifications.subscribe(authenticatedUser.id, { channel: input.channel, target, ...(keys ? { keys: keys as { p256dh: string; auth: string } } : {}), ...(typeof input.deviceName === 'string' ? { deviceName: input.deviceName } : {}) }) }, 201, correlationId)
       }
       if (path.length === 4 && path[2] === 'subscriptions' && request.method === 'DELETE') {
-        const subscription = await client.collection('notification_subscriptions').getOne(decodeURIComponent(path[3])).catch(() => null) as Record<string, unknown> | null
-        if (!subscription || subscription.owner_id !== authenticatedUser.id) return deps.routeError(correlationId, 'NOTIFICATION_SUBSCRIPTION_NOT_FOUND', 'Notification subscription not found', 404)
-        await client.collection('notification_subscriptions').delete(String(subscription.id))
+        if (!await notifications.remove(authenticatedUser.id, decodeURIComponent(path[3]))) return deps.routeError(correlationId, 'NOTIFICATION_SUBSCRIPTION_NOT_FOUND', 'Notification subscription not found', 404)
         return deps.json({ success: true }, 200, correlationId)
       }
       if (path.length === 3 && path[2] === 'subscriptions' && request.method === 'DELETE') {
         const input = await deps.body(request)
         if (typeof input.endpoint !== 'string' || !input.endpoint.trim()) return deps.routeError(correlationId, 'INVALID_NOTIFICATION_SUBSCRIPTION', 'endpoint is required', 400)
-        const rows = await client.collection('notification_subscriptions').getFullList({ filter: `owner_id = "${deps.escapeFilter(authenticatedUser.id)}"` }) as Array<Record<string, unknown>>
-        const subscription = rows.find((item) => item.owner_id === authenticatedUser.id && item.target === input.endpoint)
-        if (!subscription) return deps.routeError(correlationId, 'NOTIFICATION_SUBSCRIPTION_NOT_FOUND', 'Notification subscription not found', 404)
-        await client.collection('notification_subscriptions').delete(String(subscription.id))
+        if (!await notifications.removeByEndpoint(authenticatedUser.id, input.endpoint)) return deps.routeError(correlationId, 'NOTIFICATION_SUBSCRIPTION_NOT_FOUND', 'Notification subscription not found', 404)
         return deps.json({ success: true }, 200, correlationId)
       }
       if (path.length === 3 && path[2] === 'preferences' && request.method === 'GET') {
@@ -69,9 +72,30 @@ export async function handleNotificationsRoute(context: BridgeRequestContext): P
       }
       if (path.length === 3 && path[2] === 'vapid-public-key' && request.method === 'GET') {
         const publicKey = process.env.VAPID_PUBLIC_KEY?.trim()
-        return publicKey ? deps.json({ publicKey }, 200, correlationId) : deps.routeError(correlationId, 'NOTIFICATION_PUSH_UNAVAILABLE', 'Push notifications are not configured', 503)
+        const privateKey = process.env.VAPID_PRIVATE_KEY?.trim()
+        return publicKey && privateKey ? deps.json({ publicKey }, 200, correlationId) : deps.routeError(correlationId, 'NOTIFICATION_PUSH_UNAVAILABLE', 'Push notifications are not configured', 503)
       }
-      if (path.length === 3 && path[2] === 'test' && request.method === 'POST') return deps.routeError(correlationId, 'NOTIFICATION_TEST_UNAVAILABLE', 'Notification test delivery is not configured', 501)
+      if (path.length === 3 && path[2] === 'test' && request.method === 'POST') {
+        const record = await deps.getUserPreferences(client, authenticatedUser.id)
+        const preferences = deps.notificationPreferenceValue(record?.preferences && deps.object(record.preferences).notifications)
+        if (preferences.enabled !== true) return deps.routeError(correlationId, 'NOTIFICATIONS_DISABLED', 'Enable push notifications before sending a test', 409)
+        const subscriptions = (await notifications.list(authenticatedUser.id)).filter((item) => item.channel === 'push' && item.enabled)
+        if (!subscriptions.length) return deps.routeError(correlationId, 'NOTIFICATION_NO_SUBSCRIPTIONS', 'Register a device before sending a test', 409)
+        const inbox = new deps.InboxRepository(client)
+        const item = await inbox.upsert({
+          owner_id: authenticatedUser.id,
+          kind: 'automation_result',
+          reference_id: `notification-test-${crypto.randomUUID()}`,
+          title: 'Subpolar notification test',
+          body: 'Push notifications are connected on this device.',
+          deep_link: { path: '/settings' },
+          underlying_state: 'test',
+        })
+        const devicesNotified = await notifications.deliver(authenticatedUser.id, item, undefined, { force: true })
+        await inbox.resolve(authenticatedUser.id, item.id)
+        if (!devicesNotified) return deps.routeError(correlationId, 'NOTIFICATION_TEST_FAILED', 'No registered device accepted the test notification', 502)
+        return deps.json({ success: true, devicesNotified }, 200, correlationId)
+      }
     } catch (error) {
       return deps.routeError(correlationId, 'NOTIFICATION_REQUEST_FAILED', error instanceof Error ? error.message : 'Notification request failed', 400)
     }

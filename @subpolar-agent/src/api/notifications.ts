@@ -11,6 +11,18 @@ export interface NotificationDeliveryStatus {
   created_at: number
 }
 
+export interface InboxNotification {
+  id: string
+  kind: string
+  reference_id: string
+  title: string
+  body?: string
+  deep_link?: Record<string, string>
+  resolved: boolean
+  underlying_state?: string
+  created_at: number
+}
+
 export const notificationsApi = {
   getVapidPublicKey: async (): Promise<{ publicKey: string }> => {
     return fetchWrapper(`${API_BASE_URL}/api/notifications/vapid-public-key`)
@@ -25,7 +37,7 @@ export const notificationsApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         channel: 'push',
-        target: subscription.endpoint,
+        subscription: { endpoint: subscription.endpoint, keys: subscription.keys },
         deviceName,
       }),
     })
@@ -78,5 +90,13 @@ export const notificationsApi = {
     return fetchWrapper(`${API_BASE_URL}/api/notifications/test`, {
       method: 'POST',
     })
+  },
+
+  getInbox: async (): Promise<{ items: InboxNotification[] }> => {
+    return fetchWrapper(`${API_BASE_URL}/api/inbox`)
+  },
+
+  resolveInboxItem: async (id: string): Promise<{ item: InboxNotification }> => {
+    return fetchWrapper(`${API_BASE_URL}/api/inbox/${encodeURIComponent(id)}/resolve`, { method: 'POST' })
   },
 }
