@@ -265,6 +265,7 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('thinking', 'select', { values: ['off', 'minimal', 'low', 'medium', 'high'], maxSelect: 1 }),
     field('approval_mode', 'select', { values: ['auto', 'ask', 'deny'], maxSelect: 1 }),
     field('policies', 'json'),
+    field('browser', 'json'),
     field('project_overrides', 'json'),
     field('tool_context_modes', 'json'),
     field('skill_context_modes', 'json'),

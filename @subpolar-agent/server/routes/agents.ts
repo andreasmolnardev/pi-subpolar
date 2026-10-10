@@ -18,6 +18,7 @@ function profileInputError(input: unknown): string | undefined {
     if (input[key] !== undefined && !values.includes(input[key] as string)) return `Invalid ${key}`
   }
   if (input.policies !== undefined && !validPolicies(input.policies)) return 'Invalid policies'
+  if (input.browser !== undefined && (!isRecord(input.browser) || !Array.isArray(input.browser.allowedProfileIds) || !input.browser.allowedProfileIds.every(id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(id)) || (input.browser.defaultProfileId !== undefined && !input.browser.allowedProfileIds.includes(input.browser.defaultProfileId)) || (input.browser.allowEphemeral !== undefined && typeof input.browser.allowEphemeral !== 'boolean'))) return 'Invalid browser configuration'
   if (input.permission !== undefined && !isRecord(input.permission)) return 'Invalid permission'
   if (input.tool_context_modes !== undefined && !validModes(input.tool_context_modes, toolModes)) return 'Invalid tool_context_modes'
   if (input.skill_context_modes !== undefined && !validModes(input.skill_context_modes, skillModes)) return 'Invalid skill_context_modes'
@@ -34,6 +35,7 @@ export async function handleAgentsRoute(context: BridgeRequestContext): Promise<
       const client = await deps.applicationDatabase()
       await deps.ensureUserDefaults(client, authenticatedUser.id)
       const validReferences = async (input) => {
+        for (const id of input.browser?.allowedProfileIds ?? []) { const profile = await client.collection('browser_profiles').getOne(id).catch(() => null); if (!profile || profile.owner_id !== authenticatedUser.id) return false }
         const ids = Object.keys(input.project_overrides ?? {})
         if (!ids.length) return true
         const repository = deps.createProjectSessionRepository(client)
@@ -68,12 +70,14 @@ export async function handleAgentsRoute(context: BridgeRequestContext): Promise<
            ...(input.thinking === 'off' || input.thinking === 'minimal' || input.thinking === 'low' || input.thinking === 'medium' || input.thinking === 'high' ? { thinking: input.thinking } : {}),
            ...(input.approval_mode === 'auto' || input.approval_mode === 'ask' || input.approval_mode === 'deny' ? { approval_mode: input.approval_mode } : {}),
            ...(input.policies && typeof input.policies === 'object' ? { policies: input.policies } : {}),
+           ...(input.browser && typeof input.browser === 'object' ? { browser: input.browser } : {}),
            ...(input.project_overrides && typeof input.project_overrides === 'object' ? { project_overrides: input.project_overrides } : {}),
            ...(input.tool_context_modes && typeof input.tool_context_modes === 'object' ? { tool_context_modes: input.tool_context_modes } : {}),
            ...(input.skill_context_modes && typeof input.skill_context_modes === 'object' ? { skill_context_modes: input.skill_context_modes } : {}),
            created_at: now,
           updated_at: now,
         })
+        if (input.browser) await client.collection('browser_audit').create({owner_id:authenticatedUser.id,browser_session_id:`agent:${record.id}`,action:'profile.grants',details:{agent_id:record.id,allowed_profile_ids:input.browser.allowedProfileIds,default_profile_id:input.browser.defaultProfileId},created_at:Date.now()})
         return deps.json({ ...record, systemPrompt: record.systemPrompt }, 201)
       }
       if (path.length === 3 && (request.method === 'PUT' || request.method === 'PATCH')) {
@@ -102,12 +106,14 @@ export async function handleAgentsRoute(context: BridgeRequestContext): Promise<
            ...(input.thinking === 'off' || input.thinking === 'minimal' || input.thinking === 'low' || input.thinking === 'medium' || input.thinking === 'high' ? { thinking: input.thinking } : {}),
            ...(input.approval_mode === 'auto' || input.approval_mode === 'ask' || input.approval_mode === 'deny' ? { approval_mode: input.approval_mode } : {}),
            ...(input.policies && typeof input.policies === 'object' ? { policies: input.policies } : {}),
+           ...(input.browser && typeof input.browser === 'object' ? { browser: input.browser } : {}),
            ...(input.project_overrides && typeof input.project_overrides === 'object' ? { project_overrides: input.project_overrides } : {}),
            ...(input.tool_context_modes && typeof input.tool_context_modes === 'object' ? { tool_context_modes: input.tool_context_modes } : {}),
            ...(input.skill_context_modes && typeof input.skill_context_modes === 'object' ? { skill_context_modes: input.skill_context_modes } : {}),
            updated_at: Date.now(),
         }
         const record = await client.collection('agents').update(id, update)
+        if (input.browser) await client.collection('browser_audit').create({owner_id:authenticatedUser.id,browser_session_id:`agent:${record.id}`,action:'profile.grants',details:{agent_id:record.id,allowed_profile_ids:input.browser.allowedProfileIds,default_profile_id:input.browser.defaultProfileId},created_at:Date.now()})
         return deps.json({ ...record, systemPrompt: record.systemPrompt })
       }
       if (path.length === 3 && request.method === 'DELETE') {

@@ -142,6 +142,7 @@ export type AgentDefinition = {
   permission?: Record<string, unknown>
   toolAccess?: Array<{ type?: string; id?: string; permission?: string; command?: string }>
   policies: AgentPolicySet
+  browser?: { allowedProfileIds: string[]; defaultProfileId?: string; allowEphemeral?: boolean }
   project_overrides: Record<string, AgentProjectOverride>
   tool_context_modes: Record<string, ToolContextMode>
   skill_context_modes: Record<string, SkillContextMode>
@@ -216,8 +217,8 @@ const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>>
   { tool_id: 'git.branch', namespace: 'builtin', description: 'Read branches from the active owned project repository', adapter: 'internal', target: 'git', operation: 'branch', input_schema: { type: 'object', properties: {}, additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read', requires_approval: false, enabled: true, metadata: { capability: 'git/read' } },
   { tool_id: 'subagent/run', namespace: 'builtin', description: 'Run an authorized isolated subagent task', adapter: 'internal', target: 'subagent', operation: 'run', input_schema: { type: 'object', properties: { targetAgent: { type: 'string', minLength: 1 }, prompt: { type: 'string', minLength: 1 }, capabilities: { type: 'array', items: { type: 'string' } }, coding: { type: 'boolean' } }, required: ['targetAgent', 'prompt'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'subagent/run' } },
   { tool_id: 'list_agent_profiles', namespace: 'builtin', description: 'List agent profiles owned by the current user', adapter: 'internal', target: 'agent-profiles', operation: 'list', input_schema: { type: 'object', properties: {}, additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: { capability: 'agent-profiles' } },
-  { tool_id: 'create_agent_profile', namespace: 'builtin', description: 'Create an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'create', input_schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 80 }, description: { type: 'string', maxLength: 1000 }, mode: { type: 'string', enum: ['primary', 'subagent'] }, prompt: { type: 'string', maxLength: 100000 }, systemPrompt: { type: 'string', maxLength: 100000 }, enabled: { type: 'boolean' }, template: { type: 'string', enum: ['general', 'coding', 'plan', 'reviewer'] }, model: { type: 'string', maxLength: 200 }, thinking: { type: 'string', enum: ['off', 'minimal', 'low', 'medium', 'high'] }, approval_mode: { type: 'string', enum: ['auto', 'ask', 'deny'] }, policies: { type: 'object' }, project_overrides: { type: 'object' }, tool_context_modes: { type: 'object' }, skill_context_modes: { type: 'object' } }, required: ['name'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
-  { tool_id: 'edit_agent_profile', namespace: 'builtin', description: 'Edit an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'edit', input_schema: { type: 'object', properties: { agentId: { type: 'string', minLength: 1, maxLength: 100 }, name: { type: 'string', minLength: 1, maxLength: 80 }, description: { type: 'string', maxLength: 1000 }, mode: { type: 'string', enum: ['primary', 'subagent'] }, prompt: { type: 'string', maxLength: 100000 }, systemPrompt: { type: 'string', maxLength: 100000 }, enabled: { type: 'boolean' }, template: { type: 'string', enum: ['general', 'coding', 'plan', 'reviewer'] }, model: { type: 'string', maxLength: 200 }, thinking: { type: 'string', enum: ['off', 'minimal', 'low', 'medium', 'high'] }, approval_mode: { type: 'string', enum: ['auto', 'ask', 'deny'] }, policies: { type: 'object' }, project_overrides: { type: 'object' }, tool_context_modes: { type: 'object' }, skill_context_modes: { type: 'object' } }, required: ['agentId'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
+  { tool_id: 'create_agent_profile', namespace: 'builtin', description: 'Create an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'create', input_schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 80 }, description: { type: 'string', maxLength: 1000 }, mode: { type: 'string', enum: ['primary', 'subagent'] }, prompt: { type: 'string', maxLength: 100000 }, systemPrompt: { type: 'string', maxLength: 100000 }, enabled: { type: 'boolean' }, template: { type: 'string', enum: ['general', 'coding', 'plan', 'reviewer'] }, model: { type: 'string', maxLength: 200 }, thinking: { type: 'string', enum: ['off', 'minimal', 'low', 'medium', 'high'] }, approval_mode: { type: 'string', enum: ['auto', 'ask', 'deny'] }, policies: { type: 'object' }, browser: {type:'object'}, project_overrides: { type: 'object' }, tool_context_modes: { type: 'object' }, skill_context_modes: { type: 'object' } }, required: ['name'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
+  { tool_id: 'edit_agent_profile', namespace: 'builtin', description: 'Edit an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'edit', input_schema: { type: 'object', properties: { agentId: { type: 'string', minLength: 1, maxLength: 100 }, name: { type: 'string', minLength: 1, maxLength: 80 }, description: { type: 'string', maxLength: 1000 }, mode: { type: 'string', enum: ['primary', 'subagent'] }, prompt: { type: 'string', maxLength: 100000 }, systemPrompt: { type: 'string', maxLength: 100000 }, enabled: { type: 'boolean' }, template: { type: 'string', enum: ['general', 'coding', 'plan', 'reviewer'] }, model: { type: 'string', maxLength: 200 }, thinking: { type: 'string', enum: ['off', 'minimal', 'low', 'medium', 'high'] }, approval_mode: { type: 'string', enum: ['auto', 'ask', 'deny'] }, policies: { type: 'object' }, browser: {type:'object'}, project_overrides: { type: 'object' }, tool_context_modes: { type: 'object' }, skill_context_modes: { type: 'object' } }, required: ['agentId'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
   { tool_id: 'delete_agent_profile', namespace: 'builtin', description: 'Delete an owned agent profile', adapter: 'internal', target: 'agent-profiles', operation: 'delete', input_schema: { type: 'object', properties: { agentId: { type: 'string', minLength: 1, maxLength: 100 } }, required: ['agentId'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'delete', requires_approval: true, enabled: true, metadata: { capability: 'agent-profiles' } },
   { tool_id: 'list_registered_tools', namespace: 'builtin', description: 'List registered tools owned by the current user', adapter: 'internal', target: 'tool-registry', operation: 'list', input_schema: { type: 'object', properties: {}, additionalProperties: false }, output_schema: { type: 'array' }, risk: 'read', requires_approval: false, enabled: true, metadata: { capability: 'tool-registry' } },
   { tool_id: 'create_registered_tool', namespace: 'builtin', description: 'Register an owned HTTP, OpenAPI, or MCP tool', adapter: 'internal', target: 'tool-registry', operation: 'create', input_schema: { type: 'object', properties: { tool_id: { type: 'string', maxLength: 160 }, namespace: { type: 'string', maxLength: 64 }, description: { type: 'string', maxLength: 1000 }, adapter: { type: 'string', enum: ['http', 'openapi', 'mcp'] }, target: { type: 'string', maxLength: 2000 }, operation: { type: 'string', maxLength: 128 }, input_schema: { type: 'object' }, output_schema: { type: 'object' }, risk: { type: 'string', enum: ['read', 'write', 'delete', 'external'] }, requires_approval: { type: 'boolean' }, enabled: { type: 'boolean' }, context_mode: { type: 'string', enum: ['always', 'discoverable', 'on-demand', 'disabled'] }, metadata: { type: 'object' } }, required: ['tool_id', 'namespace', 'description', 'adapter', 'target', 'operation', 'input_schema', 'output_schema', 'risk'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'tool-registry' } },
@@ -239,7 +240,10 @@ const toolSeeds: Array<Omit<ToolDefinition, 'id' | 'created_at' | 'updated_at'>>
   { tool_id: 'memory/write', namespace: 'builtin', description: 'Write an explicitly scoped memory record', adapter: 'internal', target: 'memory', operation: 'write', input_schema: { type: 'object', properties: { scope: { type: 'string', enum: ['user', 'agent', 'project'] }, content: { type: 'string' }, metadata: { type: 'object' }, idempotencyKey: { type: 'string' } }, required: ['scope', 'content'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'memory/write' } },
   { tool_id: 'memory/update', namespace: 'builtin', description: 'Update an explicitly scoped memory record by version', adapter: 'internal', target: 'memory', operation: 'update', input_schema: { type: 'object', properties: { id: { type: 'string' }, content: { type: 'string' }, metadata: { type: 'object' }, version: { type: 'number' } }, required: ['id', 'version'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'write', requires_approval: true, enabled: true, metadata: { capability: 'memory/update' } },
   { tool_id: 'memory/delete', namespace: 'builtin', description: 'Tombstone an explicitly scoped memory record by version', adapter: 'internal', target: 'memory', operation: 'delete', input_schema: { type: 'object', properties: { id: { type: 'string' }, version: { type: 'number' } }, required: ['id', 'version'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'delete', requires_approval: true, enabled: true, metadata: { capability: 'memory/delete' } },
-  ...(['open', 'navigate', 'back', 'forward', 'tabs', 'read', 'find', 'screenshot', 'wait'] as const).map((operation) => ({ tool_id: `browser/${operation}`, namespace: 'builtin', description: `Browser ${operation} capability (read/navigation only)`, adapter: 'internal' as const, target: 'browser', operation, input_schema: { type: 'object', properties: { browserSessionId: { type: 'string', minLength: 1 }, url: { type: 'string' }, tabId: { type: 'string' }, query: { type: 'string' }, milliseconds: { type: 'number' } }, required: ['browserSessionId'], additionalProperties: false }, output_schema: { type: 'object' }, risk: 'read' as const, requires_approval: false, enabled: true, metadata: { policyGroup: operation === 'open' || operation === 'navigate' || operation === 'back' || operation === 'forward' ? 'navigation' : 'read' } })),
+  ...(['open', 'navigate', 'back', 'forward', 'tabs', 'read', 'find', 'screenshot', 'wait', 'snapshot', 'click', 'double-click', 'hover', 'scroll', 'fill', 'type', 'press', 'select-option', 'check', 'uncheck', 'drag', 'select-tab', 'close-tab', 'reload', 'upload', 'download', 'session'] as const).map((operation) => {
+    const mutation = ['click','double-click','fill','type','press','select-option','check','uncheck','drag','upload','download'].includes(operation)
+    return { tool_id: `browser/${operation}`, namespace: 'builtin', description: `Browser ${operation}`, adapter: 'internal' as const, target: 'browser', operation, input_schema: { type: 'object', properties: { browserSessionId: { type: 'string' }, profileId: {type:'string'}, url: { type: 'string' }, tabId: { type: 'string' }, query: { type: 'string' }, milliseconds: { type: 'number' }, locator: {type:'object'}, text: {type:'string'}, value:{type:'string'}, key:{type:'string'}, deltaX:{type:'number'}, deltaY:{type:'number'}, x:{type:'number'}, y:{type:'number'}, target:{type:'object'}, file:{type:'object'} }, required: operation === 'open' || operation === 'session' ? [] : ['browserSessionId'], additionalProperties: false }, output_schema: { type: 'object' }, risk: mutation ? 'write' as const : 'read' as const, requires_approval: mutation, enabled: true, metadata: { policyGroup: operation === 'upload' ? 'upload' : operation === 'download' ? 'download' : mutation ? 'submit' : ['open','navigate','back','forward','reload','session'].includes(operation) ? 'navigation' : 'read' } }
+  }),
 ]
 
 function recordObject(value: unknown): Record<string, unknown> {
@@ -293,6 +297,7 @@ function toAgent(value: unknown): AgentDefinition {
     permission: recordObject(record.permission),
     toolAccess: Array.isArray(record.toolAccess) ? record.toolAccess as AgentDefinition['toolAccess'] : [],
     policies: normalizePolicies(record.policies ?? fallback.policies),
+    browser: normalizeBrowserConfiguration(record.browser),
     project_overrides: normalizeProjectOverrides(record.project_overrides),
     tool_context_modes: modes,
     skill_context_modes: skillModes,
@@ -300,6 +305,10 @@ function toAgent(value: unknown): AgentDefinition {
     created_at: typeof record.created_at === 'number' ? record.created_at : undefined,
     updated_at: typeof record.updated_at === 'number' ? record.updated_at : undefined,
   }
+}
+
+export function normalizeBrowserConfiguration(value: unknown): NonNullable<AgentDefinition['browser']> {
+  const source = recordObject(value); const allowedProfileIds = Array.isArray(source.allowedProfileIds) ? [...new Set(source.allowedProfileIds.filter((id): id is string => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(id)))] : []; return { allowedProfileIds, ...(typeof source.defaultProfileId === 'string' && allowedProfileIds.includes(source.defaultProfileId) ? {defaultProfileId: source.defaultProfileId} : {}), allowEphemeral: source.allowEphemeral !== false }
 }
 
 function validThinking(value: unknown): AgentDefinition['thinking'] | undefined {
@@ -792,11 +801,14 @@ export async function describeToolForAgent(client: PocketBase, userId: string, a
 }
 
 
+export function browserAuditPayload(value: unknown): Record<string, unknown> { const source = recordObject(value); return Object.fromEntries(['browserSessionId','tabId','profileId','screenshotArtifact','downloadArtifact'].filter(key=>source[key] !== undefined).map(key=>[key,source[key]])) }
+
 async function writeAudit(client: PocketBase, data: Record<string, unknown>): Promise<void> {
   const memoryAudit = typeof data.tool_id === 'string' && data.tool_id.startsWith('memory/')
     ? { ...data, input: { ...recordObject(data.input), ...(recordObject(data.input).content !== undefined ? { content: '[REDACTED]' } : {}) } }
     : data
-  const safe = redactSensitive(memoryAudit)
+  const browserAudit = typeof data.tool_id === 'string' && data.tool_id.startsWith('browser/') ? {...memoryAudit,input:browserAuditPayload(data.input),result:browserAuditPayload(data.result),output:browserAuditPayload(data.output)} : memoryAudit
+  const safe = redactSensitive(browserAudit)
   await client.collection('tool_call_audit').create({ ...(safe && typeof safe === 'object' && !Array.isArray(safe) ? safe : {}), created_at: Date.now() })
 }
 
@@ -819,6 +831,7 @@ function profileProjection(record: Record<string, unknown>): Record<string, unkn
     ...(record.thinking ? { thinking: record.thinking } : {}),
     ...(record.approval_mode ? { approval_mode: record.approval_mode } : {}),
     ...(record.policies ? { policies: record.policies } : {}),
+    ...(record.browser ? { browser: normalizeBrowserConfiguration(record.browser) } : {}),
     ...(record.project_overrides ? { project_overrides: record.project_overrides } : {}),
     ...(record.tool_context_modes ? { tool_context_modes: record.tool_context_modes } : {}),
     ...(record.skill_context_modes ? { skill_context_modes: record.skill_context_modes } : {}),
@@ -845,7 +858,7 @@ function profileFields(input: Record<string, unknown>, partial: boolean): Record
   if (typeof input.template === 'string' && ['general', 'coding', 'plan', 'reviewer'].includes(input.template)) fields.template = input.template
   if (typeof input.thinking === 'string' && ['off', 'minimal', 'low', 'medium', 'high'].includes(input.thinking)) fields.thinking = input.thinking
   if (typeof input.approval_mode === 'string' && ['auto', 'ask', 'deny'].includes(input.approval_mode)) fields.approval_mode = input.approval_mode
-  for (const key of ['policies', 'project_overrides', 'tool_context_modes', 'skill_context_modes'] as const) {
+  for (const key of ['browser', 'policies', 'project_overrides', 'tool_context_modes', 'skill_context_modes'] as const) {
     if (input[key] !== undefined) {
       if (!input[key] || typeof input[key] !== 'object' || Array.isArray(input[key])) throw new Error(`Agent profile ${key} must be an object`)
       fields[key] = input[key]
@@ -856,6 +869,7 @@ function profileFields(input: Record<string, unknown>, partial: boolean): Record
 
 export async function manageAgentProfile(client: PocketBase, operation: string, input: unknown, userId: string): Promise<unknown> {
   const args = recordObject(input)
+  if (args.browser) { const configuration = normalizeBrowserConfiguration(args.browser); for (const id of configuration.allowedProfileIds) { const profile = await client.collection('browser_profiles').getOne(id).catch(()=>null); if (!profile || profile.owner_id !== userId) throw new BrowserRuntimeError('BROWSER_PROFILE_DENIED','Profile is not owned by this user') }; args.browser = configuration }
   if (operation === 'list') {
     const agents = await listAgents(client, userId)
     return agents.map((agent) => profileProjection(agent as unknown as Record<string, unknown>))
@@ -924,7 +938,7 @@ function executionUnavailable(tool: ToolDefinition): string | undefined {
   if (tool.adapter !== 'internal') return undefined
   if (tool.target === 'cli' && !trustedHostExecution()) return 'Local CLI execution requires a trusted sandbox capability; host execution is disabled'
   if (tool.target === 'pi' && !['read', 'write', 'edit', 'ls'].includes(tool.operation)) return 'Shell and subprocess search tools require an isolated tenant worker; host execution is disabled'
-  if (tool.target === 'browser' && !['open', 'navigate', 'back', 'forward', 'tabs', 'read', 'find', 'screenshot', 'wait'].includes(tool.operation)) return 'Browser file transfer and program execution are disabled'
+  if (tool.target === 'browser' && !['open', 'navigate', 'back', 'forward', 'tabs', 'read', 'find', 'screenshot', 'wait', 'snapshot','click','double-click','hover','scroll','fill','type','press','select-option','check','uncheck','drag','select-tab','close-tab','reload','upload','download','session'].includes(tool.operation)) return 'Browser file transfer and program execution are disabled'
   return undefined
 }
 
@@ -1154,7 +1168,7 @@ function createSubpolarAgentApprovalStore(client: PocketBase, ownerId: string, o
         agentId: request.context.agentId ?? request.context.metadata?.agentName ?? 'master',
         sessionId: request.context.sessionId,
         toolId: request.call.toolId,
-        input: request.call.input,
+        input: request.call.toolId.startsWith('browser/') ? browserAuditPayload(request.call.input) : request.call.input,
         reason: request.decision.reason,
       })
       const encryptedInput = encryptApprovalInput(request.call.input)
@@ -1195,7 +1209,8 @@ export async function createCoreToolGateway(client: PocketBase, ownerId: string,
     client: pocketBaseClientPort(client),
     collections: { audits: 'subpolar_tool_audits', callClaims: 'subpolar_call_claims' },
   })
-  const auditPort: AuditPort = createPocketBaseAuditPort(adapter, ownerId)
+  const durableAuditPort = createPocketBaseAuditPort(adapter, ownerId)
+  const auditPort: AuditPort = {append: async event => durableAuditPort.append(event.data.toolId.startsWith('browser/') ? {...event,data:{...event.data,input:browserAuditPayload(event.data.input) as never,...(event.data.result !== undefined ? {result:browserAuditPayload(event.data.result) as never}: {})}} : event)}
   const idempotency = createPocketBaseIdempotencyPort(adapter, ownerId)
   const approvalStore = createSubpolarAgentApprovalStore(client, ownerId, options.onApproval)
   const resolvePolicy: PolicyResolver = async (definition, context) => {
@@ -1271,10 +1286,15 @@ async function invokeInternalTool(client: PocketBase, tool: ToolDefinition, inpu
   if (tool.target === 'browser') {
     if (!context?.userId || !context.sessionId) throw new BrowserRuntimeError('BROWSER_SESSION_NOT_FOUND', 'Browser tools require an owned tool session')
     const args = recordObject(input)
-    const browserSessionId = typeof args.browserSessionId === 'string' ? args.browserSessionId : ''
+    let browserSessionId = typeof args.browserSessionId === 'string' ? args.browserSessionId : ''
     const browser = new BrowserSessionService(client)
     const browserContext: BrowserContext = { ownerId: context.userId, projectId: context.projectId, sessionId: context.sessionId, agentName: context.agentName, readOnly: context.agentName === 'plan' || context.agentName === 'reviewer' }
-    return browser.execute(browserContext, tool.operation, { ...args, browserSessionId })
+    const record = await findAgent(client, context.userId, context.agentName ?? 'master'); if (!record) throw new BrowserRuntimeError('BROWSER_POLICY', 'Agent not found'); const agent = effectiveAgentConfiguration(record, context.projectId)
+    if (!agent.policies.browser || !agent.enabled) throw new BrowserRuntimeError('BROWSER_POLICY', 'Browser is disabled for this agent')
+    Object.assign(browserContext, agent.browser ?? normalizeBrowserConfiguration(undefined), {callId})
+    if (!browserSessionId && (tool.operation === 'open' || tool.operation === 'session')) { const session = await browser.create(browserContext, undefined, typeof args.profileId === 'string' ? args.profileId : undefined); browserSessionId = session.id; if (tool.operation === 'session') return {session,screenshotArtifact:await browser.toolCapture(browserContext,session.id,'session')} }
+    const result = await browser.execute(browserContext, tool.operation, { ...args, browserSessionId })
+    return result && typeof result === 'object' ? {...result,browserSessionId} : {result,browserSessionId}
   }
   if (tool.target === 'agent-profiles') {
     if (context?.agentName !== 'master' || !context.userId) throw new Error('Agent profile management requires the master agent')

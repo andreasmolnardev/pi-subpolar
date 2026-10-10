@@ -92,3 +92,41 @@ describe('browser session foundation', () => {
     await expect(service.execute({ ownerId: 'alice' }, 'read', { browserSessionId: session.id })).rejects.toMatchObject({ code: 'BROWSER_UNAVAILABLE' })
   })
 })
+
+describe('persistent browser authorization and control', () => {
+  it('checks profile ownership and grants on every action including revoked grants', async () => {
+    const database = client({ browser_profiles: [{ id:'profile-a', owner_id:'alice', name:'Work' }], browser_audit:[] })
+    const port = new FakeBrowserPort(vi.fn<typeof fetch>().mockResolvedValue(new Response('<title>Work</title>')), async()=>['93.184.216.34'])
+    const service = new BrowserSessionService(database, {port})
+    await expect(service.create({ownerId:'bob'}, undefined, 'profile-a')).rejects.toMatchObject({code:'BROWSER_PROFILE_DENIED'})
+    await expect(service.create({ownerId:'alice',agentName:'coding',allowedProfileIds:[]}, undefined, 'profile-a')).rejects.toMatchObject({code:'BROWSER_PROFILE_DENIED'})
+    const context = {ownerId:'alice',agentName:'coding',allowedProfileIds:['profile-a']}
+    const session = await service.create(context, undefined, 'profile-a')
+    await service.execute(context,'open',{browserSessionId:session.id,url:'https://example.com'})
+    await expect(service.execute({...context,allowedProfileIds:[]},'read',{browserSessionId:session.id})).rejects.toMatchObject({code:'BROWSER_PROFILE_DENIED'})
+    await expect(service.clearProfile('alice','profile-a')).rejects.toMatchObject({code:'BROWSER_PROFILE_BUSY'})
+  })
+
+  it('expires controller leases, rejects conflicting viewers, and suppresses agent actions', async () => {
+    let now = 1000
+    const service = new BrowserSessionService(client(), {port:new FakeBrowserPort(),now:()=>now})
+    const context = {ownerId:'alice'}
+    const session = await service.create(context)
+    const controller = await service.control(context,session.id,'take')
+    await expect(service.control(context,session.id,'take')).rejects.toMatchObject({code:'BROWSER_CONTROL_BUSY'})
+    await expect(service.execute(context,'tabs',{browserSessionId:session.id})).rejects.toMatchObject({code:'BROWSER_CONTROL_BUSY'})
+    await expect(service.execute({...context,manualLeaseId:'wrong'},'tabs',{browserSessionId:session.id})).rejects.toMatchObject({code:'BROWSER_CONTROL_BUSY'})
+    await expect(service.control({ownerId:'bob'},session.id,'renew',controller!.leaseId)).rejects.toMatchObject({code:'BROWSER_SESSION_NOT_FOUND'})
+    now += 30001
+    await expect(service.execute({...context,manualLeaseId:controller!.leaseId},'tabs',{browserSessionId:session.id})).rejects.toMatchObject({code:'BROWSER_CONTROLLER_EXPIRED'})
+    await expect(service.execute(context,'tabs',{browserSessionId:session.id})).resolves.toEqual([])
+  })
+
+  it('protects historical screenshot ownership and retention independently of live session', async () => {
+    const service = new BrowserSessionService(client({browser_screenshots:[{id:'shot',owner_id:'alice',expires_at:2000,image:'shot.png'}]}),{now:()=>1000})
+    await expect(service.artifact('bob','shot')).rejects.toMatchObject({code:'BROWSER_SESSION_NOT_FOUND'})
+    await expect(service.artifact('alice','shot')).resolves.toMatchObject({image:'shot.png'})
+    const expired = new BrowserSessionService(client({browser_screenshots:[{id:'shot',owner_id:'alice',expires_at:999}]}),{now:()=>1000})
+    await expect(expired.artifact('alice','shot')).rejects.toMatchObject({code:'BROWSER_SESSION_NOT_FOUND'})
+  })
+})
