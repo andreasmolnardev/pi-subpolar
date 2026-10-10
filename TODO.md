@@ -1,3 +1,38 @@
+## Browser Implementation (2026-10-11)
+
+### Current phase
+Phase 0 audit complete; shared contracts established; implementation underway on current `automations` branch (user request overrides pasted plan's main target).
+
+### Architecture
+Reuse BrowserSessionService, BrowserPort, existing gateway policies and sidebar. New portable @subpolar/browser package provides authenticated internal worker and Playwright runtime. Optional BrowserPort start/action/clearProfile/health extensions preserve fake ports. Profiles use protected worker filesystem directories, exclusive leases; application owns grants and PocketBase files. Live display uses authenticated bounded image polling with exclusive expiring control lease; no public CDP. Existing browser tool IDs retained.
+
+### Completed
+- Audited package manifests, existing browser contracts/service/routes, network policy, tool registration and sidebar; no .codegraph directory.
+
+### In progress
+- Engine agent: isolated worktree, packages/subpolar-browser only.
+- Server agent: isolated worktree, server browser/routes/tools/profile config and migrations.
+- Frontend agent: isolated worktree, frontend live browser/profile configuration/timeline.
+- Orchestrator: integration, deployment, documentation, verification, commits.
+
+### Pending
+- Review each implementation, integrate and verify real Chromium, API, UI and persistence.
+- Deployment, security review, controlled persistent login test, full integration evidence.
+
+### Integration blockers
+None yet. Contracts: optional start(sessionId,{profileId?,limits}), action(sessionId,operation,input,tabId?), clearProfile(profileId), health(); semantic locator {role?,name?,label?,text?,selector?}. Worker URL/token configured only by administrator.
+
+### Verification
+Not yet run. Initial working tree clean.
+
+### Known issues
+Full acceptance not yet verified. Do not interpret implementation progress as E2E success.
+
+### Resume instructions
+Read this section, git history, docs/browser-foundation.md, and package tests; run typechecks and integration tests before marking gates complete.
+
+---
+
 # Subpolar Implementation TODO
 
 ## Orchestration Status
