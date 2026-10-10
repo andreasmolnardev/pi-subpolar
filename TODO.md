@@ -1,12 +1,14 @@
 ## Browser Implementation (2026-10-11)
 
 ### Current phase
-Phase 0 audit complete; shared contracts established; implementation underway on current `automations` branch (user request overrides pasted plan's main target).
+Phase 1–3 integration underway; engine milestone merged and verified on current `automations` branch (user request overrides pasted plan's main target).
 
 ### Architecture
 Reuse BrowserSessionService, BrowserPort, existing gateway policies and sidebar. New portable @subpolar/browser package provides authenticated internal worker and Playwright runtime. Optional BrowserPort start/action/clearProfile/health extensions preserve fake ports. Profiles use protected worker filesystem directories, exclusive leases; application owns grants and PocketBase files. Live display uses authenticated bounded image polling with exclusive expiring control lease; no public CDP. Existing browser tool IDs retained.
 
 ### Completed
+- `2be35be`: architecture and progress tracker.
+- `794d41a`: portable authenticated Chromium worker and profile leases; orchestrator reran real Chromium tests: 4 passed, 20 assertions.
 - Audited package manifests, existing browser contracts/service/routes, network policy, tool registration and sidebar; no .codegraph directory.
 
 ### In progress
@@ -23,7 +25,8 @@ Reuse BrowserSessionService, BrowserPort, existing gateway policies and sidebar.
 None yet. Contracts: optional start(sessionId,{profileId?,limits}), action(sessionId,operation,input,tabId?), clearProfile(profileId), health(); semantic locator {role?,name?,label?,text?,selector?}. Worker URL/token configured only by administrator.
 
 ### Verification
-Not yet run. Initial working tree clean.
+Baseline: `bun run typecheck` passed; `bun test @subpolar-agent/server/tests/browser.test.ts @subpolar-agent/server/tests/browser-route.test.ts`: 8 passed. Initial working tree clean. PocketBase binary available; Docker daemon unavailable.
+- Existing opt-in live smoke booted disposable PB/bridge/Vite but skipped project creation (403: legacy test lacks same-origin CSRF signal); this is not browser E2E success. New browser E2E supplies Origin and fails on service unavailability.
 
 ### Known issues
 Full acceptance not yet verified. Do not interpret implementation progress as E2E success.
