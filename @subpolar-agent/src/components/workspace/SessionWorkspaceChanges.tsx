@@ -10,6 +10,7 @@ import { WorkspaceFiles } from './WorkspaceFiles'
 import { ProviderBrowserPanel, RepositoryContext } from './RepositoryContext'
 import { WORKSPACE_OPEN_FILE, isWorkspaceOpenFileDetail, requestQuickOpen, type FileOpenRequest } from './quickOpen'
 import { control, WorkspaceError } from './shared'
+import { LiveBrowser } from '@/components/agent-browser/LiveBrowser'
 import { useAuthGeneration, useAuthOwner } from '@/stores/authIdentityStore'
 
 export interface SessionWorkspaceChangesProps { sessionId: string; projectRouteId?: string }
@@ -32,8 +33,8 @@ function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChanges
     })
   }, [client, owner, generation])
   const [open, setOpen] = useState(false)
-  const [tab, setTab] = useState<'Review' | 'Files' | 'Browser' | 'Repository'>('Review')
-  const [addedViews, setAddedViews] = useState<Array<'Review' | 'Files' | 'Browser' | 'Repository'>>([])
+  const [tab, setTab] = useState<'Review' | 'Files' | 'Code Browser' | 'Live Browser' | 'Repository'>('Review')
+  const [addedViews, setAddedViews] = useState<Array<'Review' | 'Files' | 'Code Browser' | 'Live Browser' | 'Repository'>>([])
   const [filesVisited, setFilesVisited] = useState(false)
   const [panelWidth, setPanelWidth] = useState(480)
   const resizeStart = useRef<{ x: number; width: number } | null>(null)
@@ -76,7 +77,7 @@ function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChanges
   }
   // Polling must also invalidate the selected diff, without touching editor drafts.
   useEffect(() => { void client.invalidateQueries({ queryKey: ['session-workspace-diff', sessionId] }) }, [client, sessionId, query.dataUpdatedAt])
-  function addView(name: 'Review' | 'Files' | 'Browser' | 'Repository') {
+  function addView(name: 'Review' | 'Files' | 'Code Browser' | 'Live Browser' | 'Repository') {
     setAddedViews(views => views.includes(name) ? views : [...views, name])
     setTab(name)
     if (name === 'Files') setFilesVisited(true)
@@ -92,7 +93,7 @@ function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChanges
           </button>
         </PopoverTrigger>
         <PopoverContent align="end" side="left" className="w-52 p-1">
-          {(['Review', 'Files', 'Browser', 'Repository'] as const).map(name => <button key={name} type="button" className={`${control} flex h-9 w-full items-center justify-start`} onClick={() => addView(name)}>
+          {(['Review', 'Files', 'Code Browser', 'Live Browser', 'Repository'] as const).map(name => <button key={name} type="button" className={`${control} flex h-9 w-full items-center justify-start`} onClick={() => addView(name)}>
             {addedViews.includes(name) ? '✓ ' : '+ '}{name}
           </button>)}
           <button type="button" className={`${control} flex h-9 w-full items-center justify-start`} onClick={() => requestQuickOpen(sessionId)}>Quick open</button>
@@ -115,7 +116,7 @@ function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChanges
           setTab(next); if (next === 'Files') setFilesVisited(true)
           document.getElementById(`${panelId}-${next}`)?.focus()
         }}>{name}</button>)}
-        <Popover><PopoverTrigger asChild><button className={control} aria-label="Add sidebar view"><Plus className="h-4 w-4" /></button></PopoverTrigger><PopoverContent align="end" className="w-48 p-1">{(['Review', 'Files', 'Browser', 'Repository'] as const).map(name => <button key={name} type="button" className={`${control} flex h-9 w-full justify-start`} onClick={() => addView(name)}>{addedViews.includes(name) ? '✓ ' : '+ '}{name}</button>)}</PopoverContent></Popover>
+        <Popover><PopoverTrigger asChild><button className={control} aria-label="Add sidebar view"><Plus className="h-4 w-4" /></button></PopoverTrigger><PopoverContent align="end" className="w-48 p-1">{(['Review', 'Files', 'Code Browser', 'Live Browser', 'Repository'] as const).map(name => <button key={name} type="button" className={`${control} flex h-9 w-full justify-start`} onClick={() => addView(name)}>{addedViews.includes(name) ? '✓ ' : '+ '}{name}</button>)}</PopoverContent></Popover>
       </div>
       <div className="px-4"><WorkspaceError error={query.error} retry={() => void query.refetch()} /></div>
       <div id={`${panelId}-Review-content`} role="tabpanel" aria-labelledby={`${panelId}-Review`} hidden={tab !== 'Review'} className="min-h-0 flex-1 overflow-auto">
@@ -124,8 +125,11 @@ function WorkspaceChanges({ sessionId, projectRouteId }: SessionWorkspaceChanges
       <div id={`${panelId}-Files-content`} role="tabpanel" aria-labelledby={`${panelId}-Files`} hidden={tab !== 'Files'} className="min-h-0 flex-1 overflow-auto" style={tab === 'Files' ? { display: 'flex', flexDirection: 'column' } : undefined}>
         {filesVisited && <WorkspaceFiles sessionId={sessionId} refresh={refresh} openRequest={openRequest} />}
       </div>
-      <div id={`${panelId}-Browser-content`} role="tabpanel" aria-labelledby={`${panelId}-Browser`} hidden={tab !== 'Browser'} className="min-h-0 flex-1 overflow-auto">
-        <ProviderBrowserPanel sessionId={sessionId} projectRouteId={projectRouteId} enabled={open && tab === 'Browser'} />
+      <div id={`${panelId}-Code Browser-content`} role="tabpanel" aria-labelledby={`${panelId}-Code Browser`} hidden={tab !== 'Code Browser'} className="min-h-0 flex-1 overflow-auto">
+        <ProviderBrowserPanel sessionId={sessionId} projectRouteId={projectRouteId} enabled={open && tab === 'Code Browser'} />
+      </div>
+      <div id={`${panelId}-Live Browser-content`} role="tabpanel" aria-labelledby={`${panelId}-Live Browser`} hidden={tab !== 'Live Browser'} className="min-h-0 flex-1 overflow-auto">
+        {addedViews.includes('Live Browser') && <LiveBrowser scope={{ sessionId }} enabled={open && tab === 'Live Browser'} />}
       </div>
       <div id={`${panelId}-Repository-content`} role="tabpanel" aria-labelledby={`${panelId}-Repository`} hidden={tab !== 'Repository'} className="min-h-0 flex-1 overflow-auto">
         <RepositoryContext sessionId={sessionId} projectRouteId={projectRouteId} enabled={open && tab === 'Repository'} />

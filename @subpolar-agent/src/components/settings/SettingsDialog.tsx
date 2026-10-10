@@ -10,6 +10,7 @@ import { NotificationSettings } from '@/components/settings/NotificationSettings
 import { IntegrationsSettings } from '@/components/settings/IntegrationsSettings'
 import { ExtensionsSettings } from '@/components/settings/ExtensionsSettings'
 
+import { BrowserProfilesSettings } from './BrowserProfilesSettings'
 import { TeachToolsSettings } from '@/components/settings/TeachToolsSettings'
 
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -17,7 +18,7 @@ import { Settings2, Keyboard, ChevronLeft, Key, User, Volume2, Bell, X, MessageS
 import { Button } from '@/components/ui/button'
 import { useSettingsDialog } from '@/hooks/useSettingsDialog'
 
-type SettingsView = 'menu' | 'general' | 'chat' | 'appearance' | 'shortcuts' | 'providers' | 'integrations' | 'extensions' | 'account' | 'voice' | 'notifications' | 'teach-tools'
+type SettingsView = 'menu' | 'general' | 'chat' | 'appearance' | 'shortcuts' | 'providers' | 'integrations' | 'extensions' | 'account' | 'voice' | 'notifications' | 'teach-tools' | 'browser-profiles'
 
 export function SettingsDialog() {
   const { isOpen, close, activeTab, setActiveTab } = useSettingsDialog()
@@ -85,6 +86,7 @@ export function SettingsDialog() {
     { id: 'providers', icon: Key, label: 'Providers', description: 'Configure AI providers and default models' },
     { id: 'extensions', icon: Plug, label: 'Extensions', description: 'View installed Pi extensions' },
 
+    { id: 'browser-profiles', icon: Plug, label: 'Browser Profiles', description: 'Manage persistent website logins' },
     { id: 'teach-tools', icon: Wrench, label: 'Teach Tools', description: 'Generate and review tool drafts from CLI, MCP, or OpenAPI sources' },
   ]
 
@@ -156,6 +158,7 @@ export function SettingsDialog() {
                   {activeTab === 'shortcuts' && <KeyboardShortcuts />}
                   {activeTab === 'providers' && <ProviderSettings />}
                   {activeTab === 'integrations' && <IntegrationsSettings />}
+                  {activeTab === 'browser-profiles' && <BrowserProfilesSettings />}
                   {activeTab === 'extensions' && <ExtensionsSettings />}
                 </>}
                 </div>
@@ -222,6 +225,7 @@ export function SettingsDialog() {
               {mobileView === 'shortcuts' && <div key="shortcuts"><KeyboardShortcuts /></div>}
                {mobileView === 'providers' && <div key="providers"><ProviderSettings /></div>}
                {mobileView === 'integrations' && <div key="integrations"><IntegrationsSettings /></div>}
+               {mobileView === 'browser-profiles' && <BrowserProfilesSettings />}
                {mobileView === 'extensions' && <div key="extensions"><ExtensionsSettings /></div>}
                {mobileView === 'teach-tools' && <div key="teach-tools"><TeachToolsSettings /></div>}
            </div>

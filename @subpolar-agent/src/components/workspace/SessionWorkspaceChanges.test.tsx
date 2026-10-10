@@ -184,9 +184,9 @@ describe('SessionWorkspaceChanges', () => {
     expect(screen.getByText('-old')).toHaveClass('bg-red-500/10')
     fireEvent.click(screen.getByRole('button', { name: 'b.ts' }))
     await waitFor(() => expect(api.diff).toHaveBeenCalledWith('session', 'b.ts'))
-    fireEvent.click(screen.getByRole('tab', { name: 'Browser' }))
-    expect(within(screen.getByRole('tabpanel', { name: 'Browser' })).getByText(/This session is not linked to a project repository/)).toBeVisible()
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'Browser' }), { key: 'Home' })
+    fireEvent.click(screen.getByRole('tab', { name: 'Code Browser' }))
+    expect(within(screen.getByRole('tabpanel', { name: 'Code Browser' })).getByText(/This session is not linked to a project repository/)).toBeVisible()
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Code Browser' }), { key: 'Home' })
     expect(screen.getByRole('tab', { name: 'Review' })).toHaveAttribute('aria-selected', 'true')
   })
   it('keeps a Files launcher with zero changes and hides Commit for non-Git workspaces', async () => {

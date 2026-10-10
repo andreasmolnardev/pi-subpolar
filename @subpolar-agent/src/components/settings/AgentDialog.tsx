@@ -1,3 +1,4 @@
+import { AgentBrowserSettings } from './AgentBrowserSettings'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -44,6 +45,8 @@ const agentFormSchema = z.object({
   thinking: z.enum(['off', 'minimal', 'low', 'medium', 'high']),
   approval_mode: z.enum(['auto', 'ask', 'deny']),
   developmentWorkflow: z.boolean(),
+  browserAllowed: z.boolean(),
+  browser: z.object({ allowedProfileIds: z.array(z.string()), defaultProfileId: z.string().optional(), allowEphemeral: z.boolean().optional() }),
 })
 
 type AgentFormValues = z.infer<typeof agentFormSchema>
@@ -185,6 +188,8 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
 
   const getDefaultValues = useCallback((agent?: { name: string; agent: Agent } | null): AgentFormValues => {
     return {
+      browserAllowed: (agent?.agent.policies as { browser?: boolean } | undefined)?.browser ?? false,
+      browser: (agent?.agent.browser as AgentFormValues['browser'] | undefined) ?? { allowedProfileIds: [], allowEphemeral: true },
       name: agent?.name || '',
       description: agent?.agent.description || '',
       prompt: agent?.agent.prompt || '',
@@ -302,6 +307,8 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
   const handleSubmit = async (values: AgentFormValues) => {
     const effectiveToolAccess = values.toolAccess ?? []
     const agent: Agent = {
+      policies: { ...(editingAgent?.agent.policies ?? {}), browser: values.browserAllowed },
+      browser: values.browser,
       prompt: values.prompt,
       systemPrompt: values.systemPrompt.trim() || promptPreview,
       description: values.description || undefined,
@@ -407,6 +414,7 @@ export function AgentDialog({ open, onOpenChange, onSubmit, editingAgent, availa
           <Form {...form}>
             <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
             <div className="min-w-0 space-y-4">
+              <AgentBrowserSettings key={editingAgent?.name ?? 'new'} allowed={form.watch('browserAllowed')} configuration={form.watch('browser')} onChange={(allowed, configuration) => { form.setValue('browserAllowed', allowed, { shouldDirty: true }); form.setValue('browser', configuration, { shouldDirty: true }) }} />
               <div className="grid grid-cols-[minmax(3.25rem,auto)_1fr] gap-3 items-start">
                 <FormField
                   control={form.control}

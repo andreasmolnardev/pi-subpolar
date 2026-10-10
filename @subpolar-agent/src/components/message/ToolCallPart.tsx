@@ -1,3 +1,4 @@
+import { BrowserScreenshot, screenshotFromOutput } from '@/components/agent-browser/BrowserScreenshot'
 import { useState, useRef, useEffect } from 'react'
 import type { components } from '@/api/opencode-types'
 import { useSettings } from '@/hooks/useSettings'
@@ -105,6 +106,8 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
     })
     return () => { cancelled = true }
   }, [detailsUrl, expanded, lazyDetails, detailsAttempt])
+
+  const screenshotArtifact = part.state.status === 'completed' ? screenshotFromOutput(lazyDetails?.output || part.state.output, part.state.metadata) : null
 
   const permissionToolID = part.tool === 'subpolar-tools' && typeof part.state.input?.toolId === 'string'
     ? part.state.input.toolId
@@ -498,6 +501,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
                   </div>
                 </div>
               ) : null}
+              {expanded && screenshotArtifact && <BrowserScreenshot artifact={screenshotArtifact} />}
               {part.state.time && (
                 <div className="text-xs text-muted-foreground">
                   Duration: {((part.state.time.end - part.state.time.start) / 1000).toFixed(2)}s
