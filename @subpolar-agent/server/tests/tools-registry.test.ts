@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { agentTemplateDefaults, canonicalToolId, executeCliTool, manageAgentProfile, manageRegisteredTool, requiresManualApproval, shouldRequireAgentToolApproval, validateToolDefinition } from '../application/tools/tools.ts'
+import { agentTemplateDefaults, agentProfileToolEffect, browserAuditPayload, evaluateAgentToolPolicy, canonicalToolId, executeCliTool, manageAgentProfile, manageRegisteredTool, requiresManualApproval, shouldRequireAgentToolApproval, validateToolDefinition } from '../application/tools/tools.ts'
 
 const definition = (overrides: Record<string, unknown> = {}) => ({
   tool_id: 'acme/read', namespace: 'acme', description: 'Read data', adapter: 'openapi' as const,
@@ -111,5 +111,22 @@ describe('secure tool registry validation', () => {
     expect(requiresManualApproval('local/bun-version', 'cli')).toBe(true)
     expect(requiresManualApproval('create_cli_tool', 'tool-registry')).toBe(true)
     expect(requiresManualApproval('read', 'pi')).toBe(false)
+  })
+})
+
+
+describe('browser capability grants and audit storage', () => {
+  it('enables browser discovery for a new template while preserving explicit denials', () => {
+    const agent = { ...agentTemplateDefaults('general'), id: 'browser-agent', user_id: 'owner', name: 'browser-agent', description: '', mode: 'primary', prompt: '', systemPrompt: '', enabled: true, template: 'general', policies: { builtin: {}, registered: {}, browser: true, memory: false, subagent: false } } as any
+    const tool = definition({ tool_id: 'browser/read', target: 'browser', operation: 'read', adapter: 'internal', metadata: { policyGroup: 'read' } }) as any
+    expect(agentProfileToolEffect(agent, 'browser/read')).toBe('allow')
+    expect(evaluateAgentToolPolicy(agent, tool, []).allow).toBe(true)
+    expect(evaluateAgentToolPolicy({ ...agent, policies: { ...agent.policies, browser: false } }, tool, []).deny).toBe(true)
+    expect(evaluateAgentToolPolicy({ ...agent, tool_context_modes: { 'browser/read': 'disabled' } }, tool, []).deny).toBe(true)
+    expect(evaluateAgentToolPolicy({ ...agent, policies: { ...agent.policies, builtin: { 'browser/read': false } } }, tool, []).deny).toBe(true)
+  })
+  it('stores nonempty audit metadata without argument values', () => {
+    expect(browserAuditPayload({})).toEqual({ redacted: true })
+    expect(browserAuditPayload({ browserSessionId: 'session', value: 'secret', url: 'https://example.test/?secret' })).toEqual({ redacted: true, browserSessionId: 'session' })
   })
 })

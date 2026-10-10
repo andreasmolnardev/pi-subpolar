@@ -107,7 +107,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
     return () => { cancelled = true }
   }, [detailsUrl, expanded, lazyDetails, detailsAttempt])
 
-  const screenshotArtifact = part.state.status === 'completed' ? screenshotFromOutput(lazyDetails?.output || part.state.output, part.state.metadata) : null
+  const screenshotArtifact = part.state.status === 'completed' ? screenshotFromOutput(lazyDetails?.output || part.state.output, part.state.metadata) : part.state.status === 'error' ? screenshotFromOutput(lazyDetails?.error || part.state.error) : null
 
   const permissionToolID = part.tool === 'subpolar-tools' && typeof part.state.input?.toolId === 'string'
     ? part.state.input.toolId
@@ -516,6 +516,7 @@ export function ToolCallPart({ part, onFileClick, onChildSessionClick }: ToolCal
               <pre className="bg-accent p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-words text-red-600 dark:text-red-300">
                 {part.state.error}
               </pre>
+              {expanded && screenshotArtifact && <BrowserScreenshot artifact={screenshotArtifact} />}
             </div>
           )}
         </div>

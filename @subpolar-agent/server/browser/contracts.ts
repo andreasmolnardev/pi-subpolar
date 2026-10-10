@@ -792,6 +792,7 @@ export class BrowserSessionService {
     })
     const lease = this.lease(session)
     let result: unknown
+    let captureTabId = tabId
     try {
       if (operation === 'open') {
         const existingTabs = await this.port.tabs(lease)
@@ -852,10 +853,11 @@ export class BrowserSessionService {
         result && typeof result === 'object' && 'id' in result
           ? (result as BrowserTab)
           : (tabs.find((tab) => tab.id === session.current_tab_id) ?? tabs[0])
+      captureTabId = current?.id
       await this.collection().update(session.id, {
         tabs: this.tabMetadata(tabs),
         ...(current
-          ? { current_tab_id: current.id, current_url: current.url }
+          ? { current_tab_id: current.id, current_url: browserAuditUrl(current.url) }
           : { current_tab_id: '', current_url: '' }),
         updated_at: this.now(),
       })
@@ -864,8 +866,10 @@ export class BrowserSessionService {
         url: current?.url,
       })
     } catch (error) {
-      if (context.callId && !context.manualLeaseId)
-        await this.captureArtifact(context, session, operation, tabId)
+      if (context.callId && !context.manualLeaseId) {
+        const artifact = await this.captureArtifact(context, session, operation, operation === 'open' ? undefined : tabId)
+        if (error instanceof Error) Object.assign(error, { details: { screenshotArtifact: artifact } })
+      }
       throw error
     }
     if (
@@ -888,7 +892,7 @@ export class BrowserSessionService {
         context,
         session,
         operation,
-        tabId,
+        captureTabId,
         operation === 'screenshot' ? result : undefined,
       )
       result =
@@ -922,6 +926,7 @@ export class BrowserSessionService {
         for (const row of rows)
           if (
             row.lifecycle === 'open' &&
+            Number(row.updated_at || row.created_at) < this.now() - 60_000 &&
             !health.sessionIds.includes(this.lease(this.record(row)))
           ) {
             await this.collection().update(row.id, {

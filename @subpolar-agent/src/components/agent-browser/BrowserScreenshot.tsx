@@ -11,13 +11,13 @@ export function screenshotFromOutput(output: string, metadata?: Record<string, u
       for (let depth = 0; depth < 4 && result && typeof result === 'object'; depth++) {
         const envelope = result as Record<string, unknown>
         if (envelope.screenshotArtifact) { value = envelope.screenshotArtifact; break }
-        result = envelope.value ?? envelope.result
+        result = envelope.value ?? envelope.result ?? envelope.error ?? envelope.details
       }
     } catch { return null }
   }
   if (!value || typeof value !== 'object') return null
   const artifact = value as Record<string, unknown>
-  return typeof artifact.id === 'string' && typeof artifact.status === 'string' ? { id: artifact.id, status: artifact.status } : null
+  return typeof artifact.status === 'string' && (typeof artifact.id === 'string' || artifact.status === 'unavailable') ? { id: typeof artifact.id === 'string' ? artifact.id : '', status: artifact.status } : null
 }
 export function BrowserScreenshot({ artifact }: { artifact: ScreenshotArtifact }) {
   const owner = useAuthOwner(), generation = useAuthGeneration()

@@ -174,6 +174,7 @@ export function agentProfileToolEffect(agent: AgentDefinition, toolId: string): 
   if (legacyValue === 'ask') return 'approval'
   if (legacyValue === 'deny') return 'deny'
   if (agent.policies.builtin[canonical] === true || agent.policies.registered[canonical] === true) return 'allow'
+  if (canonical.startsWith('browser/') && agent.policies.browser === true) return 'allow'
   return undefined
 }
 
@@ -725,6 +726,7 @@ function toolContextMode(agent: AgentDefinition, toolId: string): ToolContextMod
   // created before these tools were added; an explicit profile mode still wins.
   if (agent.tool_context_modes[toolId]) return agent.tool_context_modes[toolId]
   if (toolId === 'web.search' || toolId === 'web.fetch') return 'always'
+  if (toolId.startsWith('browser/') && agent.policies.browser === true) return 'discoverable'
   // Records created before context modes existed retain their policy behavior.
   // New templates remain fail-closed for IDs not explicitly configured.
   return agent.template ? 'disabled' : 'always'
@@ -801,7 +803,18 @@ export async function describeToolForAgent(client: PocketBase, userId: string, a
 }
 
 
-export function browserAuditPayload(value: unknown): Record<string, unknown> { const source = recordObject(value); return Object.fromEntries(['browserSessionId','tabId','profileId','screenshotArtifact','downloadArtifact'].filter(key=>source[key] !== undefined).map(key=>[key,source[key]])) }
+export function browserAuditPayload(value: unknown): Record<string, unknown> {
+  const source = recordObject(value)
+  // PocketBase's required JSON field rejects an empty object for no-argument calls.
+  return {
+    redacted: true,
+    ...Object.fromEntries(
+      ['browserSessionId', 'tabId', 'profileId', 'screenshotArtifact', 'downloadArtifact']
+        .filter(key => source[key] !== undefined)
+        .map(key => [key, source[key]]),
+    ),
+  }
+}
 
 async function writeAudit(client: PocketBase, data: Record<string, unknown>): Promise<void> {
   const memoryAudit = typeof data.tool_id === 'string' && data.tool_id.startsWith('memory/')
@@ -1241,6 +1254,11 @@ export async function createCoreToolGateway(client: PocketBase, ownerId: string,
       })
       return { ok: true, value }
     } catch (error) {
+      if (tool.target === 'browser') {
+        const candidate = error as { code?: unknown; details?: unknown }
+        const code = typeof candidate?.code === 'string' && /^BROWSER_[A-Z_]+$/.test(candidate.code) ? candidate.code : 'BROWSER_UNAVAILABLE'
+        return { ok: false, error: { code, message: redactSensitiveText(error instanceof Error ? error.message : 'Browser operation failed'), details: JSON.parse(JSON.stringify(browserAuditPayload(candidate?.details))) } }
+      }
       return { ok: false, error: { code: 'TOOL_EXECUTION_FAILED', message: redactSensitiveText(error instanceof Error ? error.message : 'Tool execution failed') } }
     }
   }

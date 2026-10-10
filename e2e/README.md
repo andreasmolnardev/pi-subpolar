@@ -53,3 +53,7 @@ The smoke checks versioned health, sign-in, project/session creation, and then p
 ## Scope and limitations
 
 The fake suite checks health, capabilities, authentication setup, project/session creation, tool discovery, denied/approval/allowed calls, call-id idempotency, and audit outcomes. It does not validate PocketBase schema migrations, browser rendering, Vite proxying, Pi execution, real approval timing, or network/security behavior. Live service verification remains dependent on the external prerequisites above.
+
+## Real browser integration
+
+`bun run test:e2e:browser` runs the fail-fast disposable browser workflow against real Chromium, PocketBase, bridge, Vite and the React settings/viewer UI. Install Chromium first with `bunx --no-install playwright install chromium`, and provide a PocketBase binary. The test owns fresh profiles and fixture login accounts; it never uses operator accounts or everyday browser profiles. It covers manual control, profile grants/defaults, restart persistence, protected historical screenshots, approval continuation and audit redaction. Missing prerequisites fail the opted-in test; they are not converted into skipped success.

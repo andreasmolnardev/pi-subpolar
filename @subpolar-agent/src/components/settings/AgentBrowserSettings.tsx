@@ -3,7 +3,13 @@ import { browserApi, type BrowserConfiguration, type BrowserProfile } from '@/ap
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-export function AgentBrowserSettings({ allowed, configuration, onChange }: { allowed: boolean; configuration: BrowserConfiguration; onChange: (allowed: boolean, configuration: BrowserConfiguration) => void }) {
+import { useAuthGeneration, useAuthOwner } from '@/stores/authIdentityStore'
+type BrowserSettingsProps = { allowed: boolean; configuration: BrowserConfiguration; onChange: (allowed: boolean, configuration: BrowserConfiguration) => void }
+export function AgentBrowserSettings(props: BrowserSettingsProps) {
+  const owner = useAuthOwner(), generation = useAuthGeneration()
+  return <BrowserSettings key={JSON.stringify([owner, generation])} {...props} />
+}
+function BrowserSettings({ allowed, configuration, onChange }: BrowserSettingsProps) {
   const [profiles, setProfiles] = useState<BrowserProfile[]>([]), [name, setName] = useState(''), [error, setError] = useState(''), [pending, setPending] = useState(false)
   const manageUrl = new URL(window.location.href); manageUrl.searchParams.set('settings', 'open'); manageUrl.searchParams.set('settingsTab', 'browser-profiles')
   useEffect(() => { let active = true; void browserApi.profiles().then(r => active && setProfiles(r.profiles)).catch(e => active && setError(e.message)); return () => { active = false } }, [])

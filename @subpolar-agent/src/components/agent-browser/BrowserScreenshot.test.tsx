@@ -11,6 +11,10 @@ describe('browser screenshot history', () => {
     expect(screenshotFromOutput(JSON.stringify({ ok: true, value: { screenshotArtifact: { id: 'gateway', status: 'captured' } } }))).toEqual({ id: 'gateway', status: 'captured' })
     expect(screenshotFromOutput('not json')).toBeNull()
   })
+  it('recovers capture descriptors from failed gateway actions and shows unavailable persistence', () => {
+    expect(screenshotFromOutput(JSON.stringify({ ok: false, error: { details: { screenshotArtifact: { id: 'failed-action', status: 'captured' } } } }))).toEqual({ id: 'failed-action', status: 'captured' })
+    expect(screenshotFromOutput(JSON.stringify({ screenshotArtifact: { status: 'unavailable' } }))).toEqual({ id: '', status: 'unavailable' })
+  })
   it('loads protected image by ID and revokes object URL on owner change', async () => {
     act(() => changeAuthOwner('screenshot-owner-a'))
     vi.mocked(browserApi.artifact).mockResolvedValueOnce(new Blob(['png'], { type: 'image/png' })).mockImplementationOnce(() => new Promise(() => {}))

@@ -167,3 +167,21 @@ it('publishes the initial blank worker tab so a newly created viewer can connect
   const frame = await service.frame({ ownerId: 'alice' }, created.id)
   expect(frame.frame.mimeType).toBe('image/png')
 })
+
+it('captures the newly opened tab and redacts credential-bearing current URLs in storage', async () => {
+  const first = { id: 'first', url: 'https://example.test/', title: 'First', text: '', status: 200, openedAt: 1 }
+  const next = { ...first, id: 'next', url: 'https://example.test/?token=do-not-persist', title: 'Next' }
+  const screenshot = vi.fn(async (_lease: string, tabId?: string) => {
+    expect(tabId).toBe('next')
+    return { mimeType: 'image/png', data: 'aW1hZ2U=' }
+  })
+  let tabs = [first]
+  const port = { start: async () => {}, tabs: async () => tabs, open: async () => { tabs = [first, next]; return next }, screenshot } as any
+  const db = client({ browser_sessions: [{ id: 'unrelated-existing-session' }] })
+  const service = new BrowserSessionService(db, { port })
+  const session = await service.create({ ownerId: 'alice' })
+  await service.execute({ ownerId: 'alice', callId: 'open-next' }, 'open', { browserSessionId: session.id, url: next.url })
+  expect(screenshot).toHaveBeenCalledTimes(1)
+  const row = await db.collection('browser_sessions').getOne(session.id)
+  expect(row.current_url).not.toContain('do-not-persist')
+})
