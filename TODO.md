@@ -1,3 +1,19 @@
+## External Agent Runtime Implementation (2026-10-11)
+
+Current phase: reconnaissance and stable contracts. Current branch `automations` retains all committed browser/audit work; local main is ancestor 19 commits behind. Target package: `@subpolar-agent/external-agents-adapter` in `packages/external-agents-adapter`.
+
+Verified: locally installed OpenCode2.0.20; isolated pinned2.0.26 install and actual ACP initialize/new/close/resume succeeded. OpenCode v2 uses ACP protocolVersion1, not an ACP wire version2. Public @opencode/client2.0.26 available. Official v2 docs: https://opencode.ai/v2/docs/cli/acp/, https://opencode.ai/v2/docs/build/sdk, https://opencode.ai/v2/docs/build/plugins.
+
+Architecture: adapter implements existing StatelessExecutor/AgentRunPort boundary; Core owns canonical persistence/events/permissions. Immutable owner/session/agent/project/workspace scope; one ACP process per canonical session to prevent directory-shared MCP credentials; native tools/delegation must be disabled or constrained inside trusted process sandbox. Session MCP discovery/calls delegate to existing fresh gateway policies and durable approvals. Custom shell requires explicit isolated execution port; no host shell fallback. Separate canonical and external session IDs.
+
+Recon found: no existing runtime installer or runtime selector; direct RPC facade assumes PiSdkSession. Subagent host hardcodes Pi, drops project/permission scope, and deletes child history; these need integration fixes. Existing host shell is deliberately blocked. macOS sandbox-exec available; Docker daemon stopped and bwrap absent. Unsupported interactive execution must remain capability false until verified.
+
+Assignments: compatibility/runtime adapter agent; isolated execution/MCP agent; frontend/runtime settings agent; orchestrator application dispatch, persistence/approval integration, E2E and independent review. Isolated managed worktrees created from current branch. Stable contracts in external package src/runtime/contracts.ts.
+
+Pending: package/runtime implementation, installation and settings flow, scoped MCP integration, native bypass enforcement, direct/subagent canonical dispatch, retained child history/worktrees, real combined E2E (including model prompts), independent review and commits. Do not mark complete before all mandatory acceptance gates pass. Earlier repo audit findings remain open in docs/audits/2026-10-11-repository-audit.md.
+
+---
+
 ## Browser Implementation (2026-10-11)
 
 ### Current phase
