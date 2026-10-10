@@ -979,7 +979,37 @@ export class BrowserSessionService {
         'Profile storage is unavailable',
       )
     await this.port.clearProfile(id)
-    if (remove) await this.client.collection('browser_profiles').delete(id)
+    if (remove) {
+      await this.client.collection('browser_profiles').delete(id)
+      const agents = await this.client
+        .collection('agents')
+        .getFullList({
+          filter: `user_id = "${ownerId.replaceAll('"', '\\"')}"`,
+        })
+      for (const agent of agents) {
+        if (
+          agent.user_id !== ownerId ||
+          !agent.browser ||
+          !Array.isArray(agent.browser.allowedProfileIds) ||
+          !agent.browser.allowedProfileIds.includes(id)
+        )
+          continue
+        const browser = {
+          ...agent.browser,
+          allowedProfileIds: agent.browser.allowedProfileIds.filter(
+            (profileId: unknown) => profileId !== id,
+          ),
+        }
+        if (browser.defaultProfileId === id) delete browser.defaultProfileId
+        await this.client
+          .collection('agents')
+          .update(agent.id, { browser, updated_at: this.now() })
+        await this.audit(ownerId, `agent:${agent.id}`, 'profile.revoke', {
+          profile_id: id,
+          agent_id: agent.id,
+        })
+      }
+    }
     await this.audit(ownerId, '', remove ? 'profile.delete' : 'profile.clear', {
       profile_id: id,
     })
