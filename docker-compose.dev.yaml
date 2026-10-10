@@ -21,6 +21,28 @@ services:
       retries: 12
       start_period: 5s
 
+  browser-worker:
+    build:
+      context: .
+      dockerfile: deployment/browser/Dockerfile
+    init: true
+    environment:
+      SUBPOLAR_BROWSER_WORKER_HOST: 0.0.0.0
+      SUBPOLAR_BROWSER_WORKER_PORT: 3101
+      SUBPOLAR_BROWSER_WORKER_TOKEN: ${SUBPOLAR_BROWSER_WORKER_TOKEN:?Set a random browser worker token of at least 32 characters}
+      SUBPOLAR_BROWSER_PROFILE_ROOT: /profiles
+      SUBPOLAR_BROWSER_MAX_SESSIONS: 4
+    volumes:
+      - browser_profiles:/profiles
+    shm_size: 1gb
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 512
+    cap_drop: [ALL]
+    security_opt:
+      - seccomp=./deployment/browser/seccomp.json
+    restart: unless-stopped
+
   subpolar-agent:
     build:
       context: .
@@ -31,7 +53,11 @@ services:
       POCKETBASE_URL: http://pocketbase:8090
       SUBPOLAR_AGENT_PORT: 4173
       SUBPOLAR_AGENT_HOST: 0.0.0.0
+      SUBPOLAR_BROWSER_WORKER_URL: http://browser-worker:3101
+      SUBPOLAR_BROWSER_WORKER_TOKEN: ${SUBPOLAR_BROWSER_WORKER_TOKEN:?Set a random browser worker token of at least 32 characters}
     depends_on:
+      browser-worker:
+        condition: service_started
       pocketbase:
         condition: service_healthy
     ports:
@@ -44,3 +70,4 @@ services:
 
 volumes:
   workspace_node_modules:
+  browser_profiles:

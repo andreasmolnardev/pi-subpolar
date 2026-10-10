@@ -9,3 +9,6 @@ node_modules/
 !.env.example
 *.log
 pocketbase/pb_data/
+
+# Credential-bearing Chromium data belongs in protected storage.
+browser-profiles/

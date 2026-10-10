@@ -1,48 +1,39 @@
 ## Browser Implementation (2026-10-11)
 
 ### Current phase
-Phase 5 verification; integrated browser worker, server, UI and real live workflow pass; documentation/deployment finalization underway on current `automations` branch (user request overrides pasted plan's main target).
+Implementation committed on the existing `automations` branch, as requested. Real worker/API/UI workflow verified. Docker runtime and exhaustive deployment security gates remain unverified; see limitations below.
 
 ### Architecture
-Reuse BrowserSessionService, BrowserPort, existing gateway policies and sidebar. New portable @subpolar/browser package provides authenticated internal worker and Playwright runtime. Optional BrowserPort start/action/clearProfile/health extensions preserve fake ports. Profiles use protected worker filesystem directories, exclusive leases; application owns grants and PocketBase files. Live display uses authenticated bounded image polling with exclusive expiring control lease; no public CDP. Existing browser tool IDs retained.
+Reuse BrowserSessionService, BrowserPort, existing gateway policies and sidebar. Portable @subpolar/browser package provides authenticated Playwright worker and DNS-pinned egress. Profiles use protected filesystem directories and exclusive leases; the application owns grants and PocketBase artifacts. Live display uses authenticated bounded image polling and an exclusive expiring controller lease. No public CDP endpoint. Existing browser tool IDs retained.
 
-### Completed
+### Completed commits
 - `2be35be`: architecture and progress tracker.
-- `9cba1f2`: server profile grants, manual control and protected artifacts; supplemental fixes f8eafb0, ddef29b, 058d683.
-- `c2af785`: Live Browser, profile/agent settings and screenshot history; e5566b1 handles gateway output envelope.
-- `e4d7640`: worker egress, payload limits and lifecycle hardening.
-- `794d41a`: portable authenticated Chromium worker and profile leases; orchestrator reran real Chromium tests: 4 passed, 20 assertions.
-- Audited package manifests, existing browser contracts/service/routes, network policy, tool registration and sidebar; no .codegraph directory.
-
-### In progress
-- Engine agent: isolated worktree, packages/subpolar-browser only.
-- Server agent: isolated worktree, server browser/routes/tools/profile config and migrations.
-- Frontend agent: isolated worktree, frontend live browser/profile configuration/timeline.
-- Orchestrator: integration, deployment, documentation, verification, commits.
-
-### Pending
-- Review each implementation, integrate and verify real Chromium, API, UI and persistence.
-- Deployment, security review, controlled persistent login test, full integration evidence.
-
-### Integration blockers
-Single bridge admission process required for in-memory manual controller leases; horizontal replicas need shared arbitration. Contracts: optional start(sessionId,{profileId?,limits}), action(sessionId,operation,input,tabId?), clearProfile(profileId), health(); semantic locator {role?,name?,label?,text?,selector?}. Worker URL/token configured only by administrator.
+- `794d41a`, `700963a`, `e4d7640`: portable Chromium worker, workspace dependency and egress/lifecycle hardening.
+- `9cba1f2`, `f8eafb0`, `ddef29b`, `058d683`: profiles, policy, controller leases, protected artifacts and read-only dispatch.
+- `c2af785`, `e5566b1`: Live Browser, profile/agent settings and screenshot history.
+- `36293a5`: blank-tab viewer and React StrictMode lifecycle fixes.
+- `ea66c02`: new-template browser grants, nonempty redacted audits, failure screenshots, fresh tab capture, ownership cache reset, real persistent login/API/UI E2E and regressions.
+- Deployment/documentation commit follows this entry: private non-root worker, seccomp, resource bounds, protected profile volume and setup guide.
 
 ### Verification
-Baseline: `bun run typecheck` passed; `bun test @subpolar-agent/server/tests/browser.test.ts @subpolar-agent/server/tests/browser-route.test.ts`: 8 passed. Initial working tree clean. PocketBase binary available; Docker daemon unavailable.
-- Existing opt-in live smoke booted disposable PB/bridge/Vite but skipped project creation (403: legacy test lacks same-origin CSRF signal); this is not browser E2E success. New browser E2E supplies Origin and fails on service unavailability.
+- `bun run typecheck`: frontend and bridge TypeScript pass.
+- `bun run test:browser`: 20 passed, 84 assertions; includes real Chromium engine tests and browser service/routes.
+- Profile/tool policy regressions: 18 passed, 127 assertions.
+- Focused UI: 10 passed across 4 suites, including StrictMode controls, screenshot/error envelopes and sidebar integration.
+- `bun run test:e2e:browser`: repeated PASS, 47 assertions. Disposable PocketBase/bridge/Vite/worker/Chromium and controlled fixture verify manual login, persistent authentication after worker restart, profile exclusivity, default/alternate grants, revocation, disabled capability, approval continuation, project scope/override, cross-owner denials, historical protected screenshots, failure capture, expiry/deletion, audit redaction and actual React profile/viewer CRUD/control.
+- `docker compose -f docker-compose.dev.yaml config --no-interpolate` and `git diff --check`: pass. Docker daemon stopped; no image build/runtime claim.
+- Broad UI run: 949 passed, 19 failed; 17 sidebar and 1 skill-template failures are preexisting, plus a parser test during integration which passes on final focused rerun. Broad Vitest server run: 465 passed, 3 failed due macOS /var vs /private/var paths. The 21 unrelated failures reproduced on starting frontend/server code (23 other tests passed). Full repository suite is not green.
+- Legacy opt-in live smoke skipped its project workflow due missing Origin/CSRF signal; it is not counted as successful browser verification.
 
-### Known issues
-Docker daemon stopped, so image build/runtime not executed; Compose config validates. Browser display uses bounded image polling. Profiles rely on administrator-encrypted filesystem/backup (no application encryption). No remote CDP provider or everyday Chrome import. In-flight tab/action recovery not promised. Stale profile acquisition guards require operator reconciliation after verifying processes stopped.
-Full security/acceptance matrix not yet exhaustively verified. Broad suites have unrelated failures under investigation; do not claim all repository tests pass.
-
-- Integrated real engine/server/profile tests: 26 passed (160 assertions), plus blank-tab regression: 12 browser service tests passed.
-- Focused UI after gateway parser integration: 9 passed; StrictMode regression rerun pending.
-- `E2E_BROWSER_LIVE=true bun test e2e/browser-live.test.ts --timeout 240000`: PASS (27 assertions): disposable PB/bridge/Vite/Chromium, manual login, restart authentication, busy leases, revocation/denied browser, cross-user/scope/artifact denials, protected historical images, actual React profile/viewer CRUD/control.
-- Live verification found and fixed empty initial tab IDs and StrictMode mounted-ref replay causing controls to remain disabled. Regression tests added.
-- Full typecheck passes. Broad UI run: 949 passed, 19 failed (17 stale sidebar, 1 skill template, 1 parser test read mid-cherry-pick; focused parser rerun passes). Broad server run: 465 passed, 3 failures from macOS /var vs /private/var paths. Baseline reproduction underway.
+### Remaining deployment gates and limitations
+- Single bridge admission process required: controller leases are in memory; horizontal replicas need shared arbitration.
+- Image polling is the initial transport; no video/WebRTC streaming.
+- Profile storage/backup encryption is administrator-managed; no application-layer encryption. No remote CDP provider or everyday Chrome import.
+- Open tabs and in-flight actions are not recovered across restart. Dead-process leases reconcile, but stale acquisition guards need operator reconciliation after verifying processes stopped.
+- Docker execution and the full security/acceptance matrix are not exhaustively verified. Host disk quotas, firewall enforcement and hostile multi-tenant worker/storage isolation require deployment validation.
 
 ### Resume instructions
-Read this section, git history, docs/browser-foundation.md, and package tests; run typechecks and integration tests before marking gates complete.
+Read git history and docs/browser-foundation.md. Run browser tests, typechecks and live E2E after changes. Verify Docker sandbox/egress and remaining deployment gates before a production rollout. The older implementation tracker below is historical and is superseded by this section for browser work.
 
 ---
 
