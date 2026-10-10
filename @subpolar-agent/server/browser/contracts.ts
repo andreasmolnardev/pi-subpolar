@@ -732,6 +732,28 @@ export class BrowserSessionService {
       context,
       String(input.browserSessionId ?? ''),
     )
+    if (
+      context.readOnly &&
+      [
+        'click',
+        'double-click',
+        'fill',
+        'type',
+        'press',
+        'select-option',
+        'check',
+        'uncheck',
+        'drag',
+        'upload',
+        'download',
+        'pointer',
+        'keyboard',
+      ].includes(operation)
+    )
+      throw new BrowserRuntimeError(
+        'BROWSER_POLICY',
+        'Browser mutation is disabled for this read-only agent',
+      )
     await this.authorizeProfile(context, session.profile_id)
     if (takingControl.has(session.id))
       throw new BrowserRuntimeError(
@@ -981,11 +1003,9 @@ export class BrowserSessionService {
     await this.port.clearProfile(id)
     if (remove) {
       await this.client.collection('browser_profiles').delete(id)
-      const agents = await this.client
-        .collection('agents')
-        .getFullList({
-          filter: `user_id = "${ownerId.replaceAll('"', '\\"')}"`,
-        })
+      const agents = await this.client.collection('agents').getFullList({
+        filter: `user_id = "${ownerId.replaceAll('"', '\\"')}"`,
+      })
       for (const agent of agents) {
         if (
           agent.user_id !== ownerId ||

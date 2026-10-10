@@ -175,10 +175,8 @@ export async function handleBrowserRoute(
         if (typeof input.leaseId !== 'string' || !input.leaseId)
           return deps.json(
             {
-              error: {
-                code: 'BROWSER_CONTROLLER_EXPIRED',
-                message: 'Take control before sending browser input',
-              },
+              error: 'Take control before sending browser input',
+              code: 'BROWSER_CONTROLLER_EXPIRED',
             },
             409,
           )
