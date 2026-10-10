@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { browserApi } from '@/api/browser'
@@ -17,7 +18,7 @@ beforeEach(() => {
 })
 describe('LiveBrowser', () => {
   it('lists scoped sessions without starting Chromium or loading frames until connected', async () => {
-    const view = render(<LiveBrowser scope={{ sessionId: 'conversation' }} />)
+    const view = render(<StrictMode><LiveBrowser scope={{ sessionId: 'conversation' }} /></StrictMode>)
     await screen.findByText('Private login')
     expect(browserApi.sessions).toHaveBeenCalledWith({ sessionId: 'conversation' })
     expect(browserApi.create).not.toHaveBeenCalled()
@@ -31,8 +32,8 @@ describe('LiveBrowser', () => {
     expect(screen.getByLabelText('Browser address')).toBeDisabled()
     view.unmount()
   })
-  it('requires manual lease for input and releases it on disconnect without closing browser', async () => {
-    const view = render(<LiveBrowser scope={{ sessionId: 'conversation' }} />)
+  it('supports StrictMode replay, requires manual lease and releases it on disconnect', async () => {
+    const view = render(<StrictMode><LiveBrowser scope={{ sessionId: 'conversation' }} /></StrictMode>)
     await screen.findByText('Private login')
     fireEvent.click(screen.getByText('New browser window'))
     await screen.findByAltText('Live remote browser')

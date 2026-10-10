@@ -16,7 +16,7 @@ function BrowserViewer({ scope = {}, enabled = true, initialProfileId = '' }: { 
   const [controller, setController] = useState<BrowserController | null>(null), [error, setError] = useState(''), [pending, setPending] = useState(false)
   const clickTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined), lastMove = useRef(0), [paste, setPaste] = useState('')
   const mounted = useRef(true)
-  useEffect(() => () => { mounted.current = false; clearTimeout(clickTimer.current) }, [])
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; clearTimeout(clickTimer.current) } }, [])
   const lease = useRef<BrowserController | null>(null), viewport = useRef<HTMLDivElement>(null), image = useRef<HTMLImageElement>(null)
   lease.current = controller
   const browserId = session?.id

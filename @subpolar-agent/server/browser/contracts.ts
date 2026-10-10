@@ -515,10 +515,10 @@ export class BrowserSessionService {
         ? { task_id: value.task_id }
         : {}),
       lifecycle: value.lifecycle === 'closed' ? 'closed' : 'open',
-      ...(typeof value.current_tab_id === 'string'
+      ...(typeof value.current_tab_id === 'string' && value.current_tab_id
         ? { current_tab_id: value.current_tab_id }
         : {}),
-      ...(typeof value.current_url === 'string'
+      ...(typeof value.current_url === 'string' && value.current_url
         ? { current_url: browserAuditUrl(value.current_url) }
         : {}),
       tabs: tabs.map((tab) => ({ ...tab, url: browserAuditUrl(tab.url) })),
@@ -663,7 +663,17 @@ export class BrowserSessionService {
         profileId,
         limits: session.limits,
       })
+      if (this.port.start) {
+        const tabs = await this.port.tabs(this.lease(session))
+        const current = tabs[0]
+        Object.assign(session, this.record(await this.collection().update(session.id, {
+          tabs: this.tabMetadata(tabs),
+          current_tab_id: current?.id ?? '',
+          current_url: current ? browserAuditUrl(current.url) : '',
+        })))
+      }
     } catch (error) {
+      await this.port.close?.(this.lease(session)).catch(() => {})
       await this.collection().update(session.id, {
         lifecycle: 'closed',
         closed_at: this.now(),

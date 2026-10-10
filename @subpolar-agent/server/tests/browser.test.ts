@@ -152,3 +152,18 @@ it('persists one protected screenshot descriptor per call, suppressing manual in
   expect(screenshot).toHaveBeenCalledTimes(1)
   expect(await database.collection('browser_screenshots').getFullList()).toHaveLength(1)
 })
+
+it('publishes the initial blank worker tab so a newly created viewer can connect before navigation', async () => {
+  const tab = { id: 'initial-tab', url: 'about:blank', title: '', text: '', status: 0, openedAt: 1 }
+  const screenshot = vi.fn(async (_lease: string, tabId?: string) => {
+    expect(tabId).toBe('initial-tab')
+    return { mimeType: 'image/png', data: 'fixture' }
+  })
+  const port = { ...new UnavailableBrowserPort(), start: async () => {}, tabs: async () => [tab], screenshot } as any
+  const service = new BrowserSessionService(client(), { port })
+  const created = await service.create({ ownerId: 'alice' })
+  expect(created.current_tab_id).toBe('initial-tab')
+  expect(created.tabs[0]?.id).toBe('initial-tab')
+  const frame = await service.frame({ ownerId: 'alice' }, created.id)
+  expect(frame.frame.mimeType).toBe('image/png')
+})
