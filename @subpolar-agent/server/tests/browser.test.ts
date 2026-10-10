@@ -8,7 +8,7 @@ function client(rows: Record<string, Row[]> = {}): any {
     collection(name: string) {
       const list = () => { const value = data.get(name) ?? []; data.set(name, value); return value }
       return {
-        create: async (input: Record<string, unknown>) => { const row = { ...input, id: `${name}-${list().length + 1}` } as Row; list().push(row); return row },
+        create: async (input: Record<string, unknown> | FormData) => { const values = input instanceof FormData ? Object.fromEntries(input.entries()) : input; const row = { ...values, id: `${name}-${list().length + 1}` } as Row; list().push(row); return row },
         getOne: async (id: string) => { const row = list().find((item) => item.id === id); if (!row) throw new Error('not found'); return row },
         getFirstListItem: async (filter: string) => { const owner = /user_id = "([^"]*)"/.exec(filter)?.[1]; const session = /session_id = "([^"]*)"/.exec(filter)?.[1]; const row = list().find((item) => (!owner || item.user_id === owner) && (!session || item.session_id === session)); if (!row) throw new Error('not found'); return row },
         getFullList: async () => list(),
@@ -129,4 +129,26 @@ describe('persistent browser authorization and control', () => {
     const expired = new BrowserSessionService(client({browser_screenshots:[{id:'shot',owner_id:'alice',expires_at:999}]}),{now:()=>1000})
     await expect(expired.artifact('alice','shot')).rejects.toMatchObject({code:'BROWSER_SESSION_NOT_FOUND'})
   })
+})
+
+
+it('persists one protected screenshot descriptor per call, suppressing manual input captures', async () => {
+  const database = client()
+  const port = new FakeBrowserPort()
+  const screenshot = vi.fn().mockResolvedValue({mimeType:'image/png',data:'iVBORw0KGgo='})
+  port.screenshot = screenshot
+  const service = new BrowserSessionService(database,{port})
+  const context = {ownerId:'alice',callId:'call-one'}
+  const session = await service.create(context)
+  const output = await service.execute(context,'screenshot',{browserSessionId:session.id}) as {screenshotArtifact:{id:string,status:string,url:string}}
+  expect(output.screenshotArtifact.status).toBe('captured')
+  expect(screenshot).toHaveBeenCalledTimes(1)
+  const rows = await database.collection('browser_screenshots').getFullList()
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({owner_id:'alice',browser_session_id:session.id,tool_call_id:'call-one',status:'captured'})
+  expect(rows[0].image).toBeInstanceOf(Blob)
+  const controller = await service.control(context,session.id,'take')
+  await service.execute({...context,manualLeaseId:controller!.leaseId},'tabs',{browserSessionId:session.id})
+  expect(screenshot).toHaveBeenCalledTimes(1)
+  expect(await database.collection('browser_screenshots').getFullList()).toHaveLength(1)
 })
