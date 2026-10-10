@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 import type { CreateAutomationInput } from '../../subpolar-client/src/index.ts'
+import { createInterface } from 'node:readline/promises'
 
 export interface CliIo {
   stdout?: (text: string) => void
   stderr?: (text: string) => void
+  prompt?: (message: string, secret: boolean) => Promise<string>
 }
 
 export interface CliEnvironment {
@@ -56,6 +58,7 @@ export function parseArgs(argv: string[], env: CliEnvironment = process.env): Pa
 export function usage(): string {
   return [
     'Usage: subpolar-test-cli [--base-url URL] [--token TOKEN] [--json] automations <command> [args]',
+    '       subpolar-test-cli [--base-url URL] [--token TOKEN] providers login <provider-id> [account-label]',
     '',
     'Commands:',
     '  automations list',
@@ -67,6 +70,7 @@ export function usage(): string {
     '  automations executions <automation-id>',
     '  automations execution <automation-id> <execution-id>',
     '  automations cancel <automation-id> <execution-id>',
+    '  providers login <provider-id> [account-label]  Connect a provider with an API key',
   ].join('\n')
 }
 
@@ -140,6 +144,42 @@ export async function runCli(
       return 0
     }
     if (!parsed.token) throw new CliUsageError('Set SUBPOLAR_API_TOKEN or pass --token with a normal authenticated Subpolar user token')
+    if (parsed.command[0] === 'providers') {
+      const [, action, providerInstanceId, displayName, ...extra] = parsed.command
+      if (action !== 'login' || !providerInstanceId || extra.length) throw new CliUsageError('Usage: providers login <provider-id> [account-label]')
+      const requestFetch = options.fetch ?? globalThis.fetch.bind(globalThis)
+      const headers = { Authorization: `Bearer ${parsed.token}`, Accept: 'application/json', 'Content-Type': 'application/json' }
+      const startResponse = await requestFetch(`${parsed.baseUrl}/api/providers/login-flows`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ providerInstanceId, type: 'api_key', ...(displayName ? { displayName } : {}) }),
+      })
+      const startText = await startResponse.text()
+      const started = parseResponse(startText)
+      if (!startResponse.ok) throw apiError(startResponse.status, started, parsed.token)
+      let flow = (started as { flow?: LoginFlowStatus }).flow ?? started as LoginFlowStatus
+      const prompt = io.prompt ?? promptForInput
+      while (flow.phase === 'pending') {
+        if (flow.currentPrompt) {
+          const value = await prompt(flow.currentPrompt.prompt.message, flow.currentPrompt.prompt.type === 'secret')
+          const response = await requestFetch(`${parsed.baseUrl}/api/providers/login-flows/${encodeURIComponent(flow.flowId)}/respond`, {
+            method: 'POST', headers,
+            body: JSON.stringify({ promptId: flow.currentPrompt.promptId, value }),
+          })
+          const responseData = parseResponse(await response.text())
+          if (!response.ok) throw apiError(response.status, responseData, parsed.token)
+          flow = (responseData as { status?: LoginFlowStatus }).status ?? responseData as LoginFlowStatus
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 300))
+          const response = await requestFetch(`${parsed.baseUrl}/api/providers/login-flows/${encodeURIComponent(flow.flowId)}`, { headers })
+          const responseData = parseResponse(await response.text())
+          if (!response.ok) throw apiError(response.status, responseData, parsed.token)
+          flow = (responseData as { status?: LoginFlowStatus }).status ?? responseData as LoginFlowStatus
+        }
+      }
+      if (flow.phase !== 'completed') throw new Error(`Provider login ${flow.phase}`)
+      stdout(`${JSON.stringify({ connected: true, providerInstanceId: flow.providerInstanceId, phase: flow.phase }, null, parsed.json ? undefined : 2)}\n`)
+      return 0
+    }
     const plan = planRequest(parsed.command)
     const requestFetch = options.fetch ?? globalThis.fetch.bind(globalThis)
     const response = await requestFetch(`${parsed.baseUrl}${plan.path}`, {
@@ -169,6 +209,58 @@ export async function runCli(
     else stderr(`${safeMessage}\n`)
     return error instanceof CliUsageError ? 2 : 1
   }
+}
+
+interface LoginFlowStatus {
+  flowId: string
+  providerInstanceId: string
+  phase: 'pending' | 'completed' | 'failed' | 'cancelled' | 'expired'
+  currentPrompt?: { promptId: string; prompt: { type: string; message: string } }
+}
+
+function parseResponse(text: string): unknown {
+  try { return text ? JSON.parse(text) as unknown : undefined } catch { return text }
+}
+
+function apiError(status: number, data: unknown, token: string): Error {
+  const record = data && typeof data === 'object' ? data as Record<string, unknown> : {}
+  const message = typeof record.error === 'string' ? record.error : typeof record.message === 'string' ? record.message : `API request failed (${status})`
+  return new Error(redact(message, token))
+}
+
+async function promptForInput(message: string, secret: boolean): Promise<string> {
+  process.stdout.write(`${message}${secret ? ' (input hidden)' : ''}: `)
+  if (!secret) {
+    const readline = createInterface({ input: process.stdin, output: process.stdout })
+    try { return (await readline.question('')).trim() } finally { readline.close() }
+  }
+  if (!process.stdin.isTTY) {
+    const readline = createInterface({ input: process.stdin })
+    try { return (await readline.question('')).trim() } finally { readline.close() }
+  }
+  const stdin = process.stdin
+  const wasRaw = stdin.isRaw
+  stdin.setRawMode(true)
+  stdin.resume()
+  return await new Promise<string>((resolve, reject) => {
+    let value = ''
+    const finish = (error?: Error) => {
+      stdin.off('data', onData)
+      stdin.setRawMode(Boolean(wasRaw))
+      process.stdout.write('\n')
+      if (error) reject(error)
+      else resolve(value)
+    }
+    const onData = (chunk: Buffer) => {
+      for (const char of chunk.toString('utf8')) {
+        if (char === '\u0003') return finish(new Error('Provider login cancelled'))
+        if (char === '\r' || char === '\n') return finish()
+        if (char === '\u007f' || char === '\b') value = value.slice(0, -1)
+        else value += char
+      }
+    }
+    stdin.on('data', onData)
+  })
 }
 
 if (import.meta.main) process.exitCode = await runCli(process.argv.slice(2))

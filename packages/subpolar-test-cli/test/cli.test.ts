@@ -36,6 +36,37 @@ describe('subpolar-test-cli argument parsing', () => {
     expect(planRequest(['automations', 'cancel', 'a1', 'e1'])).toEqual({ method: 'POST', path: '/api/v1/automations/a1/executions/e1/cancel' })
   })
 
+  it('connects providers through the public login flow and never prints the API key', async () => {
+    const token = 'normal-token'
+    const key = 'provider-secret-key'
+    const calls: Array<{ url: string; body: string | null }> = []
+    const output: string[] = []
+    const responses = [
+      new Response(JSON.stringify({ flow: { flowId: 'f1', providerInstanceId: 'nvidia', phase: 'pending', currentPrompt: { promptId: 'p1', prompt: { type: 'secret', message: 'API key' } } } }), { status: 201 }),
+      new Response(JSON.stringify({ status: { flowId: 'f1', providerInstanceId: 'nvidia', phase: 'completed' } }), { status: 200 }),
+    ]
+    const code = await runCli(['providers', 'login', 'nvidia', 'Work'], {
+      env: { SUBPOLAR_API_URL: 'http://localhost:4173', SUBPOLAR_API_TOKEN: token },
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(input), body: typeof init?.body === 'string' ? init.body : null })
+        return responses.shift()!
+      }) as typeof fetch,
+    }, {
+      stdout: (text) => output.push(text),
+      stderr: () => {},
+      prompt: async (_message, secret) => { expect(secret).toBe(true); return key },
+    })
+    expect(code).toBe(0)
+    expect(calls.map((call) => call.url)).toEqual([
+      'http://localhost:4173/api/providers/login-flows',
+      'http://localhost:4173/api/providers/login-flows/f1/respond',
+    ])
+    expect(calls[0]?.body).toBe(JSON.stringify({ providerInstanceId: 'nvidia', type: 'api_key', displayName: 'Work' }))
+    expect(calls[1]?.body).toBe(JSON.stringify({ promptId: 'p1', value: key }))
+    expect(output.join('')).not.toContain(key)
+    expect(output.join('')).toContain('"connected": true')
+  })
+
   it('sends bearer auth and never prints the token in success or error output', async () => {
     const token = 'private-normal-user-token'
     const output: string[] = []

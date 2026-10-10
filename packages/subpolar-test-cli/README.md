@@ -1,6 +1,6 @@
 # `@subpolar/test-cli`
 
-Small command-line client for exercising Subpolar's authenticated Automations API. It uses the public HTTP API and a normal Subpolar user token; it does not connect to PocketBase or call internal bridge endpoints.
+Small command-line client for exercising Subpolar's authenticated Automations API and provider login flows. It uses the public HTTP API and a normal Subpolar user token; it does not connect to PocketBase or call internal bridge endpoints.
 
 ## Authentication
 
@@ -27,9 +27,12 @@ bun packages/subpolar-test-cli/src/cli.ts automations run <automation-id> '{"sou
 bun packages/subpolar-test-cli/src/cli.ts automations executions <automation-id>
 bun packages/subpolar-test-cli/src/cli.ts automations execution <automation-id> <execution-id>
 bun packages/subpolar-test-cli/src/cli.ts automations cancel <automation-id> <execution-id>
+bun packages/subpolar-test-cli/src/cli.ts providers login nvidia "NVIDIA NIM"
 ```
 
 Use `--json` for the same response in JSON output mode. `automations create` accepts one JSON object argument. `automations run` optionally accepts JSON trigger payload.
+
+`providers login <provider-id> [account-label]` runs the same authenticated provider API-key flow as the WebUI. Enter the API key only at the hidden prompt; it is sent to the server login endpoint and is never printed by the CLI. NVIDIA NIM is available under provider id `nvidia`.
 
 ## Tests
 
