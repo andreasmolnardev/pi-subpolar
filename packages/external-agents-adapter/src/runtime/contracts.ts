@@ -33,6 +33,10 @@ export interface IsolatedProcessRequest {
   environment: Readonly<Record<string, string>>
   readableRoots: readonly string[]
   writableRoots: readonly string[]
+  /** Executable allowlist for the OS boundary; default is the entry executable only. */
+  allowedExecutables?: readonly string[]
+  timeoutMs?: number
+  maxOutputBytes?: number
   networkPorts?: readonly number[]
   signal?: AbortSignal
 }
