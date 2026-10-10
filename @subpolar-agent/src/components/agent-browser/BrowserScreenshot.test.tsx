@@ -8,6 +8,7 @@ beforeEach(() => { vi.resetAllMocks(); URL.createObjectURL = vi.fn().mockReturnV
 describe('browser screenshot history', () => {
   it('extracts only artifact identity and ignores supplied external URLs', () => {
     expect(screenshotFromOutput(JSON.stringify({ screenshotArtifact: { id: 'record', status: 'captured', url: 'https://evil.test' } }))).toEqual({ id: 'record', status: 'captured' })
+    expect(screenshotFromOutput(JSON.stringify({ ok: true, value: { screenshotArtifact: { id: 'gateway', status: 'captured' } } }))).toEqual({ id: 'gateway', status: 'captured' })
     expect(screenshotFromOutput('not json')).toBeNull()
   })
   it('loads protected image by ID and revokes object URL on owner change', async () => {

@@ -5,7 +5,16 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 export function screenshotFromOutput(output: string, metadata?: Record<string, unknown>): ScreenshotArtifact | null {
   let value: unknown = metadata?.screenshotArtifact
-  if (!value) { try { value = JSON.parse(output)?.screenshotArtifact } catch { return null } }
+  if (!value) {
+    try {
+      let result: unknown = JSON.parse(output)
+      for (let depth = 0; depth < 4 && result && typeof result === 'object'; depth++) {
+        const envelope = result as Record<string, unknown>
+        if (envelope.screenshotArtifact) { value = envelope.screenshotArtifact; break }
+        result = envelope.value ?? envelope.result
+      }
+    } catch { return null }
+  }
   if (!value || typeof value !== 'object') return null
   const artifact = value as Record<string, unknown>
   return typeof artifact.id === 'string' && typeof artifact.status === 'string' ? { id: artifact.id, status: artifact.status } : null
