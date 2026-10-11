@@ -248,6 +248,17 @@ export async function ensureApplicationCollections(client: PocketBase): Promise<
     field('updated_at', 'number', { required: true }),
   ], ['CREATE UNIQUE INDEX idx_user_preferences_user ON user_preferences (user_id)'])
 
+  await ensureCollection(client, 'external_runtime_sessions', [
+    field('owner_id', 'text', { required: true }),
+    field('session_id', 'text', { required: true }),
+    field('provider', 'select', { required: true, values: ['opencode-v2'], maxSelect: 1 }),
+    field('installation_id', 'text', { required: true }),
+    field('external_session_id', 'text', { required: true }),
+    field('workspace', 'text', { required: true }),
+    field('created_at', 'number', { required: true }),
+    field('updated_at', 'number', { required: true }),
+  ], ['CREATE UNIQUE INDEX idx_external_runtime_sessions_owner_session ON external_runtime_sessions (owner_id, session_id)'])
+
   await ensureBrowserSessionCollections(client)
 
   await ensureCollection(client, 'agents', [

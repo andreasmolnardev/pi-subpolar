@@ -29,6 +29,7 @@ function schemaClient(existingInboxIndexes: string[]) {
      deliveries: () => records.get('notification_deliveries')!,
      skills: () => records.get('skills')!,
      skillVersions: () => records.get('skill_versions')!,
+     externalRuntimeSessions: () => records.get('external_runtime_sessions')!,
    }
 }
 
@@ -65,5 +66,17 @@ describe('PocketBase application schema', () => {
     ]))
     expect(client.skills().indexes).toContain('CREATE UNIQUE INDEX idx_skills_owner_identity ON skills (ownerId, identityKey)')
     expect(client.skillVersions().indexes).toContain('CREATE UNIQUE INDEX idx_skill_versions_owner_identity_version ON skill_versions (ownerId, skillHeadId, version)')
+  })
+
+  it('creates owner-scoped external runtime session mappings with a unique canonical key', async () => {
+    const client = schemaClient([])
+    await ensureApplicationCollections(client as never)
+    expect(client.externalRuntimeSessions().fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'owner_id', type: 'text', required: true }),
+      expect.objectContaining({ name: 'session_id', type: 'text', required: true }),
+      expect.objectContaining({ name: 'external_session_id', type: 'text', required: true }),
+      expect.objectContaining({ name: 'workspace', type: 'text', required: true }),
+    ]))
+    expect(client.externalRuntimeSessions().indexes).toContain('CREATE UNIQUE INDEX idx_external_runtime_sessions_owner_session ON external_runtime_sessions (owner_id, session_id)')
   })
 })

@@ -102,6 +102,7 @@ export * from './application/runtime/provider-runtime.ts'
 export * from './persistence/custom-providers.ts'
 export * from './persistence/gateway-credentials.ts'
 export * from './persistence/pocketbase-runtime-store.ts'
+export * from './persistence/external-runtime-mappings.ts'
 export * from './persistence/pocketbase-proxy-credentials.ts'
 export * from './persistence/session-transcript.ts'
 
