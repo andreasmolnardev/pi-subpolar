@@ -41,7 +41,7 @@ export function createSandboxExecutionPort(): IsolatedExecutionPort {
 (allow file-read* (literal "/") (subpath "/System") (subpath "/usr/lib") (subpath "/usr/share/locale") (subpath "/usr/share/icu") (subpath "/private/var/db/timezone") ${[...ancestors].map(path => `(literal ${quoted(path)})`).join(' ')} (literal "/dev/urandom") (literal "/dev/random") ${allowed.map(path => `(literal ${quoted(path)})`).join(' ')} ${roots.map(root => `(subpath ${quoted(root)})`).join(' ')})
 (allow file-read* file-write* (literal "/dev/null") ${writable.map(root => `(subpath ${quoted(root)})`).join(' ')})
 ${ports.length ? `(allow network-outbound ${ports.map(port => `(remote ip "127.0.0.1:${port}")`).join(' ')})` : ''}
-${request.allowLoopbackServer ? '(allow network-bind (local ip "127.0.0.1"))(allow network-inbound (local ip "127.0.0.1"))(allow network-outbound (remote ip "127.0.0.1:*"))' : ''}`
+`
       const env: Record<string, string> = { PATH: '/usr/bin:/bin', HOME: writable[0] ?? cwd, TMPDIR: writable[0] ?? cwd, LANG: 'en_US.UTF-8' }
       for (const [key, value] of Object.entries(request.environment)) {
         if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key) || value.includes('\0') || /^(?:DYLD_|LD_|NODE_OPTIONS$|BUN_OPTIONS$|ENV$|BASH_ENV$)/.test(key)) throw new Error('Unsafe process environment')

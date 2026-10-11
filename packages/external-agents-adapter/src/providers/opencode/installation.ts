@@ -22,7 +22,7 @@ export async function installOpenCode(options: {root:string;execution:IsolatedEx
  return {id:`opencode-v2-${OPENCODE_VERSION}`,version:OPENCODE_VERSION,executable,root}
 }
 export async function verifyOpenCodeInstallation(installation:OpenCodeInstallation,execution:IsolatedExecutionPort,configurationRoot:string) {
- const process=await execution.spawn({executable:installation.executable,args:['acp'],cwd:configurationRoot,environment:{XDG_CONFIG_HOME:configurationRoot,XDG_DATA_HOME:join(configurationRoot,'data'),XDG_CACHE_HOME:join(configurationRoot,'cache')},readableRoots:[installation.root,configurationRoot],writableRoots:[configurationRoot],allowedExecutables:[installation.executable],networkPorts:[],allowLoopbackServer:true,timeoutMs:30000,maxOutputBytes:8388608})
+ const process=await execution.spawn({executable:installation.executable,args:['acp'],cwd:configurationRoot,environment:{XDG_CONFIG_HOME:configurationRoot,XDG_DATA_HOME:join(configurationRoot,'data'),XDG_CACHE_HOME:join(configurationRoot,'cache')},readableRoots:[installation.root,configurationRoot],writableRoots:[configurationRoot],allowedExecutables:[installation.executable],networkPorts:[],timeoutMs:30000,maxOutputBytes:8388608})
  const client=new AcpClient(process,async()=>{},async()=>{throw new Error('Client request unsupported')},15000)
  try {const result=await client.request('initialize',{protocolVersion:1,clientCapabilities:{},clientInfo:{name:'Subpolar',version:'0.1.0'}});verifyHandshake(result);return {healthy:true,version:OPENCODE_VERSION,protocolVersion:1,capabilities:result.agentCapabilities}}
  finally {await client.close()}

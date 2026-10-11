@@ -1,0 +1,33 @@
+services:
+  opencode-v2:
+    build:
+      context: ../..
+      dockerfile: deployment/external-agent-runtime/Dockerfile
+      args:
+        OPENCODE_VERSION: 2.0.26
+    image: subpolar/opencode-runtime:2.0.26
+    profiles: [external-agent-runtime]
+    init: true
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+      - /run:size=16m,noexec,nosuid,nodev
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - opencode_installation:/var/lib/subpolar/opencode
+      - opencode_runtime_data:/runtime
+    healthcheck:
+      test: ["CMD", "/var/lib/subpolar/opencode/opencode", "--version"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  opencode_installation:
+  opencode_runtime_data:
