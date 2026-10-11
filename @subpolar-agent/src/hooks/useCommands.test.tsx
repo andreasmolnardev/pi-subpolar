@@ -45,6 +45,14 @@ describe('useCommands', () => {
     ])
   })
 
+  it('exposes /teach-tools as a built-in chat command', () => {
+    const { result } = renderHook(() => useCommands(null))
+
+    expect(result.current.filterCommands('teach-tools')).toMatchObject([
+      { name: 'teach-tools', description: 'Discover and propose CLI, MCP, or OpenAPI tools for review' },
+    ])
+  })
+
   it('sorts loaded custom commands with built-in commands', async () => {
     vi.mocked(createSubpolarClient).mockReturnValue({
       listCommands: vi.fn().mockResolvedValue([

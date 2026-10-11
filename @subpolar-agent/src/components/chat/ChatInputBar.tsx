@@ -23,6 +23,7 @@ import { SUBPOLAR_API_BASE_URL } from "@/config";
 import { useSettings } from "@/hooks/useSettings";
 import { showToast } from "@/lib/toast";
 import { DebugToolsDialog } from "@/components/chat/DebugToolsDialog";
+import { TeachToolsDialog } from "@/components/chat/TeachToolsDialog";
 
 import { MentionSuggestions, type MentionItem } from "@/components/message/MentionSuggestions";
 import { savePendingSessionPrompt } from "@/lib/pending-session-prompt";
@@ -139,6 +140,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
   const [commandQuery, setCommandQuery] = useState<string | null>(null);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [debugToolsOpen, setDebugToolsOpen] = useState(false);
+  const [teachToolsOpen, setTeachToolsOpen] = useState(false);
   const [selectedMentions, setSelectedMentions] = useState<MentionContextItem[]>([]);
   const [pastedText, setPastedText] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -562,6 +564,15 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
     const command = commandName
       ? commands.find((candidate) => candidate.name.toLowerCase() === commandName.toLowerCase())
       : undefined;
+    if (command?.name.toLowerCase() === 'teach-tools') {
+      textareaRef.current!.value = "";
+      textareaRef.current!.style.height = "auto";
+      setHasPromptContent(Boolean(pastedText || attachmentParts.length));
+      setCommandQuery(null);
+      onPromptChange?.(Boolean(pastedText || attachmentParts.length));
+      setTeachToolsOpen(true);
+      return;
+    }
     if (sessionID && command) {
       textareaRef.current!.value = "";
       textareaRef.current!.style.height = "auto";
@@ -1034,6 +1045,7 @@ export const ChatInputBar = forwardRef<ChatInputBarHandle, ChatInputBarProps>(fu
         agentName={selectedAgentForRequest ?? config?.default_agent ?? 'master'}
       />
     )}
+    <TeachToolsDialog open={teachToolsOpen} onOpenChange={setTeachToolsOpen} />
     </>
   );
 });
