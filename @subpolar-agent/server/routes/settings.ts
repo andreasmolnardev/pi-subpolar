@@ -2,6 +2,7 @@
 // @ts-nocheck
 import type { BridgeRequestContext } from '../bridge-route-context.ts'
 import { assertPathWithinWorkspace } from '../core/project-filesystem.ts'
+import { createOpenCodeDockerInstallation } from '../application/runtime/opencode-docker-installation.ts'
 
 function toolMetadataProjection(metadata: Record<string, unknown> = {}) {
   // Execution configuration can contain secrets under arbitrary env/header names.
@@ -11,6 +12,20 @@ function toolMetadataProjection(metadata: Record<string, unknown> = {}) {
 export async function handleSettingsRoute(context: BridgeRequestContext): Promise<Response | undefined> {
   const { request, url, path, correlationId, deps, gatewayCredential, internalRequest } = context
   let authenticatedUser = context.authenticatedUser
+  if (path[1] === 'settings' && path[2] === 'agent-runtime' && path[3] === 'opencode') {
+    if (!authenticatedUser) return deps.json({ message: 'Unauthorized' }, 401)
+    const installation = deps.openCodeDockerInstallation ?? createOpenCodeDockerInstallation()
+    if (!installation) return deps.json({ error: 'Docker OpenCode installation is disabled by the server administrator' }, 503)
+    try {
+      if (request.method === 'GET' && path.length === 4) return deps.json(await installation.status())
+      if (request.method === 'POST' && path[4] === 'install') return deps.json(await installation.install(), 201)
+      if (request.method === 'POST' && path[4] === 'check') return deps.json(await installation.check())
+      return deps.json({ error: 'Unsupported OpenCode runtime operation' }, 405)
+    } catch (error) {
+      console.warn(`OpenCode Docker runtime operation failed: ${deps.redactedDiagnostic?.(error) ?? '[redacted]'}`)
+      return deps.json({ error: error instanceof Error ? error.message : 'OpenCode Docker runtime operation failed' }, 503)
+    }
+  }
   if (path[1] === 'settings' && path[2] === 'agents' && path[3] && path[4] === 'tool-policies' && authenticatedUser) {
     try {
       const client = await deps.applicationDatabase()

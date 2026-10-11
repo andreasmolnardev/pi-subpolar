@@ -74,7 +74,29 @@ export interface TeachToolsResponse {
 
 export type RegisteredToolProjection = TeachToolDraft
 
+export type OpenCodeDockerStatus = {
+  provider: 'opencode-v2'
+  expectedVersion: string
+  installed: boolean
+  running: boolean
+  version?: string
+  binarySha256?: string
+  persistentVolume: string
+  verified?: boolean
+  acp?: string
+}
+
 export const settingsApi = {
+  getOpenCodeRuntime: async (): Promise<OpenCodeDockerStatus> => fetchWrapper(`${API_BASE_URL}/api/settings/agent-runtime/opencode`),
+
+  installOpenCodeRuntime: async (): Promise<OpenCodeDockerStatus> => fetchWrapper(`${API_BASE_URL}/api/settings/agent-runtime/opencode/install`, {
+    method: 'POST',
+  }),
+
+  checkOpenCodeRuntime: async (): Promise<OpenCodeDockerStatus> => fetchWrapper(`${API_BASE_URL}/api/settings/agent-runtime/opencode/check`, {
+    method: 'POST',
+  }),
+
   listAgents: async (): Promise<AgentDefinition[]> => fetchWrapper(`${API_BASE_URL}/api/agents`),
 
   createAgent: async (agent: Omit<AgentDefinition, 'id' | 'created_at' | 'updated_at' | 'source'>): Promise<AgentDefinition> => fetchWrapper(`${API_BASE_URL}/api/agents`, {

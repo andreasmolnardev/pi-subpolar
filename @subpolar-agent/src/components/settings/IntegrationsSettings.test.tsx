@@ -20,6 +20,7 @@ const integration = {
 }
 
 function renderSettings() {
+  vi.spyOn(settingsApi, 'getOpenCodeRuntime').mockRejectedValue(new Error('Runtime manager disabled'))
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(<QueryClientProvider client={queryClient}><IntegrationsSettings /></QueryClientProvider>)
 }
@@ -41,6 +42,21 @@ describe('IntegrationsSettings integration choices', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Git' }))
     expect(await screen.findByRole('heading', { name: 'Git provider accounts' })).toBeInTheDocument()
+  })
+
+  it('installs and checks the persistent Docker runtime from settings', async () => {
+    vi.spyOn(settingsApi, 'listIntegrations').mockResolvedValue({ integrations: [] })
+    vi.spyOn(settingsApi, 'getOpenCodeRuntime').mockResolvedValue({ provider: 'opencode-v2', expectedVersion: '2.0.26', installed: false, running: false, persistentVolume: 'opencode_installation' })
+    const installed = { provider: 'opencode-v2' as const, expectedVersion: '2.0.26', installed: true, running: true, version: 'opencode v2.0.26', persistentVolume: 'opencode_installation', binarySha256: 'abc' }
+    const install = vi.spyOn(settingsApi, 'installOpenCodeRuntime').mockResolvedValue(installed)
+    const check = vi.spyOn(settingsApi, 'checkOpenCodeRuntime').mockResolvedValue({ ...installed, verified: true, acp: 'initialize/session-new/session-close' })
+
+    renderSettings()
+    fireEvent.click(await screen.findByRole('button', { name: 'Install in Docker' }))
+    await waitFor(() => expect(install).toHaveBeenCalledOnce())
+    fireEvent.click(await screen.findByRole('button', { name: 'Check runtime' }))
+    await waitFor(() => expect(check).toHaveBeenCalledOnce())
+    expect(await screen.findByText('ACP session lifecycle verified')).toBeInTheDocument()
   })
 
   it('opens the integration dialog with the selected type', async () => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Github, Loader2, Network, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import { CheckCircle2, Github, Loader2, Network, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { settingsApi } from '@/api/settings'
+import type { OpenCodeDockerStatus } from '@/api/settings'
 import { formatMcpCommand, parseMcpCommand } from '@/api/mcp'
 import { showToast } from '@/lib/toast'
 import { GitProviderAccountsSettings } from './GitProviderAccountsSettings'
@@ -361,6 +362,11 @@ export function IntegrationsSettings() {
     queryKey: ['integrations'],
     queryFn: settingsApi.listIntegrations,
   })
+  const { data: runtime, error: runtimeError, isLoading: runtimeLoading } = useQuery<OpenCodeDockerStatus>({
+    queryKey: ['agent-runtime', 'opencode'],
+    queryFn: settingsApi.getOpenCodeRuntime,
+    retry: false,
+  })
 
   const integrations = useMemo(
     () => (data?.integrations ?? []).filter((integration) => integration.type === 'mcp' || integration.type === 'openapi' || integration.type === 'web-search'),
@@ -381,6 +387,22 @@ export function IntegrationsSettings() {
   const deleteMutation = useMutation({
     mutationFn: settingsApi.deleteIntegration,
     onSuccess: refreshIntegrations,
+  })
+  const installRuntime = useMutation({
+    mutationFn: settingsApi.installOpenCodeRuntime,
+    onSuccess: (result) => {
+      queryClient.setQueryData(['agent-runtime', 'opencode'], result)
+      showToast.success('OpenCode v2 installed in Docker')
+    },
+    onError: () => showToast.error('OpenCode Docker installation failed'),
+  })
+  const checkRuntime = useMutation({
+    mutationFn: settingsApi.checkOpenCodeRuntime,
+    onSuccess: (result) => {
+      queryClient.setQueryData(['agent-runtime', 'opencode'], result)
+      showToast.success('OpenCode ACP check passed')
+    },
+    onError: () => showToast.error('OpenCode ACP check failed'),
   })
 
   const isUpdating = createMutation.isPending || updateMutation.isPending || deleteMutation.isPending
@@ -467,6 +489,28 @@ export function IntegrationsSettings() {
       </div>
 
       <div className="mt-6">
+        <section className="mb-6 rounded-lg border border-border p-4" aria-label="Agent Runtime">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="font-medium text-foreground">OpenCode v2 agent runtime</h3>
+              <p className="text-sm text-muted-foreground">Install the pinned runtime in an isolated Docker container. Its binary is kept in a named volume across container restarts.</p>
+              {runtime?.installed && <p className="mt-2 text-sm text-foreground">{runtime.version} · persistent volume: {runtime.persistentVolume}</p>}
+              {runtime?.verified && <p className="mt-1 flex items-center gap-1 text-sm text-green-600"><CheckCircle2 className="h-4 w-4" />ACP session lifecycle verified</p>}
+              {runtimeError && <p className="mt-2 text-xs text-muted-foreground">Runtime manager unavailable or disabled by the server administrator.</p>}
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => installRuntime.mutate()} disabled={installRuntime.isPending || runtimeLoading}>
+                {installRuntime.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {runtime?.installed ? 'Reinstall' : 'Install in Docker'}
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => checkRuntime.mutate()} disabled={!runtime?.installed || checkRuntime.isPending}>
+                {checkRuntime.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Check runtime
+              </Button>
+            </div>
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">The installer is opt-in on the server and requires Docker Compose. This prepares the runtime; conversation and subagent selection are still being integrated.</p>
+        </section>
         {showGitSettings && <GitProviderAccountsSettings />}
         {integrations.length === 0 ? (
           <div className="rounded-lg border  text-center">
