@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { settingsApi } from '@/api/settings'
+import type { OpenCodeDockerStatus } from '@/api/settings'
 import { IntegrationsSettings } from './IntegrationsSettings'
 
 const savedArgv = ['node', '/path with spaces/server.js', '--label', 'value with spaces']
@@ -19,8 +20,10 @@ const integration = {
   timeout: 15000,
 }
 
-function renderSettings() {
-  vi.spyOn(settingsApi, 'getOpenCodeRuntime').mockRejectedValue(new Error('Runtime manager disabled'))
+function renderSettings(runtimeStatus?: OpenCodeDockerStatus) {
+  const runtime = vi.spyOn(settingsApi, 'getOpenCodeRuntime')
+  if (runtimeStatus) runtime.mockResolvedValue(runtimeStatus)
+  else runtime.mockRejectedValue(new Error('Runtime manager disabled'))
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(<QueryClientProvider client={queryClient}><IntegrationsSettings /></QueryClientProvider>)
 }
@@ -46,12 +49,11 @@ describe('IntegrationsSettings integration choices', () => {
 
   it('installs and checks the persistent Docker runtime from settings', async () => {
     vi.spyOn(settingsApi, 'listIntegrations').mockResolvedValue({ integrations: [] })
-    vi.spyOn(settingsApi, 'getOpenCodeRuntime').mockResolvedValue({ provider: 'opencode-v2', expectedVersion: '2.0.26', installed: false, running: false, persistentVolume: 'opencode_installation' })
-    const installed = { provider: 'opencode-v2' as const, expectedVersion: '2.0.26', installed: true, running: true, version: 'opencode v2.0.26', persistentVolume: 'opencode_installation', binarySha256: 'abc' }
+    const installed = { provider: 'opencode-v2' as const, enabled: true, expectedVersion: '2.0.26', installed: true, running: true, version: 'opencode v2.0.26', persistentVolume: 'opencode_installation', binarySha256: 'abc' }
     const install = vi.spyOn(settingsApi, 'installOpenCodeRuntime').mockResolvedValue(installed)
     const check = vi.spyOn(settingsApi, 'checkOpenCodeRuntime').mockResolvedValue({ ...installed, verified: true, acp: 'initialize/session-new/session-close' })
 
-    renderSettings()
+    renderSettings({ provider: 'opencode-v2', enabled: true, expectedVersion: '2.0.26', installed: false, running: false, persistentVolume: 'opencode_installation' })
     fireEvent.click(await screen.findByRole('button', { name: 'Install in Docker' }))
     await waitFor(() => expect(install).toHaveBeenCalledOnce())
     fireEvent.click(await screen.findByRole('button', { name: 'Check runtime' }))
@@ -69,6 +71,13 @@ describe('IntegrationsSettings integration choices', () => {
 
     expect(await screen.findByLabelText('Provider name')).toBeInTheDocument()
     expect(screen.getByLabelText('OpenAPI JSON')).toBeInTheDocument()
+  })
+
+  it('shows the server opt-in state and keeps installation disabled when the administrator has not enabled it', async () => {
+    vi.spyOn(settingsApi, 'listIntegrations').mockResolvedValue({ integrations: [] })
+    renderSettings({ provider: 'opencode-v2', enabled: false, expectedVersion: '2.0.26', installed: false, running: false, persistentVolume: 'opencode_installation' })
+    expect(await screen.findByText('The server administrator has not enabled the Docker runtime manager.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Install in Docker' })).toBeDisabled()
   })
 
   it('does not render previously saved CalDAV or mail integrations', async () => {

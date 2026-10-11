@@ -496,14 +496,15 @@ export function IntegrationsSettings() {
               <p className="text-sm text-muted-foreground">Install the pinned runtime in an isolated Docker container. Its binary is kept in a named volume across container restarts.</p>
               {runtime?.installed && <p className="mt-2 text-sm text-foreground">{runtime.version} · persistent volume: {runtime.persistentVolume}</p>}
               {runtime?.verified && <p className="mt-1 flex items-center gap-1 text-sm text-green-600"><CheckCircle2 className="h-4 w-4" />ACP session lifecycle verified</p>}
-              {runtimeError && <p className="mt-2 text-xs text-muted-foreground">Runtime manager unavailable or disabled by the server administrator.</p>}
+              {runtime?.enabled === false && <p className="mt-2 text-xs text-muted-foreground">The server administrator has not enabled the Docker runtime manager.</p>}
+              {runtimeError && <p className="mt-2 text-xs text-muted-foreground">Runtime manager unavailable. Check the server and Docker service, then reload settings.</p>}
             </div>
             <div className="flex shrink-0 gap-2">
-              <Button type="button" variant="outline" size="sm" onClick={() => installRuntime.mutate()} disabled={installRuntime.isPending || runtimeLoading}>
+              <Button type="button" variant="outline" size="sm" onClick={() => installRuntime.mutate()} disabled={installRuntime.isPending || runtimeLoading || runtime?.enabled === false || Boolean(runtimeError)}>
                 {installRuntime.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 {runtime?.installed ? 'Reinstall' : 'Install in Docker'}
               </Button>
-              <Button type="button" variant="outline" size="sm" onClick={() => checkRuntime.mutate()} disabled={!runtime?.installed || checkRuntime.isPending}>
+              <Button type="button" variant="outline" size="sm" onClick={() => checkRuntime.mutate()} disabled={!runtime?.enabled || !runtime.installed || checkRuntime.isPending}>
                 {checkRuntime.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Check runtime
               </Button>

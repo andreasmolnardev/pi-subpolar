@@ -47,6 +47,25 @@ describe('OpenCode Docker installation manager', () => {
 })
 
 describe('OpenCode Docker settings route', () => {
+  it('reports an explicit disabled state without attempting Docker access', async () => {
+    const previous = process.env.SUBPOLAR_ENABLE_OPENCODE_DOCKER_INSTALLER
+    delete process.env.SUBPOLAR_ENABLE_OPENCODE_DOCKER_INSTALLER
+    try {
+      const url = new URL('http://localhost/api/settings/agent-runtime/opencode')
+      const response = await handleSettingsRoute({
+        request: new Request(url.href), url,
+        path: ['api', 'settings', 'agent-runtime', 'opencode'],
+        correlationId: 'runtime-test', authenticatedUser: { id: 'owner-a' }, gatewayCredential: null, internalRequest: false,
+        deps: { json: (value: unknown, status = 200) => Response.json(value, { status }) },
+      } as never)
+      expect(response?.status).toBe(200)
+      await expect(response?.json()).resolves.toMatchObject({ enabled: false, installed: false, provider: 'opencode-v2' })
+    } finally {
+      if (previous === undefined) delete process.env.SUBPOLAR_ENABLE_OPENCODE_DOCKER_INSTALLER
+      else process.env.SUBPOLAR_ENABLE_OPENCODE_DOCKER_INSTALLER = previous
+    }
+  })
+
   it('requires an authenticated owner before exposing installation operations', async () => {
     let touched = false
     const url = new URL('http://localhost/api/settings/agent-runtime/opencode/install')
@@ -63,7 +82,7 @@ describe('OpenCode Docker settings route', () => {
   it('dispatches only the fixed install and check actions to the server runtime manager', async () => {
     const calls: string[] = []
     const manager = {
-      status: async () => ({ provider: 'opencode-v2', installed: true }),
+      status: async () => ({ provider: 'opencode-v2', enabled: true, installed: true }),
       install: async () => { calls.push('install'); return { installed: true } },
       check: async () => { calls.push('check'); return { verified: true } },
     }

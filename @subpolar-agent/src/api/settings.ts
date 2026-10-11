@@ -76,6 +76,7 @@ export type RegisteredToolProjection = TeachToolDraft
 
 export type OpenCodeDockerStatus = {
   provider: 'opencode-v2'
+  enabled: boolean
   expectedVersion: string
   installed: boolean
   running: boolean

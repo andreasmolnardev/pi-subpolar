@@ -32,6 +32,7 @@ export class OpenCodeDockerInstallation {
     }
     return {
       provider: 'opencode-v2',
+      enabled: true,
       expectedVersion: VERSION,
       installed: running && version === `opencode v${VERSION}` && Boolean(binarySha256),
       running,

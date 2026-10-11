@@ -15,7 +15,10 @@ export async function handleSettingsRoute(context: BridgeRequestContext): Promis
   if (path[1] === 'settings' && path[2] === 'agent-runtime' && path[3] === 'opencode') {
     if (!authenticatedUser) return deps.json({ message: 'Unauthorized' }, 401)
     const installation = deps.openCodeDockerInstallation ?? createOpenCodeDockerInstallation()
-    if (!installation) return deps.json({ error: 'Docker OpenCode installation is disabled by the server administrator' }, 503)
+    if (!installation) {
+      if (request.method === 'GET' && path.length === 4) return deps.json({ provider: 'opencode-v2', enabled: false, expectedVersion: '2.0.26', installed: false, running: false, persistentVolume: 'opencode_installation' })
+      return deps.json({ error: 'Docker OpenCode installation is disabled by the server administrator' }, 503)
+    }
     try {
       if (request.method === 'GET' && path.length === 4) return deps.json(await installation.status())
       if (request.method === 'POST' && path[4] === 'install') return deps.json(await installation.install(), 201)
