@@ -1,0 +1,4 @@
+{
+  "extends": "../../@subpolar-agent/tsconfig.bridge.json",
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

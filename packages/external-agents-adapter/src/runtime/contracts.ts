@@ -38,6 +38,8 @@ export interface IsolatedProcessRequest {
   timeoutMs?: number
   maxOutputBytes?: number
   networkPorts?: readonly number[]
+  /** Allow OpenCode ACP's private ephemeral loopback server. Never used for shell commands. */
+  allowLoopbackServer?: boolean
   signal?: AbortSignal
 }
 /** A trusted server-provided isolation implementation. No unsandboxed default. */
